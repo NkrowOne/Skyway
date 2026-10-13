@@ -1130,10 +1130,11 @@ export default function VariablesTab({
    */
   const isGit = serviceType === 'git';
   const pendingFromRepo = useMemo(() => {
-    const pending = env.data?.repoPending ?? envImport?.pending ?? EMPTY_LIST;
+    // Sin respuesta todavía, nada: el informe crudo traería justo lo repetido.
+    const pending = env.data?.repoPending ?? EMPTY_LIST;
     if (!isGit || pending.length === 0) return EMPTY_LIST as { key: string; file: string }[];
     return pending.filter((p) => !coveredKeys.has(p.key));
-  }, [isGit, env.data, envImport, coveredKeys]);
+  }, [isGit, env.data, coveredKeys]);
 
   // Dependencias detectadas en el repo: sugerencias y variables que faltan.
   const pendingSuggestions = useMemo(

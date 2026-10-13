@@ -192,8 +192,9 @@ efectiva y su motivo.
 | `SKYWAY_VALIDATION` | `1` | solo en la copia `--next` |
 | `RAILWAY_*` | equivalentes de Railway (`RAILWAY_PUBLIC_DOMAIN`, `RAILWAY_PRIVATE_DOMAIN`, `RAILWAY_GIT_COMMIT_SHA`…) | si no las defines |
 
-Una variable guardada con el mismo nombre gana a la de sistema. Skyway **no** fija `NODE_ENV`,
-`HOST` ni `TZ`: defínelas si la aplicación las necesita.
+Una variable guardada con el mismo nombre gana a `PORT`, `INTERNAL_*`, `PUBLIC_*` y `RAILWAY_*`;
+las `SKYWAY_*` de esta tabla las pone Skyway siempre y no se pueden sustituir. Skyway **no** fija
+`NODE_ENV`, `HOST` ni `TZ`: defínelas si la aplicación las necesita.
 
 ### 5.2 Referencias y variables compartidas
 

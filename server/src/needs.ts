@@ -8,7 +8,8 @@ import { MailMode, mailRoleOf, mailVarsOf, suggestedMailMode } from './mailenv';
 import { MANIFEST_FILE, MANIFEST_MAX_BYTES, parseManifest } from './manifest';
 import { getTemplate } from './templates';
 import { DetectedNeeds, GitConfig, ProveedorWebhook, ServiceRow } from './types';
-import { ReferenceGroup } from './variables';
+import { isReservedKey } from './deploy/envimport';
+import { ReferenceGroup, systemVars } from './variables';
 
 /**
  * Dependencias que un repositorio declara sin decirlo: qué motores usa (por
@@ -684,14 +685,9 @@ export interface EnvAdvice {
   mail: { mode: 'smtp' | 'api'; vars: { name: string; role: string }[]; evidence: string[] } | null;
   /** `skyway.json` del repositorio: su fichero y, si no es válido, el motivo. */
   manifest: { file: string; error: string | null } | null;
-  /**
-   * Lo que el `.env` del repositorio dejó sin valor en el último despliegue y
-   * que ahora sigue sin cubrir (ver `pendingFromRepo`).
-   */
-  repoPending: { key: string; file: string }[];
 }
 
-const NO_ADVICE: EnvAdvice = { needs: null, suggestions: [], missing: [], mail: null, manifest: null, repoPending: [] };
+const NO_ADVICE: EnvAdvice = { needs: null, suggestions: [], missing: [], mail: null, manifest: null };
 
 /** A quién se aconseja: basta con lo que cambia las propuestas, exista ya el servicio o no. */
 export interface AdviceTarget {
@@ -702,32 +698,58 @@ export interface AdviceTarget {
   defined: Set<string>;
 }
 
+/** `SKYWAY_*` que el despliegue pone siempre en el contenedor, se guarden o no con otro valor. */
+const SKYWAY_INJECTED_RE = /^SKYWAY_(?:PROJECT|SERVICE|DEPLOYMENT|INSTANCE_ID|REPLICA|REPLICAS|VALIDATION)$/;
+
 /**
- * Lo pendiente del `.env` del repositorio que sigue sin cubrir AHORA. El
- * informe de importación es una foto del último despliegue, y la pestaña lo
- * seguía proponiendo aunque después se hubiera añadido como variable
- * compartida del proyecto, aunque lo pusiera Skyway sola (`PUBLIC_URL`,
- * `PORT`…) o aunque ya lo propusieran el correo o el plan del manifiesto.
+ * Variables que propone otro sitio: con un `skyway.json` válido, su plan (las
+ * de su `env`); sin él, la conexión con el correo (las de correo que espera la
+ * web). La pestaña Variables sigue la misma regla: con manifiesto válido no
+ * enseña el bloque del correo, así que las de correo que el manifiesto no
+ * declare se proponen como cualquier otra.
  */
-function pendingFromRepo(cfg: GitConfig, defined: ReadonlySet<string>): { key: string; file: string }[] {
+function handledElsewhere(needs: DetectedNeeds): Set<string> {
+  if (needs.manifest) return new Set(Object.keys(needs.manifest.env ?? {}));
+  return new Set((needs.mail?.vars ?? []).map((v) => v.name));
+}
+
+/**
+ * Lo que el `.env` del repositorio dejó sin valor en el último despliegue
+ * (`envImport.pending`) y sigue sin cubrir AHORA. El informe es una foto del
+ * despliegue, y la pestaña Variables y el asistente lo seguían dando por
+ * pendiente aunque después se hubiera definido como variable compartida, lo
+ * pusiera Skyway sola o ya lo propusieran el correo o el manifiesto.
+ */
+export function repoPendingOf(service: ServiceRow): { key: string; file: string }[] {
+  if (service.type !== 'git') return [];
+  const cfg = service.config as GitConfig;
   const pending = cfg.envImport?.pending ?? [];
   if (pending.length === 0) return [];
-  const elsewhere = new Set<string>([
-    ...Object.keys(cfg.needs?.manifest?.env ?? {}),
-    ...(cfg.needs?.mail?.vars ?? []).map((v) => v.name),
+  const covered = new Set([
+    ...Object.keys(getProjectVars(service.project_id)),
+    ...Object.keys(getEnv(service.id)),
+    // Las de sistema que este servicio tiene de verdad: sin dominio no hay `PUBLIC_URL`.
+    ...Object.keys(systemVars(service)),
   ]);
-  return pending.filter((p) => !defined.has(p.key) && !AUTO_COVERED_RE.test(p.key) && !elsewhere.has(p.key));
+  const elsewhere = cfg.needs ? handledElsewhere(cfg.needs) : new Set<string>();
+  return pending.filter(
+    (p) => !covered.has(p.key) && !isReservedKey(p.key) && !SKYWAY_INJECTED_RE.test(p.key) && !elsewhere.has(p.key),
+  );
 }
 
 /** Propuestas para un servicio que ya existe: lo detectado en su último despliegue contra lo que tiene guardado. */
 export function adviseEnv(service: ServiceRow, references: ReferenceGroup[]): EnvAdvice {
   if (service.type !== 'git') return NO_ADVICE;
   const cfg = service.config as GitConfig;
-  const defined = new Set([...Object.keys(getProjectVars(service.project_id)), ...Object.keys(getEnv(service.id))]);
-  return {
-    ...adviseNeeds(cfg.needs, { serviceName: service.name, domains: cfg.domains ?? [], defined }, references),
-    repoPending: pendingFromRepo(cfg, defined),
-  };
+  return adviseNeeds(
+    cfg.needs,
+    {
+      serviceName: service.name,
+      domains: cfg.domains ?? [],
+      defined: new Set([...Object.keys(getProjectVars(service.project_id)), ...Object.keys(getEnv(service.id))]),
+    },
+    references,
+  );
 }
 
 /**
@@ -750,13 +772,10 @@ export function adviseNeeds(needs: DetectedNeeds | null | undefined, target: Adv
   const suggestions: EnvSuggestion[] = [];
   const missing: string[] = [];
   const covered = new Set<string>();
-  // Lo que declara el manifiesto lo resuelve el plan de integraciones, y las
-  // variables de correo, la conexión con el correo: proponerlas aquí también
-  // sería decir lo mismo dos veces (y con otra referencia).
-  const handledElsewhere = new Set<string>([
-    ...Object.keys(needs.manifest?.env ?? {}),
-    ...(needs.mail?.vars ?? []).map((v) => v.name),
-  ]);
+  // Lo que declara el manifiesto lo resuelve el plan de integraciones y, sin
+  // manifiesto, las variables de correo la conexión con el correo: proponerlas
+  // aquí también sería decir lo mismo dos veces (y con otra referencia).
+  const elsewhere = handledElsewhere(needs);
   const propose = (key: string, engine: Engine, role: Role, reason: string): boolean => {
     const refVar = getTemplate(engine)?.conn[role];
     if (!refVar) return false;
@@ -775,7 +794,7 @@ export function adviseNeeds(needs: DetectedNeeds | null | undefined, target: Adv
   };
 
   for (const v of needs.expectedVars) {
-    if (defined.has(v) || AUTO_COVERED_RE.test(v) || handledElsewhere.has(v)) continue;
+    if (defined.has(v) || AUTO_COVERED_RE.test(v) || elsewhere.has(v)) continue;
     const hit = VAR_PATTERNS.find((p) => p.re.test(v));
     if (hit) {
       const engine = hit.engine === 'sql' ? sqlEngine : hit.engine;
@@ -810,7 +829,7 @@ export function adviseNeeds(needs: DetectedNeeds | null | undefined, target: Adv
     const template = getTemplate(engine);
     if (!template) continue;
     for (const key of template.conn.connect) {
-      if (defined.has(key) || handledElsewhere.has(key)) continue;
+      if (defined.has(key) || elsewhere.has(key)) continue;
       const role = (Object.entries(template.conn) as [string, unknown][]).find(([r, name]) => r !== 'connect' && name === key)?.[0] as
         | Role
         | undefined;
@@ -828,7 +847,5 @@ export function adviseNeeds(needs: DetectedNeeds | null | undefined, target: Adv
     missing,
     mail: needs.mail ?? null,
     manifest: needs.manifestFile ? { file: needs.manifestFile, error: needs.manifestError ?? null } : null,
-    // Sin despliegue no hay informe de importación: lo pendiente lo añade `adviseEnv`.
-    repoPending: [],
   };
 }

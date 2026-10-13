@@ -36,62 +36,88 @@ afterAll(async () => {
 });
 
 describe('GET /api/services/:id/env · repoPending', () => {
-  it('quita lo ya definido, lo que pone Skyway y lo que proponen el correo o el manifiesto', async () => {
-    const p = createProject('Bot', 'bot');
-    const pending = [
-      'DISCORD_TOKEN',
-      'API_SECRET',
-      'SENTRY_DSN',
-      'PUBLIC_URL',
-      'PORT',
-      'SMTP_HOST',
-      'STRIPE_KEY',
-      'SKYWAY_SERVICE',
-      'SKYWAY_CONNECT_URL',
-    ];
-    const s = createService(p.id, 'bot', 'bot', 'git', {
-      repoUrl: 'https://github.com/acme/bot',
-      branch: 'main',
-      port: 3000,
-      domains: [],
-      webhookSecret: 'x',
+  const report = (keys: string[]) => ({
+    files: ['.env.example'],
+    imported: [],
+    pending: keys.map((key) => ({ key, file: '.env.example' })),
+    skipped: [],
+    at: Date.now(),
+    applied: false,
+    handled: keys,
+    source: 'deploy',
+  });
+  const git = (extra: Record<string, unknown>) => ({
+    repoUrl: 'https://github.com/acme/bot',
+    branch: 'main',
+    port: 3000,
+    webhookSecret: 'x',
+    ...extra,
+  });
+  const repoPending = async (serviceId: string) => {
+    const r = await app.inject({ method: 'GET', url: `/api/services/${serviceId}/env`, headers: { cookie } });
+    expect(r.statusCode).toBe(200);
+    return (r.json().repoPending as { key: string }[]).map((p) => p.key);
+  };
+
+  it('quita lo definido (propio o compartido), lo que pone Skyway y lo que propone el correo', async () => {
+    const p = createProject('Web', 'web');
+    const s = createService(p.id, 'web', 'web', 'git', {
+      ...git({ domains: ['web.example.com'] }),
       needs: {
         engines: [],
         expectedVars: [],
         envFile: '.env.example',
         sources: ['.env.example'],
         mail: { mode: 'smtp', vars: [{ name: 'SMTP_HOST', role: 'host' }], evidence: ['nodemailer'] },
-        manifest: { version: 1, env: { STRIPE_KEY: { secret: true } } },
       },
-      envImport: {
-        files: ['.env.example'],
-        imported: [],
-        pending: pending.map((key) => ({ key, file: '.env.example' })),
-        skipped: [],
-        at: Date.now(),
-        applied: false,
-        handled: pending,
-        source: 'deploy',
-      },
+      envImport: report([
+        'DISCORD_TOKEN',
+        'API_SECRET',
+        'SENTRY_DSN',
+        'PUBLIC_URL',
+        'SMTP_HOST',
+        'SKYWAY_SERVICE',
+        'SKYWAY_CONNECT_URL',
+        'HOST',
+      ]),
     } as any);
     // Una propia del servicio y otra compartida del proyecto, añadidas después del despliegue.
     setEnv(s.id, { API_SECRET: 'x' });
     setProjectVars(p.id, { SENTRY_DSN: 'https://sentry.example' });
+    // Las SKYWAY_* que pone Skyway no; las de la aplicación (Skyway webtools) sí. HOST no la pone Skyway.
+    expect(await repoPending(s.id)).toEqual(['DISCORD_TOKEN', 'SKYWAY_CONNECT_URL', 'HOST']);
+  });
 
-    const r = await app.inject({ method: 'GET', url: `/api/services/${s.id}/env`, headers: { cookie } });
-    expect(r.statusCode).toBe(200);
-    // Las SKYWAY_* que pone Skyway no; las de la aplicación (Skyway webtools) sí.
-    expect(r.json().repoPending).toEqual([
-      { key: 'DISCORD_TOKEN', file: '.env.example' },
-      { key: 'SKYWAY_CONNECT_URL', file: '.env.example' },
-    ]);
+  it('sin dominio no hay PUBLIC_URL de sistema: se sigue proponiendo', async () => {
+    const p = createProject('Bot', 'bot');
+    const s = createService(p.id, 'bot', 'bot', 'git', {
+      ...git({ domains: [] }),
+      envImport: report(['PUBLIC_URL', 'INTERNAL_HOST']),
+    } as any);
+    expect(await repoPending(s.id)).toEqual(['PUBLIC_URL']);
+  });
+
+  it('con un skyway.json válido, las de correo que no declara se proponen', async () => {
+    const p = createProject('Tienda', 'tienda');
+    const s = createService(p.id, 'tienda', 'tienda', 'git', {
+      ...git({ domains: [] }),
+      needs: {
+        engines: [],
+        expectedVars: [],
+        envFile: '.env.example',
+        sources: ['.env.example', 'skyway.json'],
+        mail: { mode: 'smtp', vars: [{ name: 'SMTP_HOST', role: 'host' }], evidence: ['nodemailer'] },
+        manifest: { version: 1, env: { STRIPE_KEY: { generate: { bytes: 32 } } } },
+        manifestFile: 'skyway.json',
+      },
+      envImport: report(['STRIPE_KEY', 'SMTP_HOST']),
+    } as any);
+    expect(await repoPending(s.id)).toEqual(['SMTP_HOST']);
   });
 
   it('un servicio que no es de repositorio no tiene pendientes', async () => {
     const p = createProject('Datos', 'datos');
     const s = createService(p.id, 'cache', 'cache', 'database', { template: 'redis' } as any);
-    const r = await app.inject({ method: 'GET', url: `/api/services/${s.id}/env`, headers: { cookie } });
-    expect(r.statusCode).toBe(200);
-    expect(r.json().repoPending).toEqual([]);
+    expect(await repoPending(s.id)).toEqual([]);
   });
 });
