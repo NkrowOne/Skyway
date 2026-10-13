@@ -74,7 +74,7 @@ import { dockerSnapshot, invalidateDockerSnapshot, runtimeIn, Snapshot } from '.
 import { triggerDeploy } from '../deploy/deployer';
 import { getTemplate, templateList } from '../templates';
 import { applyPlan, applyPlanFromRepo, ApplyResult, PlanChangedError, planWithMail } from '../integrations';
-import { adviseEnv } from '../needs';
+import { adviseEnv, repoPendingOf } from '../needs';
 import { availableReferences, resolveServiceEnv } from '../variables';
 import { DatabaseConfig, GitConfig, ImageConfig, ProjectRow, ServiceConfig, ServiceRow } from '../types';
 import { randomToken, VISIBLE_NAME_ERROR, VISIBLE_NAME_RE } from '../util';
@@ -1188,6 +1188,7 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
       references,
       // Lo que el repositorio necesita y aún no tiene, como propuestas de un clic.
       ...adviseEnv(found.service, references),
+      repoPending: repoPendingOf(found.service),
     };
   });
 

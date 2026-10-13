@@ -261,6 +261,12 @@ interface EnvResponse {
   mail?: { mode: 'smtp' | 'api'; vars: { name: string; role: string }[]; evidence: string[] } | null;
   /** skyway.json del repositorio (si lo hay): manda sobre la detección. */
   manifest?: { file: string; error: string | null } | null;
+  /**
+   * Lo que el .env del repositorio dejó sin valor en el último despliegue y
+   * sigue sin cubrir: sin lo ya definido (también compartido), lo que pone
+   * Skyway sola y lo que proponen el correo o el manifiesto.
+   */
+  repoPending?: { key: string; file: string }[];
 }
 
 interface Row {
@@ -302,11 +308,12 @@ const rowsFromVars = (vars: Record<string, string>): Row[] =>
     .map(([key, value]) => ({ id: `k:${key}`, key, value, keepCase: hasLowercase(key) }));
 
 /** Variables típicas que casi toda app necesita, para añadirlas en un clic. */
+// PORT no está: Skyway la pone sola con el puerto interno del servicio, y
+// proponer 3000 a mano la desviaba en cuanto el puerto era otro.
 const SUGGESTED_VARS: { key: string; value: string; hint: string }[] = [
   { key: 'NODE_ENV', value: 'production', hint: 'Modo de ejecución para apps Node' },
   { key: 'TZ', value: 'Europe/Madrid', hint: 'Zona horaria del contenedor' },
   { key: 'LOG_LEVEL', value: 'info', hint: 'Nivel de registro de la aplicación' },
-  { key: 'PORT', value: '3000', hint: 'Puerto de escucha de la aplicación' },
 ];
 
 /**
@@ -618,8 +625,9 @@ export default function VariablesTab({
   const [searchQuery, setSearchQuery] = useState('');
   const [dirty, setDirty] = useState(false);
   const [copiedAll, setCopiedAll] = useState(false);
-  // null mientras no se toque: la lista se abre sola si el repositorio espera algo.
-  const [suggestOpenPref, setSuggestOpenPref] = useState<boolean | null>(null);
+  // Plegada siempre al entrar: el contador de la cabecera ya dice si hay algo,
+  // y abierta empujaba la tabla de variables fuera de la pantalla.
+  const [suggestOpen, setSuggestOpen] = useState(false);
   const suggestPanelId = useId();
   const keyInputRefs = useRef<Map<string, HTMLInputElement>>(new Map());
   const valueInputRefs = useRef<Map<string, HTMLInputElement>>(new Map());
@@ -776,13 +784,10 @@ export default function VariablesTab({
 
   /**
    * Añade una sugerencia (o todas las referencias a la vez, que llevan valor). Sin
-   * valor, el cursor queda en su campo para introducirlo. La lista se fija
-   * abierta: si no, al añadir la última del repositorio se plegaría sola
-   * debajo del dedo.
+   * valor, el cursor queda en su campo para introducirlo.
    */
   const addSuggested = (entries: { key: string; value: string }[]) => {
     if (entries.length === 0) return;
-    setSuggestOpenPref((open) => open ?? true);
     const [first] = appendVars(entries);
     const [entry] = entries;
     if (entries.length === 1 && !entry.value && first) setTimeout(() => valueInputRefs.current.get(first.id)?.focus(), 50);
@@ -1108,29 +1113,37 @@ export default function VariablesTab({
   }, [rows, searchQuery]);
 
   /*
-   * Claves que el .env del repositorio trae sin valor y que aquí siguen sin
-   * existir. Se filtran contra las filas, no contra el informe: en cuanto se
-   * añade la fila deja de proponerse, aunque el informe siga igual hasta el
-   * próximo despliegue.
+   * Lo que ya está cubierto y no se vuelve a proponer: lo que hay en pantalla
+   * (también lo añadido sin guardar, para que desaparezca en vivo) y las
+   * variables compartidas del proyecto, que el servicio recibe igual.
+   */
+  const coveredKeys = useMemo(() => {
+    const keys = new Set(presentKeys);
+    for (const k of references.find((g) => g.service === 'shared')?.vars ?? EMPTY_LIST) keys.add(k);
+    return keys;
+  }, [presentKeys, references]);
+
+  /*
+   * Claves que el .env del repositorio trae sin valor y que siguen sin
+   * existir. El servidor las cruza con lo guardado y lo que Skyway cubre sola
+   * (`repoPending`); aquí, además, con lo que hay en pantalla.
    */
   const isGit = serviceType === 'git';
   const pendingFromRepo = useMemo(() => {
-    if (!isGit || !envImport?.pending?.length) return EMPTY_LIST as { key: string; file: string }[];
-    return envImport.pending.filter((p) => !presentKeys.has(p.key));
-  }, [isGit, envImport, presentKeys]);
+    // Sin respuesta todavía, nada: el informe crudo traería justo lo repetido.
+    const pending = env.data?.repoPending ?? EMPTY_LIST;
+    if (!isGit || pending.length === 0) return EMPTY_LIST as { key: string; file: string }[];
+    return pending.filter((p) => !coveredKeys.has(p.key));
+  }, [isGit, env.data, coveredKeys]);
 
-  /*
-   * Dependencias detectadas en el repo: sugerencias y variables que faltan.
-   * Se comparan contra lo que hay en pantalla (no contra lo guardado) para que
-   * desaparezcan en vivo según se van añadiendo, antes incluso de guardar.
-   */
+  // Dependencias detectadas en el repo: sugerencias y variables que faltan.
   const pendingSuggestions = useMemo(
-    () => (env.data?.suggestions ?? EMPTY_LIST).filter((s) => !presentKeys.has(s.key)),
-    [env.data, presentKeys],
+    () => (env.data?.suggestions ?? EMPTY_LIST).filter((s) => !coveredKeys.has(s.key)),
+    [env.data, coveredKeys],
   );
   const pendingMissing = useMemo(
-    () => (env.data?.missing ?? EMPTY_LIST).filter((k) => !presentKeys.has(k)),
-    [env.data, presentKeys],
+    () => (env.data?.missing ?? EMPTY_LIST).filter((k) => !coveredKeys.has(k)),
+    [env.data, coveredKeys],
   );
   const pendingWithValue = useMemo(() => pendingSuggestions.filter((s) => s.value !== null), [pendingSuggestions]);
 
@@ -1163,16 +1176,14 @@ export default function VariablesTab({
     return Array.from(out, ([key, detail]) => ({ key, detail }));
   }, [pendingFromRepo, pendingMissing, pendingSuggestions]);
 
-  // Las habituales (NODE_ENV, PORT…) que falten y que el repositorio no proponga ya.
+  // Las habituales (NODE_ENV, TZ…) que falten y que el repositorio no proponga ya.
   const commonPending = useMemo(() => {
     const fromRepo = new Set([...pendingSuggestions.map((s) => s.key), ...pendingEmpty.map((p) => p.key)]);
-    return SUGGESTED_VARS.filter((s) => !presentKeys.has(s.key) && !fromRepo.has(s.key));
-  }, [presentKeys, pendingSuggestions, pendingEmpty]);
+    return SUGGESTED_VARS.filter((s) => !coveredKeys.has(s.key) && !fromRepo.has(s.key));
+  }, [coveredKeys, pendingSuggestions, pendingEmpty]);
 
   const repoSuggestCount = pendingWithValue.length + pendingGroups.reduce((n, g) => n + g.length, 0) + pendingEmpty.length;
   const suggestCount = repoSuggestCount + commonPending.length;
-  // Plegada por defecto; abierta si el repositorio espera algo, hasta que se pliegue a mano.
-  const suggestOpen = suggestOpenPref ?? repoSuggestCount > 0;
 
   // Variables de correo que la web espera y todavía no existen (las escribe «Correo → Conectar»).
   // Con un skyway.json válido, el correo lo lleva su plan (panel de integraciones).
@@ -1180,8 +1191,8 @@ export default function VariablesTab({
     () =>
       env.data?.manifest && !env.data.manifest.error
         ? (EMPTY_LIST as string[])
-        : (env.data?.mail?.vars ?? EMPTY_LIST).map((v) => v.name).filter((k) => !rows.some((r) => r.key.trim() === k)),
-    [env.data, rows],
+        : (env.data?.mail?.vars ?? EMPTY_LIST).map((v) => v.name).filter((k) => !coveredKeys.has(k)),
+    [env.data, coveredKeys],
   );
 
   // Crea la base de datos del grupo y, con la respuesta, conecta de golpe
@@ -1373,7 +1384,7 @@ export default function VariablesTab({
           >
             <button
               type="button"
-              onClick={() => setSuggestOpenPref(!suggestOpen)}
+              onClick={() => setSuggestOpen((o) => !o)}
               aria-expanded={suggestOpen}
               aria-controls={suggestPanelId}
               className={cx(
