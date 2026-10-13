@@ -38,7 +38,17 @@ afterAll(async () => {
 describe('GET /api/services/:id/env · repoPending', () => {
   it('quita lo ya definido, lo que pone Skyway y lo que proponen el correo o el manifiesto', async () => {
     const p = createProject('Bot', 'bot');
-    const pending = ['DISCORD_TOKEN', 'API_SECRET', 'SENTRY_DSN', 'PUBLIC_URL', 'PORT', 'SMTP_HOST', 'STRIPE_KEY'];
+    const pending = [
+      'DISCORD_TOKEN',
+      'API_SECRET',
+      'SENTRY_DSN',
+      'PUBLIC_URL',
+      'PORT',
+      'SMTP_HOST',
+      'STRIPE_KEY',
+      'SKYWAY_SERVICE',
+      'SKYWAY_CONNECT_URL',
+    ];
     const s = createService(p.id, 'bot', 'bot', 'git', {
       repoUrl: 'https://github.com/acme/bot',
       branch: 'main',
@@ -70,7 +80,11 @@ describe('GET /api/services/:id/env · repoPending', () => {
 
     const r = await app.inject({ method: 'GET', url: `/api/services/${s.id}/env`, headers: { cookie } });
     expect(r.statusCode).toBe(200);
-    expect(r.json().repoPending).toEqual([{ key: 'DISCORD_TOKEN', file: '.env.example' }]);
+    // Las SKYWAY_* que pone Skyway no; las de la aplicación (Skyway webtools) sí.
+    expect(r.json().repoPending).toEqual([
+      { key: 'DISCORD_TOKEN', file: '.env.example' },
+      { key: 'SKYWAY_CONNECT_URL', file: '.env.example' },
+    ]);
   });
 
   it('un servicio que no es de repositorio no tiene pendientes', async () => {

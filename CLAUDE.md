@@ -13,7 +13,10 @@ manifiesto `skyway.json` de las webs (plan de integraciones con bases y correo)
 está en **[docs/MANIFIESTO.md](docs/MANIFIESTO.md)**. El asistente «Cambiar de
 dominio» (web, variables y correo de Mailway; redirecciones y prepublicación en
 el proveedor HTTP de Traefik) está en
-**[docs/FUNCIONALIDAD.md](docs/FUNCIONALIDAD.md) §6.1**.
+**[docs/FUNCIONALIDAD.md](docs/FUNCIONALIDAD.md) §6.1**. Para configurar y
+desplegar bots, aplicaciones y webs (desde un repositorio o por la API), con la
+integración opcional de Skyway webtools, la guía para agentes es
+**[docs/DESPLIEGUE-IA.md](docs/DESPLIEGUE-IA.md)**.
 
 ## Qué es
 

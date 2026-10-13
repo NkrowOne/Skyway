@@ -292,8 +292,16 @@ const VAR_PATTERNS: { re: RegExp; engine: Engine | 'sql'; role: Role }[] = [
 const PUBLIC_URL_RE =
   /^(?:(?:PUBLIC|APP|BASE|SITE|WEB|FRONTEND|SERVER|HOST|NEXTAUTH|NEXT_PUBLIC_(?:SITE|APP|BASE)|AUTH)_?URL|(?:APP_)?ORIGIN)$/;
 
-/** Las pone Skyway en cada despliegue: que el .env.example las nombre no es una carencia. */
-const AUTO_COVERED_RE = /^(?:PORT|HOST|HOSTNAME|NODE_ENV|TZ|PUBLIC_URL|PUBLIC_DOMAIN|INTERNAL_(?:HOST|PORT|URL)|RAILWAY_.*|SKYWAY_.*)$/;
+/**
+ * Lo que no se propone aunque el .env.example lo nombre: lo pone Skyway en
+ * cada despliegue (puerto, direcciones, equivalentes de Railway y sus propias
+ * `SKYWAY_*`) o lo suele fijar la imagen (`HOST`, `HOSTNAME`, `NODE_ENV`, `TZ`;
+ * Skyway no las pone). El resto de `SKYWAY_*` sí se propone: son de la
+ * aplicación, como las de Skyway webtools (`SKYWAY_CONNECT_URL`…), y antes se
+ * daban por cubiertas sin estarlo.
+ */
+const AUTO_COVERED_RE =
+  /^(?:PORT|HOST|HOSTNAME|NODE_ENV|TZ|PUBLIC_URL|PUBLIC_DOMAIN|INTERNAL_(?:HOST|PORT|URL)|RAILWAY_.*|SKYWAY_(?:PROJECT|SERVICE|DEPLOYMENT|INSTANCE_ID|REPLICA|REPLICAS|VALIDATION))$/;
 
 const ENV_KEY_RE = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/;
 
