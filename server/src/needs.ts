@@ -676,9 +676,14 @@ export interface EnvAdvice {
   mail: { mode: 'smtp' | 'api'; vars: { name: string; role: string }[]; evidence: string[] } | null;
   /** `skyway.json` del repositorio: su fichero y, si no es válido, el motivo. */
   manifest: { file: string; error: string | null } | null;
+  /**
+   * Lo que el `.env` del repositorio dejó sin valor en el último despliegue y
+   * que ahora sigue sin cubrir (ver `pendingFromRepo`).
+   */
+  repoPending: { key: string; file: string }[];
 }
 
-const NO_ADVICE: EnvAdvice = { needs: null, suggestions: [], missing: [], mail: null, manifest: null };
+const NO_ADVICE: EnvAdvice = { needs: null, suggestions: [], missing: [], mail: null, manifest: null, repoPending: [] };
 
 /** A quién se aconseja: basta con lo que cambia las propuestas, exista ya el servicio o no. */
 export interface AdviceTarget {
@@ -689,19 +694,32 @@ export interface AdviceTarget {
   defined: Set<string>;
 }
 
+/**
+ * Lo pendiente del `.env` del repositorio que sigue sin cubrir AHORA. El
+ * informe de importación es una foto del último despliegue, y la pestaña lo
+ * seguía proponiendo aunque después se hubiera añadido como variable
+ * compartida del proyecto, aunque lo pusiera Skyway sola (`PUBLIC_URL`,
+ * `PORT`…) o aunque ya lo propusieran el correo o el plan del manifiesto.
+ */
+function pendingFromRepo(cfg: GitConfig, defined: ReadonlySet<string>): { key: string; file: string }[] {
+  const pending = cfg.envImport?.pending ?? [];
+  if (pending.length === 0) return [];
+  const elsewhere = new Set<string>([
+    ...Object.keys(cfg.needs?.manifest?.env ?? {}),
+    ...(cfg.needs?.mail?.vars ?? []).map((v) => v.name),
+  ]);
+  return pending.filter((p) => !defined.has(p.key) && !AUTO_COVERED_RE.test(p.key) && !elsewhere.has(p.key));
+}
+
 /** Propuestas para un servicio que ya existe: lo detectado en su último despliegue contra lo que tiene guardado. */
 export function adviseEnv(service: ServiceRow, references: ReferenceGroup[]): EnvAdvice {
   if (service.type !== 'git') return NO_ADVICE;
   const cfg = service.config as GitConfig;
-  return adviseNeeds(
-    cfg.needs,
-    {
-      serviceName: service.name,
-      domains: cfg.domains ?? [],
-      defined: new Set([...Object.keys(getProjectVars(service.project_id)), ...Object.keys(getEnv(service.id))]),
-    },
-    references,
-  );
+  const defined = new Set([...Object.keys(getProjectVars(service.project_id)), ...Object.keys(getEnv(service.id))]);
+  return {
+    ...adviseNeeds(cfg.needs, { serviceName: service.name, domains: cfg.domains ?? [], defined }, references),
+    repoPending: pendingFromRepo(cfg, defined),
+  };
 }
 
 /**
@@ -802,5 +820,7 @@ export function adviseNeeds(needs: DetectedNeeds | null | undefined, target: Adv
     missing,
     mail: needs.mail ?? null,
     manifest: needs.manifestFile ? { file: needs.manifestFile, error: needs.manifestError ?? null } : null,
+    // Sin despliegue no hay informe de importación: lo pendiente lo añade `adviseEnv`.
+    repoPending: [],
   };
 }

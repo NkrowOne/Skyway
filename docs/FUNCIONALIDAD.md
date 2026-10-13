@@ -1368,8 +1368,14 @@ entrada si el repositorio espera algo): cada sugerencia con su «Añadir» propi
 —las que no tienen valor añaden solo esa fila, con el cursor en el valor; nunca
 se añade un lote de variables vacías—, «Añadir las N referencias» cuando hay
 varias con valor real, «Crear <motor> y conectar» (crea la base en el proyecto y
-añade sus referencias) y unas habituales (`NODE_ENV`, `TZ`, `LOG_LEVEL`,
-`PORT`). Los **nombres nuevos se escriben en mayúsculas** al teclear, pegar o
+añade sus referencias) y unas habituales (`NODE_ENV`, `TZ`, `LOG_LEVEL`; `PORT`
+no, porque Skyway la pone sola con el puerto interno). **No se propone lo que
+ya está cubierto**: lo que hay en la tabla (también sin guardar), las variables
+compartidas del proyecto, las que pone Skyway (`PUBLIC_URL`, `PORT`,
+`RAILWAY_*`…) y las que ya proponen la conexión con el correo o el plan del
+manifiesto. Lo que el `.env` del repositorio dejó sin valor se guarda al
+desplegar, pero el servidor lo vuelve a cruzar en cada consulta (`repoPending`)
+con lo que existe en ese momento. Los **nombres nuevos se escriben en mayúsculas** al teclear, pegar o
 editar el texto `.env` (solo lo que va antes del `=`); los que ya existen, o los
 que el repositorio espera con minúsculas, se respetan tal cual. Nada de esto
 escribe una variable por su cuenta: todo se propone y se aplica al guardar y
@@ -2522,7 +2528,7 @@ devuelve, y solo se usa para listar repos y clonar. Todo queda auditado
 | DELETE | `/services/:id?confirm=<nombre>` | +access | elimina el servicio con **todos sus datos** (§3.1), salvo los volúmenes que comparta con otro servicio del proyecto; `confirm` (nombre o slug), 503 y los dos 409 como en proyectos → `{ok, warnings, removed: {volumes[], images, backups}}` |
 | POST | `/services/:id/deploy` | +access | dispara despliegue manual (`{force: true}` recompila sin reutilizar imagen; `{commit: <SHA de 40>}` reconstruye ese commit, solo git) |
 | POST | `/services/:id/{start,stop,restart}` | +access | acciones sobre el contenedor. Si el servicio no tiene un despliegue en cola o en marcha, antes retiran (o devuelven a su nombre) los restos de intercambios `--next`/`--prev` con parada limpia (un error ahí se registra y no impide la acción). `stop` detiene todas las réplicas en paralelo con parada limpia (comando al parar, SIGTERM y la gracia, después SIGKILL; §2), archiva su registro después de pararlas y responde además `forced: string[]`, las copias que no terminaron con SIGTERM a tiempo y se detuvieron con SIGKILL (el panel lo avisa). `restart` detiene a la vez todas las copias con la misma parada limpia y vuelve a arrancar cada contenedor (el mismo: conserva su identidad, §2), y también responde `forced`. Las dos responden cuando termina la parada: con un comando al parar y una gracia largos puede tardar hasta el doble de la gracia. Si un proxy corta antes la conexión (el de Cloudflare espera 100 s), la parada sigue en el servidor hasta el final; el estado se ve al recargar |
-| GET | `/services/:id/env` | +access | variables (crudas, resueltas, referencias con `vars`/`auto`/`connect`) y propuestas de la detección de dependencias (`needs`, `suggestions`, `missing`, `mail`, `manifest`, §5.5) |
+| GET | `/services/:id/env` | +access | variables (crudas, resueltas, referencias con `vars`/`auto`/`connect`) y propuestas de la detección de dependencias (`needs`, `suggestions`, `missing`, `mail`, `manifest`, §5.5), más `repoPending`: lo que el `.env` del repositorio dejó sin valor en el último despliegue y sigue sin cubrir (sin lo definido en el servicio o compartido, lo que pone Skyway y lo que proponen el correo o el manifiesto) |
 | GET | `/services/:id/integrations` | +access | plan de integraciones del servicio sin efectos (§5.7) → `{plan, pending}`; `plan` null si no es de repositorio. `plan.fingerprint` es la huella que exige aprobar; cada recurso trae `canApprove` y `confirmation` |
 | POST | `/services/:id/integrations/apply` | +access | `{skip?, expect?, confirmMailboxAccess?, redeploy?}` → `{result: {applied, pending, kept, blocked, created, errors}, plan, needsRedeploy, deploymentId}`. Lo inofensivo lo aplica cualquiera con acceso; las bases también; el correo solo **manage** (si no, `pending`). Lo privilegiado exige `expect` = `plan.fingerprint` del plan revisado (sin él, `pending`; si no coincide, **409** `{error, plan}` sin aplicar nada); reutilizar en SMTP un buzón existente exige además `confirmMailboxAccess`. Nunca pisa variables puestas a mano. 409 si ya se está aplicando. 10/min. Audita `service_integrations_applied` (nombres, nunca valores) |
 | PUT | `/services/:id/env` | +access | reemplaza variables del servicio (la lista entera) |
