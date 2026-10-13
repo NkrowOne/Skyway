@@ -1,0 +1,122 @@
+KIT DE COPIA DE SEGURIDAD
+=========================
+
+Este ZIP (kit-{{EJECUCION}}-{{ALCANCE}}.zip) es una copia de seguridad
+cifrada del servidor {{SERVIDOR}}, tal como estaba el {{FECHA}}.
+Sirve para recuperar la información aunque el servidor o el panel de Skyway
+dejen de funcionar.
+
+Contenido de esta copia:
+
+{{CONTENIDO}}
+
+
+QUÉ NECESITAS
+-------------
+- La contraseña de las copias, la que se definió al configurar las copias
+  externas. Los datos se cifran con ella (restic {{VERSION_RESTIC}}); sin esa
+  contraseña no se puede leer nada y no hay forma de recuperarla.
+- Nada más: el programa que descodifica va incluido en la carpeta «bin» para los
+  sistemas que figuran arriba en «Restic incluido para». Si falta el del tuyo,
+  consulta el apartado «Si algo falla».
+
+
+CÓMO GUARDARLO
+--------------
+- Guarda el ZIP en un sitio seguro y fuera del servidor, por ejemplo en un
+  disco externo o en un almacenamiento en la nube de tu confianza.
+- Guarda la contraseña de las copias en otro sitio distinto, por ejemplo en un
+  gestor de contraseñas. Quien tenga el ZIP y la contraseña puede leer todo su
+  contenido.
+
+
+CÓMO DESCODIFICARLO
+-------------------
+Windows 10 u 11
+  1. Descomprime el ZIP: clic derecho y «Extraer todo…». No abras nada desde
+     dentro del ZIP; primero hay que extraerlo.
+  2. Abre la carpeta extraída (dentro puede haber otra con el mismo nombre) y
+     haz doble clic en «descodificar.bat». Si Windows muestra un aviso de
+     seguridad, selecciona «Más información» y «Ejecutar de todas formas».
+  3. Escribe la contraseña de las copias y pulsa Intro. Se pide una sola vez y
+     al escribirla aparecen asteriscos.
+  4. Espera a que termine. Puede tardar varios minutos.
+
+macOS y Linux
+  1. Descomprime el ZIP.
+  2. Abre una terminal y ejecuta el script:
+       - En Linux, desde la carpeta extraída:  bash descodificar.sh
+       - En macOS, abre la aplicación Terminal, escribe «bash » (con un espacio
+         al final), arrastra el fichero descodificar.sh a la ventana y pulsa
+         Intro.
+  3. Escribe la contraseña de las copias y pulsa Intro. Se pide una sola vez y
+     no se muestra al escribirla.
+  4. Espera a que termine. Puede tardar varios minutos.
+
+Antes de empezar, comprueba que hay espacio libre suficiente: el contenido
+descodificado ocupa más que el ZIP.
+
+
+QUÉ APARECE EN LA CARPETA «descodificado»
+-----------------------------------------
+Al terminar, los ficheros quedan sin cifrar en la carpeta «descodificado», junto
+al script:
+
+  volumenes/   Datos de los volúmenes de cada servicio: los ficheros de las
+               aplicaciones y de las bases de datos.
+  volcados/    Volcados de las bases de datos (volcado.sql.gz): copias en SQL
+               comprimido que se pueden importar en una base de datos.
+  elementos/   Configuración (config/, con las variables de entorno), código
+               (codigo/) y manifiesto de la copia.
+  imagenes/    Imágenes de Docker (imagen.tar) de los servicios desplegados
+               desde un repositorio.
+
+Los ficheros descodificados ya no están cifrados y pueden contener contraseñas
+y claves. Guárdalos en un sitio seguro y elimina la carpeta «descodificado»
+cuando dejes de necesitarla.
+
+Aviso para Windows: algunos nombres de fichero de Linux (por ejemplo, los que
+contienen «:» u otros caracteres no permitidos en Windows) o los enlaces
+simbólicos pueden no restaurarse. Para una restauración completa, usa Linux o
+macOS.
+
+
+RESTAURAR TODO EN UN SERVIDOR NUEVO
+-----------------------------------
+Se hace en un servidor Linux nuevo y vacío, con acceso de administrador (root o
+sudo). Para recuperar todo el servidor hace falta un kit de alcance «todo»; los
+kits parciales (solo Skyway, solo el correo o un proyecto) sirven sobre todo
+para consultar sus datos en la carpeta «descodificado».
+
+  1. Copia el ZIP al servidor, por ejemplo a la carpeta /root, con scp o con un
+     programa como WinSCP o FileZilla.
+  2. Conéctate al servidor y extrae del ZIP el script de restauración:
+       unzip -j kit-{{EJECUCION}}-{{ALCANCE}}.zip '*/restaurar.sh'
+     Si el servidor no tiene «unzip», instálalo antes:  sudo apt install unzip
+  3. Ejecuta el script indicándole el kit:
+       sudo bash restaurar.sh --kit kit-{{EJECUCION}}-{{ALCANCE}}.zip
+     El script pregunta antes de instalar lo que falte (Docker, por ejemplo),
+     pide la contraseña de las copias y restaura todo lo que contiene el kit.
+
+Si el ZIP tiene otro nombre, escribe el nombre real en las órdenes. Si ya has
+descomprimido el kit en el servidor, también puedes ejecutar el script desde la
+carpeta descomprimida del kit (la que contiene la carpeta «repositorio»):
+       sudo bash restaurar.sh --kit .
+
+Después, comprueba que los dominios apuntan a la dirección IP del servidor
+nuevo.
+
+
+SI ALGO FALLA
+-------------
+- «La contraseña no es correcta»: comprueba que es la contraseña de las copias
+  y que está escrita exactamente igual, sin espacios de más.
+- «No se ha encontrado el programa restic»: descarga restic {{VERSION_RESTIC}}
+  de https://github.com/restic/restic/releases y guárdalo en la carpeta «bin»
+  con el nombre que indica el mensaje.
+- macOS no permite abrir el programa de la carpeta «bin»: en Ajustes del
+  Sistema > Privacidad y seguridad, selecciona «Permitir de todos modos» y
+  vuelve a ejecutar el script.
+- Uso manual de restic (usuarios avanzados), desde la carpeta del kit:
+       restic -r repositorio snapshots
+       restic -r repositorio restore ID --target descodificado

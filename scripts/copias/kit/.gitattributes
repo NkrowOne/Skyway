@@ -1,0 +1,6 @@
+# Fin de línea fijo en cada sistema: cmd y PowerShell de Windows esperan CRLF en
+# el .bat y el .ps1, y bash falla con CRLF en los .sh. Así no depende de la
+# configuración de git (core.autocrlf) de quien clone el repositorio.
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+*.sh  text eol=lf

@@ -2,6 +2,7 @@ import { aiPricesTick } from './aiprices';
 import { auditSystem } from './audit';
 import { fireAlert, resolveServiceAlerts } from './alerts';
 import { billingAutomationTick } from './billingauto';
+import { comprobarCopiasExternas } from './copiasexternas';
 import { backupSupported, createBackup, deleteBackup, listBackups } from './backups';
 import { listProjects, listServicesForProjects, resolveAlertsByDedupe } from './db';
 import { dockerAvailable } from './docker/client';
@@ -67,6 +68,14 @@ async function tick(log: { warn: (msg: string) => void }): Promise<void> {
     billingAutomationTick(nowDate);
   } catch {
     /* aislado: un fallo de facturación no debe tumbar el resto del tick */
+  }
+  try {
+    // Copias externas que se atrasan o fallan: solo lee los ficheros que deja el
+    // host (no depende de Docker), y precisamente cuando algo va mal en el
+    // servidor es cuando más importa enterarse.
+    comprobarCopiasExternas(nowDate);
+  } catch (err: any) {
+    log.warn(`Copias externas: ${err?.message || err}`);
   }
   try {
     // Tarifa de Gemini al día (una vez al día): el margen se calcula sobre el

@@ -8,9 +8,10 @@
  *
  * El token se guarda en `settings` como el resto de secretos del panel (el de
  * GitHub, el de Mailway) y JAMÁS se devuelve, se registra ni se audita: fuera
- * de aquí solo sale su pista (los últimos 4 caracteres). Lo usa únicamente el
- * DNS automático (`cloudflaredns.ts`), y solo en peticiones de un
- * administrador.
+ * de aquí solo sale su pista (los últimos 4 caracteres). Lo usan el DNS
+ * automático (`cloudflaredns.ts`), solo en peticiones de un administrador, y
+ * el cambio de IP tras restaurar las copias externas en otro servidor
+ * (`tools/copias.ts repuntar`), que solo se ejecuta desde la terminal.
  */
 import { z } from 'zod';
 import { CloudflareClient, CloudflareError, URL_CREAR_TOKEN, pistaToken } from './cloudflare';
@@ -67,7 +68,7 @@ export function validarFormatoToken(token: string): string {
   return limpio;
 }
 
-/** Token guardado. Solo para el DNS automático: nunca sale del servidor. */
+/** Token guardado. Solo para el DNS automático y el cambio de IP tras restaurar: nunca sale del servidor. */
 export function tokenCloudflareGuardado(): string | null {
   return getSetting(CLOUDFLARE_SETTING.token) || null;
 }

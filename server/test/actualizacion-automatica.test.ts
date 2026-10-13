@@ -487,6 +487,84 @@ describe('skyway update --auto', () => {
   });
 });
 
+/**
+ * Copias externas falsas (scripts/copias/copias.sh) en la copia del servidor:
+ * anotan cada llamada; «configuradas» responde según FALSO_COPIAS
+ * (configuradas si vale «si») y «copia» falla con FALSO_COPIA_FALLA.
+ */
+function conCopiasFalsas(): void {
+  const dir = path.join(servidor, 'scripts/copias');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, 'copias.sh'),
+    [
+      '#!/usr/bin/env bash',
+      'printf \'copias %s\\n\' "$*" >> "$FALSO_DIR/llamadas"',
+      'case "$1" in',
+      '  configuradas) [ "${FALSO_COPIAS:-}" = si ];;',
+      '  copia) if [ -n "${FALSO_COPIA_FALLA:-}" ]; then echo "fallo simulado de la copia" >&2; exit 1; fi;;',
+      '  *) echo "orden de copias: $*";;',
+      'esac',
+      '',
+    ].join('\n'),
+    { mode: 0o755 },
+  );
+}
+
+describe('skyway update y las copias externas', () => {
+  it('con las copias configuradas, hace una copia del panel antes de tocar nada', () => {
+    conCopiasFalsas();
+    publicar('0.2.0');
+    const r = skyway(['update', '--auto'], { FALSO_COPIAS: 'si' });
+    expect(r.code, r.salida).toBe(0);
+    expect(desplegada()).toBe('0.2.0');
+    const orden = llamadas().filter((l) => l.startsWith('copias copia') || l.startsWith('docker compose build'));
+    expect(orden).toEqual(['copias copia --alcance skyway --motivo antes-de-actualizar --auto', 'docker compose build']);
+    expect(r.salida).toMatch(/Copia previa hecha/);
+  });
+
+  it('sin una versión nueva no hace ninguna copia', () => {
+    conCopiasFalsas();
+    const r = skyway(['update', '--auto'], { FALSO_COPIAS: 'si' });
+    expect(r.code, r.salida).toBe(0);
+    expect(llamadas().some((l) => l.startsWith('copias'))).toBe(false);
+  });
+
+  it('si la copia previa falla, la actualización nocturna sigue y lo dice', () => {
+    conCopiasFalsas();
+    publicar('0.2.0');
+    const r = skyway(['update', '--auto'], { FALSO_COPIAS: 'si', FALSO_COPIA_FALLA: '1' });
+    expect(r.code, r.salida).toBe(0);
+    expect(desplegada()).toBe('0.2.0');
+    expect(r.salida).toMatch(/La copia previa ha fallado: se actualiza igualmente/);
+  });
+
+  it('a mano con -y, si la copia previa falla, también sigue', () => {
+    conCopiasFalsas();
+    publicar('0.2.0');
+    const r = skyway(['update', '-y'], { FALSO_COPIAS: 'si', FALSO_COPIA_FALLA: '1' });
+    expect(r.code, r.salida).toBe(0);
+    expect(desplegada()).toBe('0.2.0');
+  });
+
+  it('sin las copias configuradas, actualiza sin copia previa y lo dice', () => {
+    conCopiasFalsas();
+    publicar('0.2.0');
+    const r = skyway(['update', '--auto']);
+    expect(r.code, r.salida).toBe(0);
+    expect(llamadas()).toContain('copias configuradas');
+    expect(llamadas().some((l) => l.startsWith('copias copia'))).toBe(false);
+    expect(r.salida).toMatch(/Copias externas sin configurar: se actualiza sin copia previa/);
+  });
+
+  it('«skyway copias» pasa todo a scripts/copias/copias.sh, sin token ni API', () => {
+    conCopiasFalsas();
+    const r = skyway(['copias', 'lista', '--json']);
+    expect(r.code, r.salida).toBe(0);
+    expect(llamadas()).toEqual(['copias lista --json']);
+  });
+});
+
 describe('skyway auto-update', () => {
   const unidad = (ext: string) => path.join(systemdDir, `skyway-auto-update.${ext}`);
 

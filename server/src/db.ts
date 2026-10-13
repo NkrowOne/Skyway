@@ -2096,6 +2096,24 @@ export function lastSuccessfulImage(serviceId: string): string | null {
 }
 
 /**
+ * Último despliegue correcto con imagen (sin logs): el que corre en el
+ * servicio. Un despliegue en marcha, fallido o cancelado no lo sustituye. Lo
+ * usa el inventario de las copias externas (`tools/copias.ts`) para guardar la
+ * imagen que está en marcha y de qué commit sale.
+ */
+export function lastSuccessfulDeployment(serviceId: string): DeploymentRow | undefined {
+  const row = stmt(
+      `SELECT id, service_id, status, trigger, commit_sha, commit_msg, image_tag, error, diagnosis,
+              build_key, repo_config, force_build, target_commit, created_at, finished_at
+         FROM deployments
+        WHERE service_id = ? AND status = 'success' AND image_tag IS NOT NULL
+        ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+    )
+    .get(serviceId) as Omit<DeploymentRow, 'logs'> | undefined;
+  return row ? { ...row, logs: '' } : undefined;
+}
+
+/**
  * Sin `logs` ni `runtime_logs`: ningún consumidor los usa y el panel pide este
  * dato cada 4 s con el servicio abierto. Con `SELECT *` cada sondeo arrastraba
  * el log de build entero (hasta 400 KB) más el de ejecución archivado.
@@ -2459,6 +2477,24 @@ export function releaseProjectDnsReservations(projectId: string): void {
 
 export function deleteCloudflareDnsRecord(domain: string): void {
   stmt('DELETE FROM cloudflare_dns_records WHERE domain = ?').run(domain.trim().toLowerCase());
+}
+
+/**
+ * El registro creado pasa a apuntar a la IP nueva del servidor
+ * (`tools/copias.ts repuntar`). Sin esto, la limpieza de Ajustes → Cloudflare
+ * lo tomaría por un registro que ya apunta a otro sitio (liberaría el nombre
+ * sin borrarlo) y no se podría restaurar su reemplazo. Solo si lo anotado era
+ * la IP anterior; devuelve si había alguno.
+ */
+export function repuntarRegistroCloudflare(zoneId: string, recordId: string, ipAnterior: string, ipNueva: string): boolean {
+  return (
+    stmt('UPDATE cloudflare_dns_records SET content = ? WHERE zone_id = ? AND record_id = ? AND content = ?').run(
+      ipNueva,
+      zoneId,
+      recordId,
+      ipAnterior,
+    ).changes > 0
+  );
 }
 
 /**

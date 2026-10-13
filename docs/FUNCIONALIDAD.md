@@ -8,7 +8,7 @@
 > repos de GitHub y bases de datos sobre Docker, en un único servidor, con panel
 > web, métricas en vivo, dominios con TLS, backups y alertas.
 >
-> Versión de este documento: 0.40.0. Si el código y este documento discrepan,
+> Versión de este documento: 0.41.0. Si el código y este documento discrepan,
 > gana el código (`server/src/`).
 
 ---
@@ -89,8 +89,12 @@ server/src/
   stacks.ts             pilas de aplicaciones multi-servicio (Supabase, WordPress, Ghost, n8n, Metabase)
   dbconsole.ts          consola de consultas (psql/mysql/mongosh/redis-cli vía exec)
   files.ts              explorador de archivos por contenedor (tar sobre socket)
-  backups.ts            volcado/restauración de BBDD (dump dentro del contenedor)
+  backups.ts            volcado/restauración de BBDD (dump dentro del contenedor); `plantillaCopia` da las
+                        mismas órdenes a las copias externas
   sysbackup.ts          snapshots del propio skyway.db (VACUUM INTO + retención)
+  copiasexternas.ts     copias externas en S3 vistas desde el panel (docs/COPIAS.md): lee el estado que deja el
+                        host en `DATA_DIR/copias`, deja peticiones (copia, comprobación, kit), descarga del kit y
+                        alertas de atraso o fallo (`comprobarCopiasExternas`, desde el scheduler)
   disk.ts               uso de disco por servicio y del host
   purge.ts              borrado completo de proyectos y servicios (siempre con sus datos) y «Datos sin
                         proyecto»: regla de volúmenes huérfanos, listado y limpieza (§3.1)
@@ -100,8 +104,9 @@ server/src/
                         el resto en su orden y el subdominio generado al final; y la pareja con o sin www
                         (`parejaWww`, `completarParejasWww`, `limpiarSinPareja`); sin dependencias (§5.5)
   cloudflare.ts         cliente mínimo de la API de Cloudflare (verificar token, zona de un nombre, leer
-                        registros, crear uno, borrar uno concreto y quitar el proxy de uno; sin un método
-                        general para cambiar), portado del de Mailway
+                        registros, crear uno, borrar uno concreto, quitar el proxy de uno y cambiar solo su
+                        destino, `cambiarContenido`, para el cambio de IP tras restaurar las copias externas;
+                        sin un método general para cambiar), portado del de Mailway
   cloudflareconfig.ts   token de Cloudflare del administrador en `settings` (`cloudflare.token`, nunca se
                         devuelve): probar, guardar, borrar y vista; la comparten Ajustes → Cloudflare y
                         `tools/cloudflare.ts`
@@ -113,7 +118,8 @@ server/src/
   metrics.ts            deltas de red por réplica + agrupado del histórico de consumo
   monitor.ts            bucle 30 s: caídas, bucles de reinicio, CPU/RAM, uptime, disco, histórico
   scheduler.ts          bucle 10 min: backups programados de BBDD + snapshot diario del panel + renovación de
-                        las contraseñas de aplicación invalidadas por Mailway (`mailwayrenovacion.ts`)
+                        las contraseñas de aplicación invalidadas por Mailway (`mailwayrenovacion.ts`) + aviso
+                        de copias externas atrasadas o fallidas (`copiasexternas.ts`)
   autodeploy.ts         bucle ~1 min: sondea la cabeza de la rama (API con ETag, o git ls-remote) y despliega si cambió;
                         línea base y última comprobación persistidas (`autodeploy_state`)
   tls.ts                TLS efectivo: ajuste del panel + correo de Let's Encrypt REAL de Traefik (docker inspect)
@@ -153,6 +159,8 @@ server/src/
     mailway.ts          conectar Mailway como Ajustes → Correo, con el token `mwt_…` por la entrada estándar
     cloudflare.ts       guardar el token de Cloudflare del administrador como Ajustes → Cloudflare, por la entrada estándar
     aviso.ts            enviar un texto por los canales de alertas, como «Enviar notificación de prueba»; la usa `skyway update --auto`
+    copias.ts           inventario para las copias externas y cambio de IP tras restaurar en otro servidor (`repuntar`);
+                        la usa `scripts/copias/copias.sh`
     argumentos.ts       opciones `--clave valor`, mensajes de error y E/S comunes (inyectable en las pruebas)
 
 web/src/
@@ -171,11 +179,17 @@ web/src/
   components/MailModal.tsx       correo del proyecto (Mailway): activación, dominios, buzones, conectar servicios
   components/MailwaySettings.tsx conexión con Mailway (Ajustes → Correo)
   components/CloudflareSettings.tsx  token de Cloudflare del administrador (Ajustes → Cloudflare)
+  components/CopiasExternas.tsx  copias externas en S3: estado, copias, kit y órdenes para restaurar (Ajustes)
   components/DnsAutoResult.tsx   avisos y chips del DNS automático en Cloudflare (servicios, pilas, correo)
   cambioDominio.ts               tipos y llamadas del asistente «Cambiar de dominio»
   components/cambio-dominio/     asistente «Cambiar de dominio» (Qué cambia, Preparar, En transición, Terminado)
   components/tabs/      Despliegues, Consultas, Variables, Backups, Archivos,
                         Métricas, Logs, Ajustes del servicio
+
+scripts/
+  skyway                CLI de la terminal (§9.1); «skyway copias …» delega en copias/copias.sh
+  copias/               copias externas en S3 (docs/COPIAS.md): copias.sh (orquestador), restaurar.sh
+                        (servidor nuevo), kit/ (descodificadores y LEEME del kit) y prueba-real.sh
 ```
 
 ---
@@ -1633,12 +1647,22 @@ con lo ya aprobado». Nunca se escriben valores en el registro ni en la auditor�
 - **Monitor global**: todos los servicios con estado, consumo, disco, uptime 24 h,
   reinicios y alertas; buscador de logs entre todos los contenedores.
 - **Alertas y notificaciones**: caídas, bucles de reinicio, CPU/RAM sostenidas,
-  cuota de disco, deploy y backup fallidos; por Discord/Telegram/webhook y campana.
+  cuota de disco, deploy y backup fallidos, copias externas atrasadas
+  (`copias_externas_atrasadas`: la última correcta tiene más de 26 h con la
+  copia diaria activa) o fallidas (`copias_externas_fallidas`, una vez por
+  copia); por Discord/Telegram/webhook y campana.
 - **Backups**: volcado comprimido de postgres/mysql/mongo en un clic o programado
   con retención; descarga, restauración y borrado. Además, **snapshot diario del
   propio `skyway.db`** (usuarios, proyectos, variables) con retención de 7,
   creación manual y descarga desde Ajustes, y **verificación de integridad** de
   la BD del panel al arrancar (alerta crítica si falla).
+- **Copias externas** (docs/COPIAS.md): copia cifrada de todo el servidor
+  (panel, proyectos con sus volúmenes, volcados e imágenes, Mailway, código y
+  configuración) en un S3 externo (Cubbit…) cada noche con restic, con
+  restauración de todo o por partes y de cualquier fecha (también en un
+  servidor nuevo con `restaurar.sh`) y kit ZIP para guardar en local. Se
+  gestiona con `sudo skyway copias`; el panel (Ajustes → Copias externas)
+  muestra el estado y pide copias, comprobaciones y kits.
 - **Borrado con datos**: eliminar un proyecto o un servicio borra siempre sus
   volúmenes, imágenes compiladas y copias de seguridad, tras escribir su nombre
   para confirmar. Ajustes → **Datos sin proyecto** lista los volúmenes y copias
@@ -2640,6 +2664,10 @@ distroless), el explorador lo indica y no está disponible.
 | POST | `/system/backups` | admin | crea un snapshot ahora (VACUUM INTO) |
 | GET | `/system/backups/:file/download` | admin + session | descarga un snapshot (.db restaurable). Exige sesión de navegador: lleva en claro los secretos que la API nunca devuelve (token de Cloudflare, de Mailway, de GitHub…) |
 | DELETE | `/system/backups/:file` | admin | borra un snapshot |
+| GET | `/system/copias-externas` | admin | copias externas (docs/COPIAS.md): `{instalada, estado, estadoIlegible, ejecuciones, kit, kitDisponible, kitPreparando, kitInterrumpido, peticiones, peticionesPendientes, enCurso, enCursoInterrumpido, ocupada}`. Lee lo que deja el host en `DATA_DIR/copias` (estado.json, ejecuciones.json, kit.json) con tolerancia: un fichero roto o ausente no rompe la respuesta; una operación en curso con más de 12 h cuenta como interrumpida. Cada proyecto de una copia lleva `enPanel` |
+| POST | `/system/copias-externas/peticiones` | admin | `{accion: 'copia'\|'comprobar'}` o `{accion: 'kit', alcance: 'todo'\|'skyway'\|'correo'\|'proyecto', proyecto?, ejecucion?}` → 202 `{ok, peticion}`: escribe la petición (temporal en `copias/` y renombrado a `copias/peticiones/`), que atiende la unidad `skyway-copias-peticiones` del host; el panel nunca ejecuta nada en el host. 400 `peticion_no_valida`; 404 `proyecto_no_encontrado`; 409 `copias_no_instaladas`, `copias_desactivadas` (sin la copia diaria activa no hay quien atienda) o `copias_ocupadas` (una petición pendiente o una operación en curso); 500 `peticion_no_registrada`. Audita `copias_externas_peticion` |
+| GET | `/system/copias-externas/kit` | admin + session | descarga el kit (ZIP con los datos cifrados de la copia: exige sesión de navegador, como `/system/backups/:file/download`). Solo el nombre de `kit.json` con su patrón, sin enlaces simbólicos. 404 `kit_no_disponible`. Audita `copias_externas_kit_descargado` |
+| DELETE | `/system/copias-externas/kit` | admin | borra el kit y `kit.json` (si el nombre de `kit.json` no es válido, solo `kit.json`). 404 `kit_no_disponible`, 409 `kit_en_preparacion`, 500 `kit_no_eliminado`. Audita `copias_externas_kit_eliminado` |
 | GET | `/settings` | admin | ajustes (secretos como booleanos) + `traefikAcme: {status: ok/missing/invalid/unknown, email}` (correo real de Traefik) + `defaults.keepImages` |
 | PUT | `/settings` | admin | guarda ajustes (dominio, TLS, token GitHub, alertas, `keepImages` 1–50 o vacío → 400 `invalid_keep_images`); `rootDomain` debe ser un nombre de host válido o vacío; `serverIpv6`, una IPv6 sin identificador de zona (`fe80::1%eth0` da 400: ningún DNS la publica) o vacía |
 | POST | `/settings/github/test` | admin | valida el token de GitHub |
@@ -2987,6 +3015,17 @@ docker exec skyway node server/dist/tools/aviso.js --nivel error --titulo "Actua
 skyway update                    # con vuelta atrás automática si algo falla
 sudo skyway auto-update on --sistema
 
+# Copias externas en S3 (en el servidor, con sudo; guía completa en docs/COPIAS.md):
+sudo skyway copias configurar && sudo skyway copias activar
+sudo skyway copias lista
+sudo skyway copias restaurar proyecto <slug> [--ejecucion AAAAMMDD-HHMMSS | --fecha AAAA-MM-DD]
+sudo bash scripts/copias/restaurar.sh            # en un servidor nuevo, sin nada instalado
+
+# Inventario para las copias externas y cambio de IP tras restaurar en otro servidor
+# (stdout: una línea JSON; formato en docs/COPIAS.md):
+docker exec skyway node server/dist/tools/copias.js inventario
+docker exec skyway node server/dist/tools/copias.js repuntar --ip-anterior 1.2.3.4 --ip-nueva 5.6.7.8 [--aplicar si]
+
 # Restaurar la BD del panel desde un snapshot (proceso manual a propósito):
 docker compose stop skyway
 docker run --rm -v skyway_skyway-data:/data alpine \
@@ -3038,6 +3077,30 @@ opción desconocida o repetida es un error.
   usa `skyway update --auto` (§9.1), que le pasa el texto como argumento de
   `docker exec`, sin un shell de por medio.
 
+- `copias.js inventario`: lo que hay que copiar, para `scripts/copias/copias.sh`
+  (docs/COPIAS.md): cada proyecto con sus servicios y, de cada uno, `tipo`,
+  `plantilla` y `versionPlantilla` de las bases, `detenido`, `contenedores`
+  (réplicas incluidas), `volumenes` (`serviceVolumeNames`: lo que se añada ahí
+  entra solo en las copias), `volcado` (`{orden, restaurar, extension}`, las
+  órdenes de `backups.ts`, que corren dentro del contenedor) y `despliegue`
+  (`{id, imagen, commit}`: el último correcto con imagen de los servicios de
+  repositorio) o `imagen` (la configurada en los de imagen); y `ajustes`
+  (`serverIp`, `serverIpv6`, `rootDomain`, `cloudflare`). Solo lee la base y no
+  usa Docker: con el panel parado, el orquestador la lanza con la imagen de
+  Skyway sobre el volumen de datos, sin el socket. Nunca devuelve secretos.
+- `copias.js repuntar --ip-anterior <IPv4> --ip-nueva <IPv4> [--aplicar si]`:
+  tras restaurar en otro servidor, cambia `serverIp` si era la anterior y, con
+  el token de Ajustes → Cloudflare, el destino (solo el contenido: proxy, TTL y
+  comentario se conservan) de los registros A que apuntaban exactamente a la IP
+  anterior en todas las zonas que ve el token, y la IP anotada de los creados
+  por el DNS automático. Sin `--aplicar si`, simula. Salida
+  `{ok, aplicado, serverIp: {antes, despues, cambia}, cloudflare: {configurado, error, registros: [{zona, nombre, proxied, estado: pendiente|cambiado|error, error?}]}}`.
+  Rechaza IP iguales, con ceros a la izquierda o reservadas; sin token de
+  Cloudflare o con la IP de Ajustes distinta, avisa (`Aviso:`) y termina con 0;
+  un fallo de alguna zona da código 1 y no impide cambiar las demás. Repetirla
+  no vuelve a tocar lo que ya apunta a la IP nueva. Audita
+  `server_ip_repointed` (actor `sistema`) al aplicar.
+
 `token.js` y `mailway.js` las usa el instalador de Mailway (modo junto a
 Skyway) para emparejar los paneles sin pasos manuales: crea un token de Skyway
 de 60 minutos si no se le ha dado uno, despliega el panel de Mailway, conecta
@@ -3073,7 +3136,12 @@ para que actualizar el código no lo reescriba a mitad de ejecución.
    `skyway-traefik` está en marcha y, si el `.env` del repositorio tiene un
    `SKYWAY_DOMAIN` público (no `*.localhost`), si el panel responde por HTTPS a
    través de Traefik con un certificado válido
-   (`curl --resolve <dominio>:443:127.0.0.1`).
+   (`curl --resolve <dominio>:443:127.0.0.1`). Con las copias externas
+   configuradas (docs/COPIAS.md §1.4), hace además una copia del panel
+   (`skyway copias copia --alcance skyway --motivo antes-de-actualizar`) antes
+   de tocar nada: si la versión nueva estropeara algo, se vuelve a ese momento
+   con `skyway copias restaurar skyway`. Si esa copia falla, la actualización
+   nocturna sigue (la copia de esa noche existe) y a mano se pregunta.
 3. Avanza el código solo en limpio (`git merge --ff-only`): con commits locales,
    o con cambios sin confirmar en ficheros que la actualización modifica, no
    aplica nada (código 1).

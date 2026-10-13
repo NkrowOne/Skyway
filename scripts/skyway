@@ -14,6 +14,7 @@
 #   skyway update   [-y] [--forzar]   Actualiza Skyway y, si algo falla, vuelve a la versión anterior
 #   skyway update   --auto            Lo mismo sin preguntas: lo que ejecuta el temporizador nocturno
 #   skyway auto-update on [--hora HH:MM] [--sistema] | off [--sistema] | status
+#   skyway copias   [orden]           Copias externas en S3: copiar, restaurar, kit (docs/COPIAS.md)
 #
 # «servicio» puede ser un id (svc_…), un slug, o parte del nombre. Sin él, se
 # elige de una lista. Todo pasa por la API REST con un token `sky_…`.
@@ -489,6 +490,33 @@ avisar() {
   return 0
 }
 
+# Copia externa del panel (su base de datos, la configuración y el código) justo
+# antes de actualizar: si la versión nueva estropeara algo, se vuelve a este
+# momento con «skyway copias restaurar skyway». Solo con las copias externas
+# configuradas. En la actualización nocturna un fallo de la copia no la
+# bloquea (la copia de esa noche sigue disponible); a mano, se pregunta.
+copia_previa() {
+  local copias="$1/scripts/copias/copias.sh"
+  [[ -f "$copias" ]] || return 0
+  if ! bash "$copias" configuradas >/dev/null 2>&1; then
+    info "Copias externas sin configurar: se actualiza sin copia previa («sudo skyway copias configurar» las activa)."
+    return 0
+  fi
+  info "Copia previa del panel en las copias externas…"
+  local -a opciones=(copia --alcance skyway --motivo antes-de-actualizar)
+  if [[ "$AUTO" == 1 ]]; then opciones+=(--auto); fi
+  # Sin el cerrojo de la actualización (descriptor 9): la copia lleva el suyo.
+  if bash "$copias" "${opciones[@]}" 9>&-; then
+    ok "Copia previa hecha"
+    return 0
+  fi
+  if [[ "$AUTO" == 1 ]]; then
+    warn "La copia previa ha fallado: se actualiza igualmente (la copia de esta noche sigue disponible)."
+    return 0
+  fi
+  confirm "La copia previa ha fallado. ¿Actualizar igualmente?" || no_aplicada "Actualización cancelada: la copia previa ha fallado."
+}
+
 # Termina sin haber aplicado nada: el servidor sigue con la versión que tenía (código 1).
 no_aplicada() {
   fallo "$1"
@@ -695,6 +723,7 @@ cmd_update() {
     fi
   fi
 
+  if [[ "$reanudar" == 0 ]]; then copia_previa "$repo"; fi
   printf '%s\n' "$previo" > "$en_curso"
   if [[ "$actual" != "$nuevo" ]]; then
     info "Actualizando el código ($(corto "$actual") → $(corto "$nuevo"))…"
@@ -1037,6 +1066,9 @@ En el servidor donde corre Skyway:
   ${C_ACC}skyway update --auto${C_RESET}             Lo mismo sin preguntas, con aviso por los canales de alertas
   ${C_ACC}skyway auto-update${C_RESET} on [--hora HH:MM] [--sistema] | off [--sistema] | status
                                    Actualización automática cada noche (systemd; con sudo)
+  ${C_ACC}skyway copias${C_RESET} [orden]           Copias externas cifradas en S3 (Cubbit…) de Skyway, sus
+                                   proyectos y Mailway: copiar, restaurar todo o por partes,
+                                   kit para guardar en local (con sudo; «skyway copias ayuda»)
 
 Opciones:
   -f, --follow   Sigue el despliegue hasta que termina (deploy, rewind)
@@ -1058,6 +1090,13 @@ EOF
 
 # ---------- arranque ----------
 main() {
+  # «skyway copias …» es otra herramienta (scripts/copias/copias.sh), con sus
+  # propias órdenes y opciones: se le pasa todo tal cual. No usa la API ni el
+  # token: trabaja con Docker en el propio servidor, aunque el panel no responda.
+  if [[ "${1:-}" == copias ]]; then
+    shift
+    exec bash "$(dirname "$SELF")/copias/copias.sh" "$@"
+  fi
   load_config
   local cmd="" positional=""
   FOLLOW=0; ASSUME_YES=0; REBUILD=0; AUTO=0; FORZAR=0; SISTEMA=0; HORA=''

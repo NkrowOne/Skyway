@@ -7,9 +7,12 @@
  * existente. Las excepciones son acciones expresas del administrador: borrar
  * en Ajustes → Cloudflare un registro que creó el propio DNS automático y que
  * nadie ha cambiado; desactivar el proxy («Desactivar proxy en Cloudflare»),
- * que solo envía `proxied: false` y nada más; y, con su confirmación expresa,
+ * que solo envía `proxied: false` y nada más; con su confirmación expresa,
  * sustituir el A/AAAA/CNAME del hosting anterior de un dominio que pasa a este
- * servidor (`batch`, que lo sustituye de una vez y sin estados intermedios).
+ * servidor (`batch`, que lo sustituye de una vez y sin estados intermedios); y,
+ * tras restaurar las copias en otro servidor, llevar a la IP nueva los
+ * registros A que apuntaban a la anterior (`tools/copias.ts repuntar`), que
+ * solo envía `content`.
  *
  * Los errores de Cloudflare se traducen a mensajes en español listos para la
  * interfaz, con `statusCode` para el manejador global (nunca 401: la interfaz
@@ -478,6 +481,21 @@ export class CloudflareClient {
       'PATCH',
       `/zones/${encodeURIComponent(zoneId)}/dns_records/${encodeURIComponent(recordId)}`,
       { body: { proxied } },
+    );
+    return aRegistro(sobre.result);
+  }
+
+  /**
+   * Cambia el destino de un registro. El cuerpo es solo `content`: el nombre,
+   * el tipo, el proxy, el TTL y el comentario se conservan. Solo lo usa
+   * `tools/copias.ts repuntar`, sobre los registros A que apuntaban
+   * exactamente a la IP anterior del servidor.
+   */
+  async cambiarContenido(zoneId: string, recordId: string, content: string): Promise<CfRegistro> {
+    const sobre = await this.peticion<RegistroCrudo>(
+      'PATCH',
+      `/zones/${encodeURIComponent(zoneId)}/dns_records/${encodeURIComponent(recordId)}`,
+      { body: { content } },
     );
     return aRegistro(sobre.result);
   }

@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocation } from 'react-router-dom';
-import { AlertTriangle, BellRing, CheckCircle2, ChevronDown, Cloud, Cpu, DatabaseBackup, Download, Globe, HardDrive, KeyRound, Mail, Trash2 } from 'lucide-react';
+import { AlertTriangle, BellRing, CheckCircle2, ChevronDown, Cloud, CloudUpload, Cpu, DatabaseBackup, Download, Globe, HardDrive, KeyRound, Mail, Trash2 } from 'lucide-react';
 import { api } from '../api';
 import CloudflareSettings from '../components/CloudflareSettings';
+import CopiasExternas from '../components/CopiasExternas';
 import GithubAppPanel from '../components/GithubAppPanel';
 import MailwaySettings from '../components/MailwaySettings';
 import OrphanData from '../components/OrphanData';
@@ -986,6 +987,19 @@ export default function SettingsPage() {
             Para restaurar el panel, sustituye <span className="font-mono">/data/skyway.db</span> por la copia y reinicia el servicio.
           </p>
         </details>
+      </SettingsSection>
+
+      {/* Al lado de la copia del panel, que solo cubre skyway.db y vive en el
+          mismo disco: estas salen del servidor y lo cubren todo. Tiene su propia
+          consulta y acciones inmediatas, como «Datos sin proyecto». */}
+      <SettingsSection
+        id="copias-externas"
+        icon={<CloudUpload size={15} />}
+        iconClass="text-info"
+        title="Copias externas"
+        description="Copia cifrada de Skyway, de sus proyectos y de Mailway en un almacenamiento S3 fuera del servidor, cada noche. Permite restaurar todo o por partes, eligiendo la fecha, aunque el servidor no funcione."
+      >
+        <CopiasExternas />
       </SettingsSection>
 
       <ConfirmModal

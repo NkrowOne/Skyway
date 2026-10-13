@@ -15,7 +15,7 @@ const BACKUP_TIMEOUT_MS = 10 * 60_000;
  */
 const EXIT_CODE_RETRY = { attempts: 10, delayMs: 100 };
 
-interface TemplateBackup {
+export interface TemplateBackup {
   dump: string;
   restore: string;
   ext: string;
@@ -40,8 +40,20 @@ const TEMPLATE_BACKUPS: Record<string, TemplateBackup> = {
   },
 };
 
+/**
+ * Órdenes de copia de una base, o null si no es una base o su plantilla no
+ * tiene copia (Redis, MinIO…). Las lee también el inventario de las copias
+ * externas (`tools/copias.ts`): el host vuelca cada base con las mismas
+ * órdenes que el panel, sin una lista propia que pueda quedarse atrás.
+ */
+export function plantillaCopia(service: ServiceRow): Readonly<TemplateBackup> | null {
+  if (service.type !== 'database') return null;
+  const template = (service.config as DatabaseConfig).template;
+  return Object.hasOwn(TEMPLATE_BACKUPS, template) ? TEMPLATE_BACKUPS[template] : null;
+}
+
 export function backupSupported(service: ServiceRow): boolean {
-  return service.type === 'database' && !!TEMPLATE_BACKUPS[(service.config as DatabaseConfig).template];
+  return plantillaCopia(service) !== null;
 }
 
 function backupDir(serviceId: string): string {

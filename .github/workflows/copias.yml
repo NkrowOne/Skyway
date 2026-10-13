@@ -1,0 +1,38 @@
+name: Copias externas
+
+# La prueba real de las copias (scripts/copias/prueba-real.sh): Docker, restic
+# y un S3 local con bloqueo de objetos. Hace copias, restaura por partes,
+# prepara y descodifica un kit y monta un servidor nuevo desde cero. Tarda
+# unos minutos: corre cuando cambia algo de lo que usan las copias, cada
+# semana (por si una imagen de la que dependen deja de funcionar) y a mano.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/copias/**'
+      - 'scripts/skyway'
+      - 'server/src/tools/copias.ts'
+      - 'docker-compose.yml'
+      - '.github/workflows/copias.yml'
+  pull_request:
+    paths:
+      - 'scripts/copias/**'
+      - 'scripts/skyway'
+      - 'server/src/tools/copias.ts'
+      - 'docker-compose.yml'
+      - '.github/workflows/copias.yml'
+  schedule:
+    - cron: '17 5 * * 1'
+  workflow_dispatch:
+
+jobs:
+  copias:
+    name: shellcheck y prueba real
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - name: shellcheck
+        run: shellcheck -S warning scripts/skyway scripts/copias/*.sh scripts/copias/kit/descodificar.sh
+      - name: Prueba real
+        run: bash scripts/copias/prueba-real.sh

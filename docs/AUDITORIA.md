@@ -310,6 +310,26 @@ del servidor confirmando las cabeceras y que las rutas nuevas exigen sesión.
   actualización (05:30 por defecto). Lo prueban
   `server/test/actualizacion-automatica.test.ts` (el script real con dobles de
   docker, curl y systemctl) y `server/test/herramientas.test.ts`.
+- **Copias externas** (0.41.0, `docs/COPIAS.md`): todo sale del servidor
+  cifrado por restic (AES-256) con una contraseña que solo está en
+  `/etc/skyway-copias/contrasena` (root, 600) y en los datos de recuperación
+  que el operador guarda fuera; las credenciales del S3 viven en `s3.env`
+  (root, 600) y llegan a los contenedores de restic y de la CLI de AWS por
+  fichero, nunca como argumento. Ni los registros, ni el estado que lee el
+  panel, ni los manifiestos llevan secretos (los inventarios de Skyway y de
+  Mailway los excluyen y sus pruebas lo comprueban). El panel no ejecuta nada
+  en el host: solo lee `DATA_DIR/copias` y deja peticiones que el host valida
+  con una lista blanca (copia, comprobación y kit; nunca restaurar); la
+  descarga del kit exige sesión de administrador en el navegador y el kit se
+  borra a las 24 horas. Con el bloqueo de objetos del bucket, quien entrara en
+  el servidor con su clave no podría borrar las copias (solo añadir marcas),
+  y `skyway copias recuperar-bucket` lo deshace con la clave de
+  administración, que no se guarda. La copia pausa los contenedores unos
+  segundos y siempre los reanuda (también si falla o se interrumpe), con un
+  tope (`PAUSA_MAXIMA`). Lo prueban `scripts/copias/prueba-real.sh` (Docker,
+  restic y un S3 local con bloqueo, en `.github/workflows/copias.yml`),
+  `server/test/copias-herramienta.test.ts`, `copias-externas.test.ts` y
+  `copias-cobertura.test.ts`.
 
 ---
 

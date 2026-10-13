@@ -7,7 +7,10 @@ modelo de seguridad y **toda la API REST**), consulta
 (devengo, IVA/IRPF, series, morosidad, Stripe),
 **[docs/AUDITORIA-FACTURACION.md](docs/AUDITORIA-FACTURACION.md)**; para el de
 rendimiento y calidad del código (hallazgos, cambios aplicados y pendientes),
-**[docs/AUDITORIA-RENDIMIENTO.md](docs/AUDITORIA-RENDIMIENTO.md)**. Para control
+**[docs/AUDITORIA-RENDIMIENTO.md](docs/AUDITORIA-RENDIMIENTO.md)**. Las copias
+externas en S3 (orquestador `scripts/copias/copias.sh`, `skyway copias`,
+restauración en un servidor nuevo y kit) están en
+**[docs/COPIAS.md](docs/COPIAS.md)**. Para control
 remoto por API/agentes, **[docs/CONTROL-REMOTO.md](docs/CONTROL-REMOTO.md)**. El
 manifiesto `skyway.json` de las webs (plan de integraciones con bases y correo)
 está en **[docs/MANIFIESTO.md](docs/MANIFIESTO.md)**. El asistente «Cambiar de
@@ -44,6 +47,7 @@ npm run typecheck   # SIEMPRE antes de dar por terminado un cambio
 npm run lint        # reglas de hooks de React en la web (orden de hooks, dependencias)
 npm test            # pruebas del servidor (vitest, base SQLite temporal por fichero)
 npm start           # producción, todo en :4000
+bash scripts/copias/prueba-real.sh   # copias externas con Docker, restic y un S3 local (unos minutos)
 ```
 
 **`npm run typecheck` y `npm test` son la verificación mínima obligatoria** tras
@@ -82,6 +86,18 @@ Si arreglas un fallo con una prueba que lo reproduce, mejor.
   del correo vive solo en Mailway. Los routers de los servicios llevan la
   huella de sus hosts en el nombre (`traefikRouter`): no lo cambies a un
   nombre fijo.
+- **Copias externas** (`docs/COPIAS.md`): todo estado nuevo tiene que quedar
+  en las copias. Un volumen de un servicio, en `serviceVolumeNames`
+  (`docker/containers.ts`), que es lo que lee el inventario; uno nuevo del
+  `docker-compose.yml`, en `scripts/copias/copias.sh` (la prueba
+  `server/test/copias-cobertura.test.ts` lo exige); un fichero del host fuera
+  de los volúmenes (como `.env`), en `elemento_config`. Si cambias el
+  manifiesto o algo que una copia antigua necesite para restaurarse, sube
+  `FORMATO` en `copias.sh`: cada copia se restaura con el `copias.sh` que
+  viaja dentro de ella, y `restaurar.sh` debe seguir sabiendo arrancar
+  cualquiera. Si tocas `scripts/copias/`, pasa `shellcheck -S warning` y
+  `bash scripts/copias/prueba-real.sh` (la CI la ejecuta en
+  `.github/workflows/copias.yml`).
 - **Docker/BBDD/archivos**: nunca interpoles entrada del usuario en un shell;
   pásala como variable de entorno del `exec` (patrón en `dbconsole.ts` y
   `files.ts`).

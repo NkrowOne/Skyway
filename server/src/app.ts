@@ -43,6 +43,7 @@ import { helpRoutes } from './routes/help';
 import { mailwayRoutes } from './routes/mailway';
 import { cloudflareRoutes } from './routes/cloudflare';
 import { domainMigrationRoutes } from './routes/domainmigrations';
+import { copiasExternasRoutes } from './routes/copias';
 
 const METODOS_SEGUROS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
@@ -233,6 +234,7 @@ export function buildApp(): FastifyInstance {
   app.register(mailwayRoutes);
   app.register(cloudflareRoutes);
   app.register(domainMigrationRoutes);
+  app.register(copiasExternasRoutes);
 
   // Sirve la UI compilada (producción) con fallback SPA optimizado en memoria y caché inmutable.
   const indexHtmlPath = path.join(config.webDist, 'index.html');

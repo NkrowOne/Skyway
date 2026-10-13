@@ -31,6 +31,8 @@ const TYPE_ICON: Record<string, typeof Rocket> = {
   service_down: Power,
   crash_loop: RefreshCw,
   backup_failed: Archive,
+  copias_externas_atrasadas: Archive,
+  copias_externas_fallidas: Archive,
 };
 
 /*

@@ -26,6 +26,7 @@ Despliega repositorios de GitHub y bases de datos (PostgreSQL, Redis, MySQL, Mon
 - **Correo de tus proyectos con Mailway** — conecta Skyway con tu servicio de correo [Mailway](https://github.com/NkrowOne/Mailway) y, desde el botón **Correo** de cada proyecto, activa el correo del cliente (un cliente de correo por cuenta, que comparten sus proyectos), añade sus dominios (registros DNS listos para copiar y aplicación directa en **Cloudflare**), gestiona el **webmail propio** de cada dominio, envía la **configuración inicial** a la persona de contacto del cliente, crea buzones con **enlace de configuración** para los dispositivos y **conecta un servicio** en un clic: Skyway crea una contraseña de aplicación (SMTP) o una clave de la API de envío y añade las variables `SMTP_*` o `MAILWAY_*` al servicio. Los dominios de marca blanca de Mailway se publican solos en Traefik, filtrados para que nunca puedan ocupar un dominio de Skyway, y ningún servicio de un cliente puede ocupar los de Mailway.
 - **Vista de sitios web** — todas las webs y apps desplegadas en un solo sitio: dominio clicable con candado TLS, estado, réplicas, último deploy y acciones rápidas (abrir, desplegar, reiniciar), filtrables por cliente o dominio.
 - **Backups de bases de datos** — volcado comprimido de PostgreSQL/MySQL/MongoDB en un clic o **programado (diario/semanal, ~04:00) con retención automática**; descarga, restauración y borrado desde el panel, y alerta si un backup programado falla. Además, Skyway hace un **snapshot diario de su propia base de datos** (usuarios, proyectos, variables…) con retención, descargable desde Ajustes, y **verifica la integridad** de su BD en cada arranque.
+- **Copias externas de todo el servidor** — cada noche, una copia **cifrada** en un almacenamiento S3 externo (Cubbit, Backblaze B2, Wasabi, AWS…) de **todo**: el panel, cada proyecto con sus volúmenes (bases, subidas, WordPress…), volcados SQL e imágenes de las webs, y Mailway con todo el correo. Se restaura todo o solo un proyecto, un servicio o el correo, de cualquier fecha guardada, aunque el panel no arranque; en un servidor nuevo, una sola orden (`restaurar.sh`) lo vuelve a montar entero y cambia la IP en Cloudflare. Desde Ajustes → Copias externas se ve el estado y se descarga un **kit ZIP** para guardar en local, que se abre con la contraseña en Windows, macOS o Linux. Ver [docs/COPIAS.md](docs/COPIAS.md).
 - **Réplicas con balanceo** — varias copias de un servicio repartiéndose el tráfico (Traefik + DNS interno) con **actualización rodante** réplica a réplica: siempre queda alguna sirviendo. Monitorización y métricas agregadas por réplica.
 - **Comandos en el contenedor** — terminal de un comando (`sh -c`) para migraciones y diagnóstico, con salida capturada y registro en auditoría.
 - **Volúmenes persistentes** — monta rutas de datos en servicios de repo/imagen desde la UI; los nombres de volumen se conservan al editar para no perder datos.
@@ -80,9 +81,21 @@ skyway update                          # actualizar ahora, a mano
 
 **Qué es automático.** Los parches de las dependencias y de las imágenes (Node, Traefik): Dependabot los propone cada semana y, si la CI pasa entera, se fusionan solos. Cada noche, a las 04:30, el servidor aplica lo que haya en `main` (también lo que fusiona una persona): reconstruye, comprueba que el panel, Traefik y el HTTPS del panel responden y, si algo falla, vuelve automáticamente a la versión anterior. Sin nada nuevo no reinicia nada. Con `--sistema`, unattended-upgrades instala los parches de seguridad del sistema y, solo si uno lo exige (núcleo, libc), reinicia el servidor a las 05:30, una hora después de la actualización.
 
-**Qué no lo es.** Las versiones menores y mayores (llegan en PR que revisa una persona), las versiones nuevas de la distribución o de Docker y restaurar datos: una actualización nunca toca los volúmenes, las migraciones de la base de datos del panel solo añaden tablas y columnas y, si alguna vez hiciera falta, la copia diaria del panel se restaura a mano.
+**Qué no lo es.** Las versiones menores y mayores (llegan en PR que revisa una persona), las versiones nuevas de la distribución o de Docker y restaurar datos: una actualización nunca toca los volúmenes, las migraciones de la base de datos del panel solo añaden tablas y columnas y, si alguna vez hiciera falta, la copia diaria del panel se restaura a mano. Con las [copias externas](#copias-externas) activas, cada actualización hace antes una copia del panel, y se vuelve a ese momento con `sudo skyway copias restaurar skyway`.
 
 `skyway update` termina con **0** (actualizado, o sin nada nuevo), **1** (no se ha actualizado: el servidor sigue con la versión anterior) o **2** (también ha fallado la vuelta atrás: hay que revisar el servidor). El resultado de cada noche está en `sudo skyway auto-update status` y en `journalctl -u skyway-auto-update`, y llega por los canales de Ajustes → Alertas: un aviso breve al actualizar y otro, con el motivo, si algo falla. Detalle en [docs/FUNCIONALIDAD.md](docs/FUNCIONALIDAD.md) §9.1.
+
+## Copias externas
+
+Copia cifrada de todo el servidor fuera de él, cada noche, en un S3 (la guía usa [Cubbit](https://www.cubbit.io)). Con el comando `skyway` ya enlazado:
+
+```bash
+sudo skyway copias configurar     # destino S3, clave y contraseña (guarda los datos de recuperación FUERA del servidor)
+sudo skyway copias activar        # copia diaria a las 03:30
+sudo skyway copias                # menú: ver copias, restaurar todo o por partes, preparar un kit…
+```
+
+En un servidor nuevo, sin nada instalado: `sudo bash restaurar.sh` (de `scripts/copias/` o del kit) pide los datos de recuperación y vuelve a montarlo todo. Guía completa, con lo que se copia, cómo se restaura y la compatibilidad entre versiones, en [docs/COPIAS.md](docs/COPIAS.md).
 
 ## Primeros pasos
 
@@ -175,8 +188,9 @@ server/src/
   docker/                 contenedores, redes, stats, logs
   deploy/                 builder (git+docker/nixpacks), orquestador, cola
   routes/                 API REST + SSE + webhooks (+ monitor, websites, status público)
-  tools/                  herramientas de terminal: contraseña, tokens de API, conexión con Mailway y avisos
-scripts/skyway            CLI: despliegues por la API y actualización del propio Skyway en el servidor
+  tools/                  herramientas de terminal: contraseña, tokens de API, conexión con Mailway, avisos y copias
+scripts/skyway            CLI: despliegues por la API, actualización del propio Skyway y copias externas en el servidor
+scripts/copias/           copias externas en S3: copias.sh, restaurar.sh (servidor nuevo), kit y su prueba real
 scripts/prueba-real-bots.mjs  prueba real con Docker de una sola copia, parada limpia y restos de intercambios
 web/src/
   pages/                  Dashboard, Proyecto, Monitor, Sitios, Estado público...
@@ -187,6 +201,7 @@ web/src/
 
 - **[docs/FUNCIONALIDAD.md](docs/FUNCIONALIDAD.md)** — referencia completa (módulos, modelo de datos, seguridad y **toda la API REST**), consultable fácilmente por un LLM.
 - **[docs/AUDITORIA.md](docs/AUDITORIA.md)** — informe de auditoría de seguridad y backend, con correcciones y recomendaciones.
+- **[docs/COPIAS.md](docs/COPIAS.md)** — copias externas en S3: puesta en marcha, qué se copia, restaurar todo o por partes, servidor nuevo, kit y compatibilidad entre versiones.
 - **[docs/CONTROL-REMOTO.md](docs/CONTROL-REMOTO.md)** — control por API/tokens (`Authorization: Bearer sky_…`) para automatizaciones y agentes.
 - **[docs/DESPLIEGUE-IA.md](docs/DESPLIEGUE-IA.md)** — guía para agentes de IA: preparar y desplegar bots, aplicaciones y webs (plantillas, lista de comprobación, errores frecuentes) y, opcional, la integración con Skyway webtools.
 - **[CLAUDE.md](CLAUDE.md)** — guía breve del repositorio para agentes/LLM.
@@ -222,6 +237,5 @@ Por eso Skyway usa Docker directamente, sin orquestador, y en su lugar incorpora
 ## Hoja de ruta
 
 - Cron jobs y comandos one-off (`skyway run`)
-- Backups de volúmenes de aplicaciones (uploads, etc.)
 - Plantillas de la comunidad (one-click apps)
 - Incidencias manuales y avisos de mantenimiento en la página de estado
