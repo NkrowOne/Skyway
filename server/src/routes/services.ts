@@ -1339,7 +1339,9 @@ function auditPlan(req: FastifyRequest, service: ServiceRow, result: ApplyResult
  * detener, una «--prev» que vuelve a su nombre no se arranca: se va a parar.
  *
  * Detener para todas las copias a la vez, con parada limpia, y responde
- * `forced` con las que no terminaron con SIGTERM a tiempo. Reiniciar es parar
+ * `forced` con las que no terminaron con SIGTERM a tiempo (e `initOnRedeploy`
+ * si alguna se creó sin el init que llevan las copias nuevas: la arregla
+ * volver a desplegar una vez, no la aplicación). Reiniciar es parar
  * con gracia y volver a arrancar el MISMO contenedor (conserva su identidad),
  * como `docker restart`, pero con el comando al parar y sabiendo si hubo
  * SIGKILL; y sigue la estrategia del servicio: con «sin corte», réplica a
@@ -1381,6 +1383,8 @@ async function accionSobreCopias(
   let fallo: any = null;
   /** Copias que no terminaron con SIGTERM a tiempo y se detuvieron con SIGKILL. */
   const forced: string[] = [];
+  /** Alguna de ellas se creó sin el init que llevan las copias nuevas: se arregla volviendo a desplegar. */
+  let initOnRedeploy = false;
   if (action === 'start') {
     for (const name of nombres) {
       try {
@@ -1392,7 +1396,14 @@ async function accionSobreCopias(
       }
     }
   } else {
-    const parar = (n: string) => pararConGracia(n, { graciaSegundos, comando, log: registro, salidaComando: false });
+    const parar = (n: string) =>
+      pararConGracia(n, {
+        graciaSegundos,
+        comando,
+        log: registro,
+        salidaComando: false,
+        initEnServicio: service.type !== 'database',
+      });
     let resultados: PromiseSettledResult<Awaited<ReturnType<typeof parar>>>[];
     if (action === 'restart' && nombres.length > 1 && estrategiaEfectiva(service).estrategia === 'overlap') {
       // «Sin corte»: réplica a réplica. Todas a la vez dejaban una web con
@@ -1430,7 +1441,10 @@ async function accionSobreCopias(
       }
       if (!r.value.existia) continue;
       tocadas += 1;
-      if (r.value.forzada) forced.push(nombres[k]);
+      if (r.value.forzada) {
+        forced.push(nombres[k]);
+        if (r.value.sinInit) initOnRedeploy = true;
+      }
       // Después de parar: el registro guarda también lo que la copia escribió
       // al recibir SIGTERM (su cierre, o por qué no lo hubo). Al reiniciar, el
       // contenedor es el mismo y conserva su registro.
@@ -1450,7 +1464,7 @@ async function accionSobreCopias(
   return {
     ok: true,
     runtime: await getRuntime(containerName(project, service)),
-    ...(action !== 'start' ? { forced } : {}),
+    ...(action !== 'start' ? { forced, initOnRedeploy } : {}),
   };
 }
 

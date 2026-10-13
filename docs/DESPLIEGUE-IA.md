@@ -19,8 +19,9 @@
    resultados reproducibles, incluye un `Dockerfile`.
 2. La aplicación escucha en `0.0.0.0` y en el puerto de la variable `PORT`. Skyway fija `PORT` al
    puerto interno del servicio (3000 por defecto).
-3. El proceso principal permanece en ejecución y atiende `SIGTERM`. Un proceso que termina, aunque
-   sea con código 0, es un despliegue fallido.
+3. El proceso principal permanece en ejecución. Un proceso que termina, aunque sea con código 0, es
+   un despliegue fallido. Skyway lo ejecuta bajo un init que le entrega `SIGTERM`: sin manejador,
+   termina al momento; con uno, el manejador tiene que cerrar y salir.
 4. Una web o API pública declara una ruta de healthcheck que responde 2xx sin autenticación:
    `deploy.healthcheckPath` en `railway.json`.
 5. Un bot de polling o un worker va sin dominio, sin healthcheck y con 1 réplica. Skyway lo
@@ -163,9 +164,12 @@ efectiva y su motivo.
 - **Una sola copia** (`recreate`): se detiene la anterior y arranca la nueva; si la nueva falla, se
   restaura la anterior.
 - **Parada**: `config.stopCommand` (opcional) → `SIGTERM` → gracia → `SIGKILL`. Gracia:
-  `config.stopGraceSeconds` (0–600) o `RAILWAY_DEPLOYMENT_DRAINING_SECONDS`; por defecto, 30 s. Un
-  PID 1 sin manejador de `SIGTERM` no recibe la señal: Node necesita `process.on('SIGTERM', …)`;
-  Python, `signal.signal(...)` o `loop.add_signal_handler(...)`.
+  `config.stopGraceSeconds` (0–600) o `RAILWAY_DEPLOYMENT_DRAINING_SECONDS`; por defecto, 30 s. Las
+  aplicaciones se ejecutan con el init de Docker como PID 1, que entrega `SIGTERM` a la aplicación:
+  sin manejador, termina al momento; con manejador (`process.on('SIGTERM', …)` en Node;
+  `signal.signal(...)` o `loop.add_signal_handler(...)` en Python), tiene que cerrar y salir. Una
+  imagen con su propio proceso de inicio (s6-overlay, systemd, tini, dumb-init) se ejecuta sin el de
+  Docker.
 
 ### 4.6 Volúmenes, réplicas y recursos
 
@@ -444,7 +448,7 @@ async def on_ready() -> None:
 
 async def main() -> None:
     loop = asyncio.get_running_loop()
-    # PID 1 del contenedor: sin manejador, SIGTERM se descarta y la parada acaba en SIGKILL.
+    # Cierre ordenado al recibir SIGTERM (Detener, Reiniciar, despliegues): sin él, termina de golpe.
     loop.add_signal_handler(signal.SIGTERM, lambda: asyncio.ensure_future(client.close()))
     async with client:
         await client.start(os.environ["DISCORD_TOKEN"])
@@ -523,7 +527,7 @@ declara `"DATABASE_URL": {"from": "postgres.url"}` en `skyway.json` (§7).
       `"builder"` explícito.
 - [ ] `npm ci` (o equivalente) funciona con el lockfile confirmado.
 - [ ] Si atiende HTTP, escucha en `0.0.0.0:$PORT`.
-- [ ] El proceso no termina solo y atiende `SIGTERM` (`CMD` en forma exec, o `exec` en el comando).
+- [ ] El proceso no termina solo y, si atiende `SIGTERM`, el manejador cierra y sale.
 - [ ] Web o API pública: `deploy.healthcheckPath` responde 2xx sin autenticación.
 - [ ] Bot o worker: sin dominio, sin healthcheck, `replicas` = 1.
 - [ ] Migraciones idempotentes en `deploy.preDeployCommand`.
@@ -568,7 +572,7 @@ Texto del registro de despliegue (o de la aplicación), causa y solución. El di
 | `La versión nueva no pasó la validación (…)` | alguno de los casos anteriores | la versión anterior sigue en servicio; corregir y volver a desplegar |
 | `El comando previo al despliegue falló (…)` | la migración falló | revisar el comando y `DATABASE_URL`; la versión en marcha no cambió |
 | `⚠ Referencias sin resolver en …` | servicio o variable referenciada inexistente | crear el servicio o corregir el nombre en `${{…}}` |
-| `⚠ … no terminó con SIGTERM en N s y se detuvo con SIGKILL` | sin manejador de `SIGTERM`, o `sh -c` sin `exec` | añadir el manejador; `exec` en el comando |
+| `⚠ … no terminó con SIGTERM en N s y se detuvo con SIGKILL` | el manejador de `SIGTERM` no sale; o la copia se creó sin init | que el manejador cierre y llame a `exit`; volver a desplegar una vez |
 | `409 Conflict: terminated by other getUpdates request` (aplicación) | dos copias del bot | `replicas: 1` y `deployStrategy: recreate` |
 | `port is already allocated`, `address already in use` | `hostPort` ocupado | otro `hostPort` o usar un dominio |
 | `pull access denied`, `manifest unknown`, `toomanyrequests` | imagen o tag inexistente; límite de Docker Hub | corregir la imagen o `version`; esperar |

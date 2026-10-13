@@ -190,6 +190,74 @@ export interface ResultadoParada {
   /** Terminó con SIGKILL al agotar la gracia (137, sin OOMKilled). */
   forzada: boolean;
   comando: 'ok' | 'fallo' | 'plazo' | null;
+  /**
+   * La copia se creó sin el init de Docker y lo recibiría al volver a
+   * desplegar (su imagen no trae un proceso de inicio propio): una parada
+   * forzada de una copia así se arregla volviendo a desplegar una vez.
+   */
+  sinInit: boolean;
+}
+
+/**
+ * Procesos de inicio que una imagen ya trae como PID 1: con ellos no se añade
+ * el de Docker. s6-overlay (`/init`), systemd o el `my_init` de phusion se
+ * niegan a arrancar si no son el PID 1; tini, dumb-init y compañía ya
+ * entregan las señales y, debajo de otro init, solo protestan en el registro.
+ */
+const INITS_PROPIOS = new Set([
+  'init',
+  'systemd',
+  'my_init',
+  's6-svscan',
+  'tini',
+  'tini-static',
+  'dumb-init',
+  'docker-init',
+  'catatonit',
+]);
+
+/**
+ * Pura. El proceso de inicio propio con que arranca la imagen, o null si no
+ * trae ninguno y el contenedor debe ir con `Init` (ver `runServiceContainer`).
+ * `entrypoint` y `cmd` son los efectivos (los del contenedor o, sin
+ * sustitución, los de la imagen) y `env` el de la imagen, en forma `CLAVE=valor`:
+ * una imagen con variables `S6_*` usa s6-overlay aunque lo lance desde un
+ * script de entrada que acaba en `exec /init`.
+ */
+export function initPropioDeLaImagen(
+  entrypoint: readonly string[] | null | undefined,
+  cmd: readonly string[] | null | undefined,
+  env: readonly string[] | null | undefined,
+): string | null {
+  const argv = entrypoint && entrypoint.length > 0 ? entrypoint : cmd ?? [];
+  const primero = (argv[0] ?? '').trim();
+  const binario = primero.split('/').pop() ?? '';
+  if (INITS_PROPIOS.has(binario)) return primero;
+  if ((env ?? []).some((e) => e.startsWith('S6_'))) return 's6-overlay';
+  return null;
+}
+
+/**
+ * Si el contenedor de un servicio con esta imagen (y este arranque) va con
+ * `Init`: sí, salvo que la imagen traiga su propio proceso de inicio. `cmd` y
+ * `entrypoint` son los que pondrá Skyway (null: los de la imagen; `entrypoint`
+ * vacío: se aparta el de la imagen). Una imagen que no se puede inspeccionar
+ * va con `Init`: si el daemon no lo tiene, `runServiceContainer` lo retira.
+ */
+export async function initParaServicio(
+  image: string,
+  cmd: string[] | null,
+  entrypoint: string[] | null,
+): Promise<{ init: boolean; propio: string | null }> {
+  try {
+    const info = await dockerQuery.getImage(image).inspect();
+    const ep = entrypoint ?? ((info.Config?.Entrypoint as string[] | null) || []);
+    const c = cmd ?? ((info.Config?.Cmd as string[] | null) || []);
+    const propio = initPropioDeLaImagen(ep, c, info.Config?.Env ?? []);
+    return { init: propio === null, propio };
+  } catch {
+    return { init: true, propio: null };
+  }
 }
 
 /** Estado de un contenedor; `null` solo si Docker responde que no existe (404). */
@@ -214,10 +282,12 @@ async function inspeccionar(name: string): Promise<Docker.ContainerInspectInfo |
  *
  * La parada forzada se distingue por el código 137 sin `OOMKilled` y después
  * de agotar la gracia: un 137 inmediato es otra cosa (el contenedor ya estaba
- * así). Casi siempre significa que el proceso principal no atiende SIGTERM (la
- * aplicación como PID 1 sin manejador, o un `sh -c` que no reenvía la señal),
- * y se dice cómo arreglarlo. No se activa `Init` (tini) de forma global: rompe
- * imágenes que necesitan ser el PID 1.
+ * así). En una copia sin `Init` casi siempre es la aplicación como PID 1, que
+ * no recibe la señal (ver `runServiceContainer`); con `Init`, una aplicación
+ * que la recibe y no termina. El aviso dice cuál de las dos y cómo arreglarlo.
+ * `initEnServicio` indica que las copias del servicio van con `Init` (las de
+ * aplicación; las bases de datos, no): una copia anterior a eso se marca
+ * `sinInit`, porque la arregla volver a desplegar.
  *
  * Solo un 404 de Docker es «no existe» (`existia: false`, sin lanzar). Antes se
  * consultaba con `findContainer`, que convierte cualquier error en «no existe»:
@@ -229,7 +299,13 @@ async function inspeccionar(name: string): Promise<Docker.ContainerInspectInfo |
  */
 export async function pararConGracia(
   name: string,
-  opts: { graciaSegundos: number; comando?: string | null; log?: (l: string) => void; salidaComando?: boolean },
+  opts: {
+    graciaSegundos: number;
+    comando?: string | null;
+    log?: (l: string) => void;
+    salidaComando?: boolean;
+    initEnServicio?: boolean;
+  },
 ): Promise<ResultadoParada> {
   const gracia = Math.max(0, Math.floor(opts.graciaSegundos));
   let antes: Docker.ContainerInspectInfo | null | undefined;
@@ -239,7 +315,13 @@ export async function pararConGracia(
     opts.log?.(`⚠ No se pudo consultar el estado de ${name} (${err?.message || err}): se detiene igualmente.`);
     antes = undefined;
   }
-  if (antes === null) return { existia: false, forzada: false, comando: null };
+  if (antes === null) return { existia: false, forzada: false, comando: null, sinInit: false };
+  const conInit = antes?.HostConfig?.Init === true;
+  const sinInit =
+    opts.initEnServicio === true &&
+    !!antes &&
+    !conInit &&
+    initPropioDeLaImagen(antes.Config?.Entrypoint as string[] | null, antes.Config?.Cmd, antes.Config?.Env) === null;
   let comando: ResultadoParada['comando'] = null;
   if (antes?.State?.Running && opts.comando) {
     comando = await ejecutarComandoParada(name, opts.comando, gracia, opts.log, { salida: opts.salidaComando });
@@ -249,7 +331,7 @@ export async function pararConGracia(
     await docker.getContainer(name).stop({ t: gracia });
   } catch (err: any) {
     // 304: ya estaba parado. 404: desapareció entre la consulta y la parada.
-    if (err?.statusCode === 404) return { existia: false, forzada: false, comando };
+    if (err?.statusCode === 404) return { existia: false, forzada: false, comando, sinInit };
     if (err?.statusCode !== 304) throw err;
   }
   const tardo = Date.now() - inicio;
@@ -258,14 +340,22 @@ export async function pararConGracia(
   const forzada =
     !!st && !st.Running && st.ExitCode === 137 && !st.OOMKilled && gracia > 0 && tardo >= gracia * 1000 * 0.9;
   if (forzada) {
+    const aviso = `⚠ ${name} no terminó con SIGTERM en ${gracia} s y se detuvo con SIGKILL.`;
     opts.log?.(
-      `⚠ ${name} no terminó con SIGTERM en ${gracia} s y se detuvo con SIGKILL. Si la aplicación es el proceso principal ` +
-        'del contenedor, tiene que atender SIGTERM (cerrar y salir): sin un manejador, el sistema descarta la señal. Si el ' +
-        'comando de arranque es una sola orden, empiézalo con «exec». Aumenta la gracia de parada en Ajustes del servicio ' +
-        'solo si el proceso ya atiende SIGTERM y necesita más tiempo para cerrar.',
+      conInit
+        ? `${aviso} La aplicación recibe SIGTERM: si tiene un manejador, tiene que cerrar y salir. Aumenta la gracia de ` +
+            'parada en Ajustes del servicio solo si necesita más tiempo para cerrar.'
+        : sinInit
+          ? `${aviso} Esta copia se creó sin init y la aplicación, como proceso principal del contenedor, no recibe la ` +
+              'señal. Las copias que crea un despliegue llevan un init que se la entrega: tras volver a desplegar, la parada ' +
+              'es inmediata.'
+          : `${aviso} Si la aplicación es el proceso principal del contenedor, tiene que atender SIGTERM (cerrar y salir): ` +
+              'sin un manejador, el sistema descarta la señal. Si el comando de arranque es una sola orden, empiézalo con ' +
+              '«exec». Aumenta la gracia de parada en Ajustes del servicio solo si el proceso ya atiende SIGTERM y necesita ' +
+              'más tiempo para cerrar.',
     );
   }
-  return { existia: true, forzada, comando };
+  return { existia: true, forzada, comando, sinInit };
 }
 
 /**
@@ -616,10 +706,43 @@ export interface RunSpec {
   stopGraceSeconds?: number;
   /** Identidad de esta copia (etiquetas `skyway.instance` y `skyway.replica`). */
   identidad?: { instancia: string; replica: number };
+  /** Con el init de Docker como PID 1 (ver `runServiceContainer` e `initParaServicio`). */
+  init?: boolean;
+  /** Registro del despliegue, para avisar si el daemon no tiene init. */
+  log?: (l: string) => void;
 }
 
-/** Crea y arranca el contenedor de un servicio (elimina el homónimo si existe). */
+/** Error del daemon al arrancar con `Init` sin el binario del init (`docker-init` o el de `init-path`). */
+const SIN_INIT_RE = /docker-init|init-path|LookupInitPath/i;
+
+/**
+ * Crea y arranca el contenedor de un servicio (elimina el homónimo si existe).
+ *
+ * Con `init`, el PID 1 es el init de Docker (tini), que entrega las señales a
+ * la aplicación. Sin él, la aplicación es el PID 1 y el kernel descarta las
+ * señales para las que no tiene manejador; Node, además, atiende SIGTERM para
+ * restaurar el terminal y la vuelve a lanzar sin manejador, así que tampoco
+ * termina. Detener, Reiniciar y cada despliegue esperaban la gracia entera
+ * (30 s por defecto) con la aplicación en marcha y acababan en SIGKILL; con el
+ * init, la aplicación termina al momento o cierra con su propio manejador.
+ * Si el daemon no tiene el binario del init, se crea otra vez sin él: un
+ * despliegue no puede fallar por eso.
+ */
 export async function runServiceContainer(spec: RunSpec): Promise<string> {
+  if (!spec.init) return crearYArrancar(spec, false);
+  try {
+    return await crearYArrancar(spec, true);
+  } catch (err: any) {
+    if (!SIN_INIT_RE.test(String(err?.message || ''))) throw err;
+    spec.log?.(
+      '⚠ Docker no tiene el init (docker-init): el contenedor se ejecuta sin él y la aplicación, como proceso principal, ' +
+        'tiene que atender SIGTERM para detenerse sin esperar la gracia.',
+    );
+    return crearYArrancar(spec, false);
+  }
+}
+
+async function crearYArrancar(spec: RunSpec, init: boolean): Promise<string> {
   const name = spec.nameOverride ?? containerName(spec.project, spec.service);
   const alias = spec.aliasOverride ?? spec.service.slug;
   const withTraefik = spec.withTraefik !== false;
@@ -651,6 +774,7 @@ export async function runServiceContainer(spec: RunSpec): Promise<string> {
     // Rotación de logs: sin esto, el json-log de un contenedor parlanchín
     // crece sin límite y acaba llenando el disco del servidor.
     LogConfig: { Type: 'json-file', Config: { 'max-size': '10m', 'max-file': '3' } },
+    ...(init ? { Init: true } : {}),
   };
   if (spec.cpus && spec.cpus > 0) hostConfig.NanoCpus = Math.round(spec.cpus * 1e9);
   if (spec.memoryMb && spec.memoryMb > 0) hostConfig.Memory = Math.round(spec.memoryMb * 1024 * 1024);
