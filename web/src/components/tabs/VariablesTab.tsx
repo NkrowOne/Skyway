@@ -625,8 +625,9 @@ export default function VariablesTab({
   const [searchQuery, setSearchQuery] = useState('');
   const [dirty, setDirty] = useState(false);
   const [copiedAll, setCopiedAll] = useState(false);
-  // null mientras no se toque: la lista se abre sola si el repositorio espera algo.
-  const [suggestOpenPref, setSuggestOpenPref] = useState<boolean | null>(null);
+  // Plegada siempre al entrar: el contador de la cabecera ya dice si hay algo,
+  // y abierta empujaba la tabla de variables fuera de la pantalla.
+  const [suggestOpen, setSuggestOpen] = useState(false);
   const suggestPanelId = useId();
   const keyInputRefs = useRef<Map<string, HTMLInputElement>>(new Map());
   const valueInputRefs = useRef<Map<string, HTMLInputElement>>(new Map());
@@ -783,13 +784,10 @@ export default function VariablesTab({
 
   /**
    * Añade una sugerencia (o todas las referencias a la vez, que llevan valor). Sin
-   * valor, el cursor queda en su campo para introducirlo. La lista se fija
-   * abierta: si no, al añadir la última del repositorio se plegaría sola
-   * debajo del dedo.
+   * valor, el cursor queda en su campo para introducirlo.
    */
   const addSuggested = (entries: { key: string; value: string }[]) => {
     if (entries.length === 0) return;
-    setSuggestOpenPref((open) => open ?? true);
     const [first] = appendVars(entries);
     const [entry] = entries;
     if (entries.length === 1 && !entry.value && first) setTimeout(() => valueInputRefs.current.get(first.id)?.focus(), 50);
@@ -1185,8 +1183,6 @@ export default function VariablesTab({
 
   const repoSuggestCount = pendingWithValue.length + pendingGroups.reduce((n, g) => n + g.length, 0) + pendingEmpty.length;
   const suggestCount = repoSuggestCount + commonPending.length;
-  // Plegada por defecto; abierta si el repositorio espera algo, hasta que se pliegue a mano.
-  const suggestOpen = suggestOpenPref ?? repoSuggestCount > 0;
 
   // Variables de correo que la web espera y todavía no existen (las escribe «Correo → Conectar»).
   // Con un skyway.json válido, el correo lo lleva su plan (panel de integraciones).
@@ -1387,7 +1383,7 @@ export default function VariablesTab({
           >
             <button
               type="button"
-              onClick={() => setSuggestOpenPref(!suggestOpen)}
+              onClick={() => setSuggestOpen((o) => !o)}
               aria-expanded={suggestOpen}
               aria-controls={suggestPanelId}
               className={cx(

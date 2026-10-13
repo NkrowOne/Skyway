@@ -1363,8 +1363,8 @@ null` si hay que crearla), `missing` (variables esperadas sin propuesta
 automática) y `needs` (motores con su pista). Los nombres se casan por papel:
 `DB_HOST` → `${{Postgres.PGHOST}}`, `S3_ACCESS_KEY` → `${{MinIO.MINIO_ROOT_USER}}`,
 `NEXTAUTH_URL` → `${{<este servicio>.PUBLIC_URL}}` si tiene dominio. La pestaña
-Variables lo pinta en la sección plegable «Variables sugeridas» (abierta de
-entrada si el repositorio espera algo): cada sugerencia con su «Añadir» propio
+Variables lo pinta en la sección plegable «Variables sugeridas» (siempre
+plegada al entrar; la cabecera dice cuántas hay y se abre al pulsarla): cada sugerencia con su «Añadir» propio
 —las que no tienen valor añaden solo esa fila, con el cursor en el valor; nunca
 se añade un lote de variables vacías—, «Añadir las N referencias» cuando hay
 varias con valor real, «Crear <motor> y conectar» (crea la base en el proyecto y
