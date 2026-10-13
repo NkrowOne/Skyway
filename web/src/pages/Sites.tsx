@@ -6,7 +6,18 @@ import { api } from '../api';
 import { ModuleChip, moduleKind } from '../components/ModuleIcon';
 import { Button, Chip, ConfirmModal, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { WebsiteEntry } from '../types';
-import { cx, DEPLOY_STATUS_LABEL, EMPTY_LIST, serviceStatus, STATE_LABEL, STATE_PULSE, STATE_TONE, timeAgo } from '../utils';
+import {
+  avisoReinicio,
+  cx,
+  DEPLOY_STATUS_LABEL,
+  EMPTY_LIST,
+  RespuestaParada,
+  serviceStatus,
+  STATE_LABEL,
+  STATE_PULSE,
+  STATE_TONE,
+  timeAgo,
+} from '../utils';
 
 /**
  * Botón-icono de la tarjeta. En escritorio es discreto (p-1.5); en táctil crece
@@ -172,11 +183,12 @@ export default function SitesPage() {
   // Sitio pendiente de confirmar el reinicio (evita reinicios por un clic accidental).
   const [confirmRestart, setConfirmRestart] = useState<WebsiteEntry | null>(null);
   const restart = useMutation({
-    mutationFn: (serviceId: string) => api.post(`/services/${serviceId}/restart`),
+    mutationFn: (serviceId: string) => api.post<RespuestaParada>(`/services/${serviceId}/restart`),
     ...track,
-    onSuccess: () => {
+    onSuccess: (data) => {
       setConfirmRestart(null);
-      toast('Servicio reiniciado', 'ok');
+      const aviso = avisoReinicio(data);
+      toast(aviso.texto, aviso.tono);
       queryClient.invalidateQueries({ queryKey: ['websites'] });
     },
     onError: (err: Error) => toast(err.message, 'err'),

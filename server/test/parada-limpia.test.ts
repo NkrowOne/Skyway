@@ -175,13 +175,13 @@ vi.mock('../src/docker/containers', async (importOriginal) => {
     pararConGracia: vi.fn(
       async (name: string, opts: { graciaSegundos: number; comando?: string | null; salidaComando?: boolean }) => {
         const c = m.contenedores.get(name);
-        if (!c) return { existia: false, forzada: false, comando: null };
+        if (!c) return { existia: false, forzada: false, comando: null, sinInit: false };
         m.eventos.push(`parar:${name}(t=${opts.graciaSegundos})`);
         m.paradas.set(name, { graciaSegundos: opts.graciaSegundos, comando: opts.comando, salidaComando: opts.salidaComando });
         await new Promise((r) => setTimeout(r, m.espera.get(name) ?? 20));
         c.running = false;
         m.eventos.push(`parada:${name}`);
-        return { existia: true, forzada: m.forzadas.has(name), comando: opts.comando ? 'ok' : null };
+        return { existia: true, forzada: m.forzadas.has(name), comando: opts.comando ? 'ok' : null, sinInit: false };
       },
     ),
     startContainer: vi.fn(async (name: string) => {
@@ -300,7 +300,7 @@ describe('docker/containers.ts: parada limpia', () => {
     d.estado.set('c1', { running: true, exitCode: 0, oom: false });
     const log: string[] = [];
     const r = await pararConGracia('c1', { graciaSegundos: 30, comando: 'curl -X POST "$URL/baja"; echo adiós', log: (l) => log.push(l) });
-    expect(r).toEqual({ existia: true, forzada: false, comando: 'ok' });
+    expect(r).toEqual({ existia: true, forzada: false, comando: 'ok', sinInit: false });
     expect(d.execs[0].Cmd).toEqual(['sh', '-c', 'eval "$SKYWAY_STOP_CMD"']);
     expect(d.execs[0].Env).toEqual(['SKYWAY_STOP_CMD=curl -X POST "$URL/baja"; echo adiós']);
     expect(d.ordenes.indexOf('exec:c1')).toBeLessThan(d.ordenes.indexOf('stop:c1:t=30'));
@@ -337,6 +337,7 @@ describe('docker/containers.ts: parada limpia', () => {
       existia: false,
       forzada: false,
       comando: null,
+      sinInit: false,
     });
     expect(d.ordenes).toEqual([]);
   });

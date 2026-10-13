@@ -184,8 +184,9 @@ export const FAQ: FaqEntry[] = [
     answer:
       'En la cabecera del servicio dispones de **Detener**, **Iniciar** y **Reiniciar**. Detener conserva la imagen, las variables y los volúmenes: al iniciar, el servicio vuelve exactamente al estado anterior, sin compilación. Reiniciar sigue la estrategia del servicio: con **Sin corte** y varias réplicas, las reinicia una a una (siempre queda una en servicio); con **Una sola copia**, las detiene todas y después las vuelve a arrancar.\n\n' +
       'Un servicio detenido manualmente aparece en gris y no genera alertas de caída. Si necesitas que deje de consumir cuota, es suficiente con detenerlo; para liberarla por completo, elimínalo desde Ajustes.\n\n' +
+      'Si Reiniciar tarda la gracia de parada entera (30 s por defecto) y avisa de que el servicio se detuvo con SIGKILL, la copia se creó sin init: **vuelve a desplegar el servicio una vez** y el reinicio pasa a ser inmediato.\n\n' +
       'Si el servicio está caído sin que nadie lo haya detenido, consulta primero **Logs**: casi siempre hay una excepción justo antes del cierre.',
-    keywords: ['parar', 'detener', 'stop', 'iniciar', 'start', 'reiniciar', 'restart', 'apagar', 'encender', 'detenido', 'gris'],
+    keywords: ['parar', 'detener', 'stop', 'iniciar', 'start', 'reiniciar', 'restart', 'apagar', 'encender', 'detenido', 'gris', 'no reinicia', 'tarda en reiniciar'],
   },
   {
     id: 'parada-limpia',
@@ -197,11 +198,13 @@ export const FAQ: FaqEntry[] = [
       '2. Se envía **SIGTERM** al proceso principal para que termine de forma ordenada.\n' +
       '3. Si no ha terminado al agotar la **gracia de parada**, se envía **SIGKILL**.\n\n' +
       'La gracia y el comando se configuran en **Ajustes → Despliegue y parada** (en una base de datos, solo la gracia). La gracia es de 30 segundos por defecto, de 0 a 600; si el servicio viene de Railway y define `RAILWAY_DEPLOYMENT_DRAINING_SECONDS`, se usa ese valor. En una base de datos va de 10 a 600 y esa variable no se aplica.\n\n' +
-      'Si el registro indica que una copia **no terminó con SIGTERM y se detuvo con SIGKILL** (código de salida 137), el proceso no atiende SIGTERM o necesita más tiempo para cerrar. Hay dos causas habituales:\n\n' +
-      '- **La aplicación es el proceso principal del contenedor y no tiene manejador de SIGTERM.** El sistema descarta la señal, así que el proceso sigue hasta el SIGKILL. Añade uno que cierre y salga: en Node, `process.on(\'SIGTERM\', …)`; en Python, `signal.signal(signal.SIGTERM, …)`.\n' +
-      '- **El comando de arranque va envuelto en un shell** (Skyway lo ejecuta con `sh -c`) y el shell no reenvía la señal. Si es una sola orden, empiézala con `exec` (`exec node bot.js`): la aplicación sustituye al shell, y entonces tiene que atender SIGTERM como en el caso anterior.\n\n' +
+      'Las aplicaciones se ejecutan con un **init** como proceso principal del contenedor, que entrega SIGTERM a la aplicación: sin manejador, termina al momento. No lo llevan las bases de datos ni las imágenes con su propio proceso de inicio (s6-overlay, systemd, tini…).\n\n' +
+      'Si el registro indica que una copia **no terminó con SIGTERM y se detuvo con SIGKILL** (código de salida 137), la causa depende de la copia:\n\n' +
+      '- **La copia se creó sin init** (antes de que Skyway lo añadiera). La aplicación, como proceso principal, no recibe la señal, y Detener o Reiniciar esperan la gracia entera sin efecto aparente. **Vuelve a desplegar el servicio una vez**: la copia nueva lleva el init y la parada es inmediata.\n' +
+      '- **La aplicación recibe SIGTERM y no termina.** Su manejador tiene que cerrar y salir: en Node, `process.on(\'SIGTERM\', …)` con `process.exit()` al final; en Python, `signal.signal(signal.SIGTERM, …)`.\n' +
+      '- **Sin init** (base de datos o imagen con su propio proceso de inicio): el proceso principal necesita un manejador de SIGTERM, y un comando de arranque de una sola orden, `exec` delante (`exec node bot.js`).\n\n' +
       'Aumentar la gracia solo sirve si el proceso ya atiende SIGTERM y necesita más tiempo. Con **Una sola copia**, la gracia se suma a los segundos sin servicio de cada despliegue: si el proceso no atiende SIGTERM, conviene bajarla, y Alertas lo recuerda («no atiende SIGTERM») hasta el primer despliegue que no necesite SIGKILL. La copia de validación de **Sin corte** se detiene con una gracia de 10 s como mucho, porque no ha atendido nada. Un código 137 sin ese aviso suele indicar falta de memoria.',
-    keywords: ['parar', 'detener', 'stop', 'sigterm', 'sigkill', 'kill', 'señal', 'gracia', 'gracia de parada', 'comando al parar', 'graceful shutdown', 'apagado', 'cierre ordenado', '137', 'exec', 'drain', 'draining', 'railway_deployment_draining_seconds', 'tarda en parar', 'no se detiene', 'pid 1', 'manejador', 'process.on'],
+    keywords: ['parar', 'detener', 'stop', 'sigterm', 'sigkill', 'kill', 'señal', 'gracia', 'gracia de parada', 'comando al parar', 'graceful shutdown', 'apagado', 'cierre ordenado', '137', 'exec', 'drain', 'draining', 'railway_deployment_draining_seconds', 'tarda en parar', 'no se detiene', 'pid 1', 'manejador', 'process.on', 'init', 'tini', 'reiniciar', 'no reinicia', 'tarda en reiniciar'],
   },
   {
     id: 'identidad-de-cada-copia',

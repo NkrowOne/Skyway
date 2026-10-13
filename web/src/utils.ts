@@ -482,3 +482,29 @@ export async function copyToClipboard(text: string): Promise<boolean> {
     return false;
   }
 }
+
+/** Respuesta de Detener y Reiniciar (`POST /services/:id/stop` y `/restart`). */
+export interface RespuestaParada {
+  /** Copias que no terminaron con SIGTERM a tiempo y se detuvieron con SIGKILL. */
+  forced?: string[];
+  /** Alguna se creó sin el init que llevan las copias nuevas. */
+  initOnRedeploy?: boolean;
+}
+
+/**
+ * Para una parada forzada de una copia creada sin init: no la arregla la
+ * aplicación, sino volver a desplegar una vez.
+ */
+export const AVISO_INIT_REDESPLEGAR =
+  'Vuelve a desplegar el servicio una vez: las copias nuevas llevan un init que entrega SIGTERM a la aplicación, y Detener y Reiniciar son inmediatos.';
+
+/** Aviso de Reiniciar en las listas (Monitor, Sitios): «reiniciado», o por qué ha tardado. */
+export function avisoReinicio(r: RespuestaParada | undefined): { texto: string; tono: 'ok' | 'info' } {
+  if (r?.initOnRedeploy) {
+    return {
+      texto: `Servicio reiniciado. No terminó con SIGTERM y se detuvo con SIGKILL al agotar la gracia. ${AVISO_INIT_REDESPLEGAR}`,
+      tono: 'info',
+    };
+  }
+  return { texto: 'Servicio reiniciado', tono: 'ok' };
+}
