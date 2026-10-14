@@ -3022,9 +3022,13 @@ cmd_recuperar_bucket() {
   local versiones
   versiones="$(AWS_ENV_FILE="$tmp" aws_ s3api list-object-versions --bucket "$CFG_S3_BUCKET" --prefix "$CFG_S3_PREFIJO/" --output json)" \
     || { fin_recuperar; die "No se han podido listar las versiones del bucket con esa clave."; }
+  # Las fechas se comparan como instantes, no como texto: la CLI de AWS las da
+  # como «…:05+00:00» o «…:05.123+00:00», y «--desde» llega como «…:05Z».
   local plan
-  plan="$(jq -c --arg d "$desde" '[ (.Versions // [])[] | select(.LastModified >= $d) | {Key, VersionId, tipo: "version"} ]
-      + [ (.DeleteMarkers // [])[] | select(.LastModified >= $d) | {Key, VersionId, tipo: "marca"} ]' <<< "$versiones")"
+  plan="$(jq -c --arg d "$desde" 'def t: sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601;
+      ($d | t) as $desde
+      | [ (.Versions // [])[] | select((.LastModified | t) >= $desde) | {Key, VersionId, tipo: "version"} ]
+      + [ (.DeleteMarkers // [])[] | select((.LastModified | t) >= $desde) | {Key, VersionId, tipo: "marca"} ]' <<< "$versiones")"
   local n_v n_m
   n_v="$(jq '[.[] | select(.tipo == "version")] | length' <<< "$plan")"; n_m="$(jq '[.[] | select(.tipo == "marca")] | length' <<< "$plan")"
   if [[ "$n_v" == 0 && "$n_m" == 0 ]]; then fin_recuperar; ok "No hay cambios en el bucket desde $desde."; return 0; fi

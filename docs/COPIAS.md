@@ -534,7 +534,9 @@ copias internas del panel 04:00, actualización de Skyway 04:30.
   local con bloqueo de objetos (versitygw): copia, restauraciones por partes,
   volcados, kit y descodificación, peticiones del panel, S3 caído, retención
   un servidor nuevo desde cero con `restaurar.sh` y, contra un API nativo
-  falso de Backblaze, `configurar` y `recuperar-bucket` tras un borrado. Se
+  falso de Backblaze, `configurar` y la clave temporal de `recuperar-bucket`
+  (que los datos vuelvan no se puede comprobar con ese S3 local: cambia las
+  fechas de las versiones antiguas al borrar). Se
   ejecuta como root, igual que las copias (`sudo bash
   scripts/copias/prueba-real.sh`), y la ejecuta la CI
   (`.github/workflows/copias.yml`).
