@@ -267,7 +267,7 @@ function SinInstalar({ ilegible }: { ilegible: boolean }) {
       )}
       <p className="text-xs leading-5 text-sub">
         Las copias incluyen la configuración de Skyway y de Mailway, el correo y los volúmenes, bases de datos e imágenes de los
-        servicios, y se guardan en un almacenamiento compatible con S3, como Cubbit. Se activan en la terminal del servidor:
+        servicios, y se guardan en un almacenamiento compatible con S3, como Backblaze B2. Se activan en la terminal del servidor:
       </p>
       <ol className="list-decimal space-y-3 rounded-lg border border-line bg-bg py-3 pl-8 pr-3.5 text-xs leading-5 text-sub">
         <li>

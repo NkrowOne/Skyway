@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # copias — copias externas de todo el servidor (Skyway, sus proyectos y webs, y
-# Mailway) en un almacenamiento S3 (Cubbit u otro compatible), cifradas con
+# Mailway) en un almacenamiento S3 (Backblaze B2 u otro compatible), cifradas con
 # restic. Se usa como «skyway copias <orden>» (scripts/skyway lo delega aquí).
 #
 #   sudo skyway copias                      Menú
@@ -56,6 +56,7 @@ ESTADO_DIR="${COPIAS_ESTADO_DIR:-/var/lib/skyway-copias}"
 SYSTEMD_DIR="${COPIAS_SYSTEMD_DIR:-/etc/systemd/system}"
 VOLUMEN_CACHE="${COPIAS_VOLUMEN_CACHE:-skyway-copias-cache}"
 URL_PANEL="${COPIAS_URL_PANEL:-http://127.0.0.1:4000}"
+URL_B2="${COPIAS_URL_B2:-https://api.backblazeb2.com}"
 # Todas las instantáneas llevan este «host»: así, tras restaurar en otra
 # máquina, las copias siguientes continúan las mismas series (y la
 # deduplicación) en lugar de empezar de cero.
@@ -171,12 +172,12 @@ version_posterior() {
 # s3.env: credenciales del S3 en formato --env-file de Docker.
 # contrasena: la de restic, en una línea. Los tres, 600 y de root.
 
-CFG_S3_ENDPOINT=''; CFG_S3_REGION=''; CFG_S3_BUCKET=''; CFG_S3_PREFIJO=''; CFG_S3_ESTILO='auto'
+CFG_S3_ENDPOINT=''; CFG_S3_REGION=''; CFG_S3_BUCKET=''; CFG_S3_PREFIJO=''; CFG_S3_ESTILO='auto'; CFG_S3_PROVEEDOR=''
 CFG_RETENCION_DIARIAS=7; CFG_RETENCION_SEMANALES=4; CFG_RETENCION_MENSUALES=6
 CFG_HORA='03:30'; CFG_AVISO_URL=''; CFG_IMAGENES='si'; CFG_EXCLUIR=''
 CFG_SKYWAY_DIR=''; CFG_MAILWAY_DIR='auto'; CFG_PAUSA_MAXIMA=900
 
-CLAVES_CONFIG=(S3_ENDPOINT S3_REGION S3_BUCKET S3_PREFIJO S3_ESTILO RETENCION_DIARIAS RETENCION_SEMANALES RETENCION_MENSUALES HORA AVISO_URL IMAGENES EXCLUIR SKYWAY_DIR MAILWAY_DIR PAUSA_MAXIMA)
+CLAVES_CONFIG=(S3_ENDPOINT S3_REGION S3_BUCKET S3_PREFIJO S3_ESTILO S3_PROVEEDOR RETENCION_DIARIAS RETENCION_SEMANALES RETENCION_MENSUALES HORA AVISO_URL IMAGENES EXCLUIR SKYWAY_DIR MAILWAY_DIR PAUSA_MAXIMA)
 
 leer_config() {
   local f="$CONFIG_DIR/config" linea clave valor k
@@ -219,11 +220,12 @@ escribir_config() {
 }
 
 validar_config() {
-  [[ "$CFG_S3_ENDPOINT" =~ ^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?$ ]] || die "El endpoint del S3 no es válido (p. ej. https://s3.cubbit.eu)."
+  [[ "$CFG_S3_ENDPOINT" =~ ^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?$ ]] || die "El endpoint del S3 no es válido (p. ej. https://s3.eu-central-003.backblazeb2.com)."
   [[ "$CFG_S3_BUCKET" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] || die "El nombre del bucket no es válido (minúsculas, números, puntos y guiones; de 3 a 63 caracteres)."
   [[ "$CFG_S3_PREFIJO" =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ && "$CFG_S3_PREFIJO" != *..* ]] || die "La carpeta dentro del bucket no es válida (letras, números, «.», «_», «-» y «/»)."
   [[ "$CFG_S3_REGION" =~ ^[a-z0-9-]{1,40}$ ]] || die "La región del S3 no es válida (p. ej. eu-west-1)."
   [[ "$CFG_S3_ESTILO" =~ ^(auto|path|dns)$ ]] || die "S3_ESTILO debe ser auto, path o dns."
+  [[ -z "$CFG_S3_PROVEEDOR" || "$CFG_S3_PROVEEDOR" =~ ^(backblaze|otro)$ ]] || die "S3_PROVEEDOR debe ser backblaze, otro o estar vacío."
   [[ "$CFG_HORA" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]] || die "La hora debe tener el formato HH:MM."
   local n
   for n in "$CFG_RETENCION_DIARIAS" "$CFG_RETENCION_SEMANALES" "$CFG_RETENCION_MENSUALES" "$CFG_PAUSA_MAXIMA"; do
@@ -336,6 +338,216 @@ aws_() {
     -e "AWS_DEFAULT_REGION=$CFG_S3_REGION" \
     ${proxy[@]+"${proxy[@]}"} \
     "$IMAGEN_AWS" --endpoint-url "$CFG_S3_ENDPOINT" "$@"
+}
+
+# Una clave recién creada puede tardar en valer en el API S3 (Backblaze avisa
+# de que algunos cambios de claves tardan unos minutos): se espera hasta dos.
+esperar_clave_s3() {
+  local i
+  for i in $(seq 1 24); do
+    aws_ s3api head-bucket --bucket "$CFG_S3_BUCKET" >/dev/null 2>&1 && return 0
+    if (( i == 1 )); then info "Esperando a que la clave nueva funcione en el S3…"; fi
+    if (( i < 24 )); then sleep 5; fi
+  done
+  warn "La clave nueva aún no funciona en el S3; se sigue igualmente."
+  return 0
+}
+
+# ---------- Backblaze B2 (API nativo) ----------
+#
+# El API S3 de Backblaze no crea claves ni reglas de ciclo de vida, y las
+# claves que se crean en su web pueden llevar «bypassGovernance»: quien entrara
+# en el servidor podría borrar las copias bloqueadas. Con la clave maestra de la
+# cuenta (se pide, se usa y no se guarda), el API nativo prepara el bucket y
+# crea para el servidor una clave limitada a él y sin ese permiso.
+
+# Lo que necesita restic: leer, escribir y retirar (en Backblaze, ocultar).
+# Además, ver el bloqueo y alargar la retención de un fichero, por si el
+# proveedor lo pide al subir (acortarla exige bypassGovernance). Nada de
+# claves ni de buckets.
+CAPACIDADES_B2_SERVIDOR=(listBuckets listAllBucketNames readBuckets listFiles readFiles writeFiles deleteFiles readBucketRetentions readFileRetentions writeFileRetentions)
+# recuperar-bucket: además, saltarse el bloqueo en modo governance.
+CAPACIDADES_B2_RECUPERAR=("${CAPACIDADES_B2_SERVIDOR[@]}" bypassGovernance)
+
+B2_TOKEN=''; B2_API=''; B2_CUENTA=''; B2_S3=''; B2_BUCKET_ID=''; B2_CICLO_OK=0
+
+es_backblaze() {
+  [[ "$CFG_S3_PROVEEDOR" == backblaze || "$CFG_S3_ENDPOINT" =~ ^https://s3\.[a-z0-9-]+\.backblazeb2\.com/?$ ]]
+}
+
+# https://s3.eu-central-003.backblazeb2.com → eu-central-003 (la región es la
+# segunda parte del nombre). Nada si el endpoint no es de Backblaze.
+region_de_endpoint() {
+  if [[ "$1" =~ ^https://s3\.([a-z0-9-]+)\.backblazeb2\.com/?$ ]]; then printf '%s' "${BASH_REMATCH[1]}"; fi
+  return 0
+}
+
+# b2_peticion <url> <línea de configuración de curl> [cuerpo JSON]: imprime la
+# respuesta o, si falla, el motivo (y sale con 1): quien llama suele estar en
+# una sustitución «$(…)», de la que no vuelve ninguna variable. Las
+# credenciales van en un fichero de configuración de curl, nunca en la línea
+# de órdenes (las vería cualquiera con «ps»).
+b2_peticion() {
+  local url="$1" credencial="$2" cuerpo="${3:-}" cfg salida codigo motivo
+  cfg="$(mktemp)"; chmod 600 "$cfg"
+  printf '%s\n' "$credencial" > "$cfg"
+  if [[ -n "$cuerpo" ]]; then
+    salida="$(curl -sS -m 60 -K "$cfg" -H 'Content-Type: application/json' --data-binary @- -w '\n%{http_code}' "$url" <<< "$cuerpo" 2>/dev/null || true)"
+  else
+    salida="$(curl -sS -m 60 -K "$cfg" -w '\n%{http_code}' "$url" 2>/dev/null || true)"
+  fi
+  rm -f "$cfg"
+  codigo="${salida##*$'\n'}"; salida="${salida%$'\n'*}"
+  if [[ "$codigo" == 200 ]]; then printf '%s' "$salida"; return 0; fi
+  if [[ "$codigo" == 000 || -z "$codigo" ]]; then
+    motivo="sin conexión con Backblaze"
+  else
+    motivo="$(jq -r '.message // empty' <<< "$salida" 2>/dev/null | head -n 1 || true)"
+  fi
+  printf '%s' "${motivo:-HTTP $codigo}"
+  return 1
+}
+
+# b2_llamar <operación> <cuerpo JSON>, con el token de b2_autorizar.
+b2_llamar() {
+  b2_peticion "$B2_API/b2api/v4/$1" "header = \"Authorization: $B2_TOKEN\"" "$2"
+}
+
+b2_autorizar() {
+  local id="$1" clave="$2" r
+  [[ "$id" =~ ^[A-Za-z0-9]+$ && "$clave" =~ ^[A-Za-z0-9+/=_-]+$ ]] \
+    || die "La clave de Backblaze no tiene el formato esperado (keyID y applicationKey, sin espacios)."
+  r="$(b2_peticion "$URL_B2/b2api/v4/b2_authorize_account" "user = \"$id:$clave\"")" \
+    || die "Backblaze no acepta esa clave ($r). Usa la clave maestra: «Application Keys» → «Generate New Master Application Key»."
+  B2_TOKEN="$(jq -r '.authorizationToken // empty' <<< "$r")"
+  B2_API="$(jq -r '.apiInfo.storageApi.apiUrl // empty' <<< "$r")"
+  B2_S3="$(jq -r '.apiInfo.storageApi.s3ApiUrl // empty' <<< "$r")"; B2_S3="${B2_S3%/}"
+  B2_CUENTA="$(jq -r '.accountId // empty' <<< "$r")"
+  [[ "$B2_TOKEN" =~ ^[A-Za-z0-9+/=_.:-]+$ && "$B2_API" =~ ^https?://[A-Za-z0-9.:-]+$ && -n "$B2_S3" && "$B2_CUENTA" =~ ^[A-Za-z0-9]+$ ]] \
+    || die "Respuesta inesperada de Backblaze al autorizar la clave."
+  jq -e '.apiInfo.storageApi.allowed.capabilities | index("writeKeys")' >/dev/null <<< "$r" \
+    || die "Esa clave no puede crear claves: usa la clave maestra («Application Keys» → «Generate New Master Application Key»)."
+}
+
+# Identificador del bucket configurado (vacío si no existe en la cuenta).
+b2_id_bucket() {
+  local r
+  r="$(b2_llamar b2_list_buckets "$(jq -nc --arg a "$B2_CUENTA" --arg b "$CFG_S3_BUCKET" '{accountId: $a, bucketName: $b, bucketTypes: ["all"]}')")" \
+    || die "Backblaze: no se han podido consultar los buckets ($r)."
+  jq -c '.buckets[0] // empty' <<< "$r"
+}
+
+# Busca el bucket (o lo crea, privado y con bloqueo de objetos) y se asegura de
+# la retención por defecto y de la regla que borra lo que las copias retiran
+# de la carpeta de este servidor. Sin esa regla, Backblaze lo guardaría (y lo
+# cobraría) para siempre.
+b2_preparar_bucket() {
+  local r bucket carpeta="$CFG_S3_PREFIJO/"
+  bucket="$(b2_id_bucket)"
+  if [[ -z "$bucket" ]]; then
+    bucket="$(b2_llamar b2_create_bucket "$(jq -nc --arg a "$B2_CUENTA" --arg b "$CFG_S3_BUCKET" --arg p "$carpeta" \
+      '{accountId: $a, bucketName: $b, bucketType: "allPrivate", fileLockEnabled: true,
+        lifecycleRules: [{fileNamePrefix: $p, daysFromHidingToDeleting: 31, daysFromUploadingToHiding: null}]}')")" \
+      || die "Backblaze: no se ha podido crear el bucket «$CFG_S3_BUCKET» ($bucket). El nombre es único en todo Backblaze: si lo usa otra cuenta, elige otro."
+    ok "Bucket «$CFG_S3_BUCKET» creado: privado y con bloqueo de objetos."
+  elif [[ "$(jq -r '.bucketType' <<< "$bucket")" != allPrivate ]]; then
+    warn "El bucket «$CFG_S3_BUCKET» no es privado: las copias van cifradas, pero conviene que lo sea («Bucket Settings» en la web de Backblaze)."
+  fi
+  B2_BUCKET_ID="$(jq -r '.bucketId // empty' <<< "$bucket")"
+  [[ "$B2_BUCKET_ID" =~ ^[A-Za-z0-9]+$ ]] || die "Respuesta inesperada de Backblaze: el bucket no tiene identificador."
+
+  if ! jq -e '.fileLockConfiguration.value.isFileLockEnabled == true' >/dev/null <<< "$bucket"; then
+    if r="$(b2_llamar b2_update_bucket "$(jq -nc --arg a "$B2_CUENTA" --arg i "$B2_BUCKET_ID" '{accountId: $a, bucketId: $i, fileLockEnabled: true}')")"; then
+      bucket="$r"; ok "Bloqueo de objetos activado en el bucket."
+    else
+      warn "No se ha podido activar el bloqueo de objetos ($r): sin él, quien entrara en el servidor podría borrar las copias."
+    fi
+  fi
+  if jq -e '.fileLockConfiguration.value.isFileLockEnabled == true' >/dev/null <<< "$bucket"; then
+    if jq -e '.fileLockConfiguration.value.defaultRetention.mode // empty' >/dev/null <<< "$bucket"; then
+      ok "Bloqueo de objetos: $(jq -r '.fileLockConfiguration.value.defaultRetention | "\(.period.duration) \(if .period.unit == "years" then "años" else "días" end), modo \(.mode)"' <<< "$bucket")."
+    elif r="$(b2_llamar b2_update_bucket "$(jq -nc --arg a "$B2_CUENTA" --arg i "$B2_BUCKET_ID" \
+        '{accountId: $a, bucketId: $i, defaultRetention: {mode: "governance", period: {duration: 30, unit: "days"}}}')")"; then
+      bucket="$r"; ok "Bloqueo de objetos: 30 días, modo governance."
+    else
+      warn "No se ha podido fijar la retención por defecto ($r): ponla en la web de Backblaze (bucket → «Object Lock»: governance, 30 días)."
+    fi
+  fi
+
+  # Backblaze no admite dos reglas que se crucen: se respeta la que ya cubra la
+  # carpeta si borra lo retirado, y si no hay ninguna se añade la de la carpeta.
+  local cruzadas reglas
+  # (Cada regla se ata a $r: dentro de startswith(…), «.» sería la carpeta.)
+  cruzadas="$(jq -c --arg p "$carpeta" '[(.lifecycleRules // [])[] | . as $r | select(($p | startswith($r.fileNamePrefix)) or ($r.fileNamePrefix | startswith($p)))]' <<< "$bucket")"
+  if jq -e --arg p "$carpeta" 'any(.[]; . as $r | ($p | startswith($r.fileNamePrefix)) and (($r.daysFromHidingToDeleting // 0) > 0))' >/dev/null <<< "$cruzadas"; then
+    B2_CICLO_OK=1
+    ok "Lo que las copias retiran se borra del todo a los $(jq -r --arg p "$carpeta" '[.[] | . as $r | select($p | startswith($r.fileNamePrefix)) | select(($r.daysFromHidingToDeleting // 0) > 0)][0].daysFromHidingToDeleting' <<< "$cruzadas") días (regla de Backblaze)."
+  elif [[ "$(jq 'length' <<< "$cruzadas")" != 0 ]]; then
+    warn "Una regla de ciclo de vida del bucket se cruza con la carpeta «$carpeta» y no borra lo retirado: revísala en la web de Backblaze («Lifecycle Settings») o lo que las copias retiran seguirá ocupando, y costando."
+  else
+    reglas="$(jq -c --arg p "$carpeta" '(.lifecycleRules // []) + [{fileNamePrefix: $p, daysFromHidingToDeleting: 31, daysFromUploadingToHiding: null}]' <<< "$bucket")"
+    if r="$(b2_llamar b2_update_bucket "$(jq -nc --arg a "$B2_CUENTA" --arg i "$B2_BUCKET_ID" --argjson l "$reglas" '{accountId: $a, bucketId: $i, lifecycleRules: $l}')")"; then
+      B2_CICLO_OK=1; ok "Lo que las copias retiran se borra del todo a los 31 días (regla de Backblaze)."
+    else
+      warn "No se ha podido crear la regla de ciclo de vida ($r): en la web de Backblaze, bucket → «Lifecycle Settings» → «Keep prior versions for this number of days»: 31."
+    fi
+  fi
+}
+
+# b2_crear_clave <nombre> <segundos de validez o vacío> <capacidades…>: una
+# clave solo para el bucket de B2_BUCKET_ID. Imprime «id<TAB>clave».
+b2_crear_clave() {
+  local nombre="$1" duracion="$2" r ak sk; shift 2
+  r="$(b2_llamar b2_create_key "$(jq -nc --arg a "$B2_CUENTA" --arg n "$nombre" --arg d "$duracion" --arg b "$B2_BUCKET_ID" \
+    '{accountId: $a, keyName: $n, capabilities: $ARGS.positional, bucketIds: [$b]}
+     + (if $d == "" then {} else {validDurationInSeconds: ($d | tonumber)} end)' --args "$@")")" \
+    || die "Backblaze: no se ha podido crear la clave «$nombre» ($r)."
+  ak="$(jq -r '.applicationKeyId // empty' <<< "$r")"; sk="$(jq -r '.applicationKey // empty' <<< "$r")"
+  [[ -n "$ak" && -n "$sk" && "$ak$sk" != *[[:space:]]* ]] || die "Backblaze no ha devuelto la clave «$nombre»."
+  printf '%s\t%s' "$ak" "$sk"
+}
+
+b2_borrar_clave() {
+  local r
+  if r="$(b2_llamar b2_delete_key "$(jq -nc --arg k "$1" '{applicationKeyId: $k}')")"; then
+    ok "Clave temporal de Backblaze borrada."
+  else
+    warn "No se ha podido borrar la clave temporal $1 ($r): caduca sola en una hora, o bórrala en «Application Keys»."
+  fi
+}
+
+# «configurar» con Backblaze: $1 = carpeta por defecto, $2 = 1 si ya estaba
+# configurado con Backblaze (se reutiliza el bucket y se avisa de la clave anterior).
+configurar_backblaze() {
+  local prefijo_defecto="$1" era_b2="$2" id clave par ak sk anterior='' nombre bucket_defecto
+  info "En la web de Backblaze: «Application Keys» → «Generate New Master Application Key». La clave maestra solo se usa ahora (prepara el bucket y crea una clave limitada para este servidor) y no se guarda aquí. Guárdala en tu gestor de contraseñas: hace falta para «recuperar-bucket»."
+  id="$(preguntar 'keyID de la clave maestra')"
+  clave="$(preguntar_secreto 'applicationKey de la clave maestra')"
+  b2_autorizar "$id" "$clave"
+  CFG_S3_ENDPOINT="$B2_S3"
+  CFG_S3_REGION="$(region_de_endpoint "$CFG_S3_ENDPOINT")"
+  [[ -n "$CFG_S3_REGION" ]] || CFG_S3_REGION="$(preguntar 'Región del S3' us-east-1)"
+  ok "Cuenta de Backblaze: $CFG_S3_ENDPOINT"
+  [[ "$CFG_S3_REGION" == eu-* ]] || warn "La cuenta de Backblaze está en $CFG_S3_REGION, fuera de la Unión Europea. La región se elige al crear la cuenta: para guardar en la UE, crea otra con «EU Central»."
+  bucket_defecto="skyway-copias-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+  if [[ "$era_b2" == 1 && -n "$CFG_S3_BUCKET" ]]; then bucket_defecto="$CFG_S3_BUCKET"; fi
+  CFG_S3_BUCKET="$(preguntar 'Bucket (se crea si no existe; el nombre es único en todo Backblaze)' "$bucket_defecto")"
+  CFG_S3_PREFIJO="$(preguntar 'Carpeta dentro del bucket (una por servidor)' "$prefijo_defecto")"
+  CFG_S3_ESTILO="${CFG_S3_ESTILO:-auto}"
+  validar_config
+  b2_preparar_bucket
+  if [[ "$era_b2" == 1 && -f "$CONFIG_DIR/s3.env" ]]; then anterior="$(sed -n 's/^AWS_ACCESS_KEY_ID=//p' "$CONFIG_DIR/s3.env")"; fi
+  nombre="skyway-copias-$(hostname -s 2>/dev/null | tr -cd 'A-Za-z0-9-' | cut -c1-60 || true)"
+  nombre="${nombre%-}"
+  par="$(b2_crear_clave "$nombre" '' "${CAPACIDADES_B2_SERVIDOR[@]}")"
+  ak="${par%%$'\t'*}"; sk="${par#*$'\t'}"
+  mkdir -p "$CONFIG_DIR" && chmod 700 "$CONFIG_DIR"
+  printf 'AWS_ACCESS_KEY_ID=%s\nAWS_SECRET_ACCESS_KEY=%s\n' "$ak" "$sk" | escribir_atomico "$CONFIG_DIR/s3.env" 600
+  ok "Clave «$nombre» creada solo para este bucket, sin permiso para saltarse el bloqueo."
+  if [[ -n "$anterior" && "$anterior" != "$ak" ]]; then
+    info "La clave anterior de este servidor ($anterior) sigue activa en Backblaze: bórrala en «Application Keys» si ya no se usa."
+  fi
+  esperar_clave_s3
 }
 
 # ---------- estado (para el terminal, el panel y la siguiente ejecución) ----------
@@ -2436,23 +2648,32 @@ cmd_comprobar() {
 # ---------- configurar ----------
 
 cmd_configurar() {
-  exigir_root; need jq; docker_disponible
+  exigir_root; need jq; need curl; docker_disponible
   [[ -t 0 ]] || die "«configurar» es interactivo: ejecútalo en una terminal."
   leer_config || true
+  local era_b2=0 prefijo region_defecto
+  if configuradas && es_backblaze; then era_b2=1; fi
+  prefijo="${CFG_S3_PREFIJO:-$(hostname -s 2>/dev/null | tr -cd 'A-Za-z0-9._-' || echo servidor)}"
   titulo "Copias externas: destino S3"
-  info "Para Cubbit: endpoint https://s3.cubbit.eu y región eu-west-1. Crea antes en su consola una clave (access key) para este servidor."
-  CFG_S3_ENDPOINT="$(preguntar 'Endpoint del S3' "${CFG_S3_ENDPOINT:-https://s3.cubbit.eu}")"
-  CFG_S3_REGION="$(preguntar 'Región' "${CFG_S3_REGION:-eu-west-1}")"
-  CFG_S3_BUCKET="$(preguntar 'Bucket' "${CFG_S3_BUCKET:-}")"
-  CFG_S3_PREFIJO="$(preguntar 'Carpeta dentro del bucket (una por servidor)' "${CFG_S3_PREFIJO:-$(hostname -s 2>/dev/null | tr -cd 'A-Za-z0-9._-' || echo servidor)}")"
-  CFG_S3_ESTILO="${CFG_S3_ESTILO:-auto}"
-  validar_config
-  local ak sk
-  ak="$(preguntar 'Access key')"
-  sk="$(preguntar_secreto 'Secret key')"
-  [[ -n "$ak" && -n "$sk" && "$ak$sk" != *$'\n'* ]] || die "Faltan las credenciales."
-  mkdir -p "$CONFIG_DIR" && chmod 700 "$CONFIG_DIR"
-  printf 'AWS_ACCESS_KEY_ID=%s\nAWS_SECRET_ACCESS_KEY=%s\n' "$ak" "$sk" | escribir_atomico "$CONFIG_DIR/s3.env" 600
+  CFG_S3_PROVEEDOR="$(elegir "$(printf 'backblaze\tBackblaze B2 (recomendado): lo prepara todo con la clave maestra de tu cuenta\notro\tOtro S3 compatible (Cubbit, Amazon S3…)')" 'Dónde se guardan las copias')"
+  if [[ "$CFG_S3_PROVEEDOR" == backblaze ]]; then
+    configurar_backblaze "$prefijo" "$era_b2"
+  else
+    info "Ejemplos: Cubbit, https://s3.cubbit.eu (región eu-west-1); Amazon S3 en España, https://s3.eu-south-2.amazonaws.com (región eu-south-2). Crea antes en su consola una clave para este servidor, limitada al bucket y sin permiso para saltarse el bloqueo."
+    CFG_S3_ENDPOINT="$(preguntar 'Endpoint del S3' "$CFG_S3_ENDPOINT")"
+    region_defecto="$(region_de_endpoint "$CFG_S3_ENDPOINT")"
+    CFG_S3_REGION="$(preguntar 'Región' "${region_defecto:-$CFG_S3_REGION}")"
+    CFG_S3_BUCKET="$(preguntar 'Bucket' "$CFG_S3_BUCKET")"
+    CFG_S3_PREFIJO="$(preguntar 'Carpeta dentro del bucket (una por servidor)' "$prefijo")"
+    CFG_S3_ESTILO="${CFG_S3_ESTILO:-auto}"
+    validar_config
+    local ak sk
+    ak="$(preguntar 'Access key')"
+    sk="$(preguntar_secreto 'Secret key')"
+    [[ -n "$ak" && -n "$sk" && "$ak$sk" != *$'\n'* ]] || die "Faltan las credenciales."
+    mkdir -p "$CONFIG_DIR" && chmod 700 "$CONFIG_DIR"
+    printf 'AWS_ACCESS_KEY_ID=%s\nAWS_SECRET_ACCESS_KEY=%s\n' "$ak" "$sk" | escribir_atomico "$CONFIG_DIR/s3.env" 600
+  fi
   escribir_config
 
   titulo "Bucket"
@@ -2510,6 +2731,9 @@ comprobar_bucket() {
       return 0
     fi
   fi
+  # Backblaze preparado por «configurar»: el bloqueo y el ciclo de vida ya se
+  # han comprobado (y dicho) con su API nativo.
+  [[ -z "$B2_BUCKET_ID" ]] || return 0
   # Una clave restringida (la recomendada para el servidor) no suele poder
   # leer la configuración del bucket: eso no es «sin bloqueo», es «no se sabe».
   local err codigo=0
@@ -2530,6 +2754,12 @@ comprobar_bucket() {
         && ok "Retención por defecto: 30 días." || warn "No se ha podido fijar la retención: hazlo en la consola (Object Lock → retención por defecto)."
     fi
     local ciclo codigo_ciclo=0
+    if es_backblaze; then
+      # Su API S3 no tiene ciclo de vida: la regla la pone «configurar» con el
+      # API nativo (y ya lo ha dicho) o se pone a mano en su web.
+      [[ "$B2_CICLO_OK" == 1 ]] || info "En Backblaze, la regla que borra lo que las copias retiran está en su web: bucket → «Lifecycle Settings» → «Keep prior versions for this number of days»: 31."
+      return 0
+    fi
     err="$(mktemp)"
     ciclo="$(aws_ s3api get-bucket-lifecycle-configuration --bucket "$CFG_S3_BUCKET" 2>"$err")" || codigo_ciclo=$?
     if [[ "$codigo_ciclo" != 0 ]] && ! grep -q 'NoSuchLifecycleConfiguration' "$err"; then
@@ -2566,6 +2796,9 @@ S3_ACCESS_KEY=$ak
 S3_SECRET_KEY=$sk
 CONTRASENA=$(cat "$CONFIG_DIR/contrasena")
 EOF
+  if es_backblaze; then
+    info "Guarda también la clave maestra de Backblaze (no está en este servidor ni en estos datos): hace falta para «recuperar-bucket»."
+  fi
 }
 
 cmd_datos_recuperacion() {
@@ -2752,7 +2985,9 @@ cmd_atender() {
 # versiones nuevas: lo anterior sigue ahí. Esto devuelve la carpeta de las
 # copias a como estaba en una fecha. Hace falta una clave de ADMINISTRACIÓN
 # del bucket (la del servidor no puede saltarse el bloqueo), que se pide y no
-# se guarda.
+# se guarda. Con Backblaze se pide la clave maestra y, con ella, se crea una
+# clave temporal (una hora, solo para el bucket) que sí puede, y se borra al
+# terminar: su API S3 no acepta la clave maestra.
 cmd_recuperar_bucket() {
   local desde=''
   [[ "${1:-}" == --desde ]] && desde="${2:-}"
@@ -2762,22 +2997,39 @@ cmd_recuperar_bucket() {
   exigir_root; need jq; docker_disponible
   cargar_config
   [[ -t 0 ]] || die "Es interactivo: ejecútalo en una terminal."
-  local ak sk tmp
-  ak="$(preguntar 'Access key de ADMINISTRACIÓN del bucket')"
-  sk="$(preguntar_secreto 'Secret key de administración')"
+  local ak sk tmp temporal=''
+  if es_backblaze; then
+    info "Backblaze: con la clave maestra se crea una clave temporal (una hora, solo para este bucket) que puede saltarse el bloqueo. Se borra al terminar."
+    local id clave par bucket
+    id="$(preguntar 'keyID de la clave maestra')"
+    clave="$(preguntar_secreto 'applicationKey de la clave maestra')"
+    b2_autorizar "$id" "$clave"
+    bucket="$(b2_id_bucket)"
+    [[ -n "$bucket" ]] || die "El bucket «$CFG_S3_BUCKET» no está en esa cuenta de Backblaze."
+    B2_BUCKET_ID="$(jq -r '.bucketId // empty' <<< "$bucket")"
+    par="$(b2_crear_clave skyway-copias-recuperar 3600 "${CAPACIDADES_B2_RECUPERAR[@]}")"
+    ak="${par%%$'\t'*}"; sk="${par#*$'\t'}"; temporal="$ak"
+  else
+    ak="$(preguntar 'Access key de ADMINISTRACIÓN del bucket')"
+    sk="$(preguntar_secreto 'Secret key de administración')"
+  fi
   tmp="$(mktemp)"; chmod 600 "$tmp"
   printf 'AWS_ACCESS_KEY_ID=%s\nAWS_SECRET_ACCESS_KEY=%s\n' "$ak" "$sk" > "$tmp"
+  # Lo que se deja al salir por cualquier camino: el fichero con la clave y,
+  # con Backblaze, la clave temporal.
+  fin_recuperar() { rm -f "$tmp"; [[ -z "$temporal" ]] || b2_borrar_clave "$temporal"; temporal=''; }
+  [[ -z "$temporal" ]] || AWS_ENV_FILE="$tmp" esperar_clave_s3
   local versiones
   versiones="$(AWS_ENV_FILE="$tmp" aws_ s3api list-object-versions --bucket "$CFG_S3_BUCKET" --prefix "$CFG_S3_PREFIJO/" --output json)" \
-    || { rm -f "$tmp"; die "No se han podido listar las versiones del bucket con esa clave."; }
+    || { fin_recuperar; die "No se han podido listar las versiones del bucket con esa clave."; }
   local plan
   plan="$(jq -c --arg d "$desde" '[ (.Versions // [])[] | select(.LastModified >= $d) | {Key, VersionId, tipo: "version"} ]
       + [ (.DeleteMarkers // [])[] | select(.LastModified >= $d) | {Key, VersionId, tipo: "marca"} ]' <<< "$versiones")"
   local n_v n_m
   n_v="$(jq '[.[] | select(.tipo == "version")] | length' <<< "$plan")"; n_m="$(jq '[.[] | select(.tipo == "marca")] | length' <<< "$plan")"
-  if [[ "$n_v" == 0 && "$n_m" == 0 ]]; then rm -f "$tmp"; ok "No hay cambios en el bucket desde $desde."; return 0; fi
+  if [[ "$n_v" == 0 && "$n_m" == 0 ]]; then fin_recuperar; ok "No hay cambios en el bucket desde $desde."; return 0; fi
   warn "Desde $desde hay $n_m borrados y $n_v objetos nuevos o sobrescritos en $CFG_S3_BUCKET/$CFG_S3_PREFIJO. Se deshacen todos: las copias hechas después de esa fecha también desaparecen."
-  confirmar "¿Devolver la carpeta de copias a como estaba el $desde?" || { rm -f "$tmp"; info "Cancelado."; return 0; }
+  confirmar "¿Devolver la carpeta de copias a como estaba el $desde?" || { fin_recuperar; info "Cancelado."; return 0; }
   local k v t err=0
   while IFS=$'\t' read -r k v t; do
     [[ -n "$k" ]] || continue
@@ -2787,7 +3039,7 @@ cmd_recuperar_bucket() {
       AWS_ENV_FILE="$tmp" aws_ s3api delete-object --bucket "$CFG_S3_BUCKET" --key "$k" --version-id "$v" >/dev/null 2>&1 || err=$((err + 1))
     fi
   done < <(jq -r '.[] | "\(.Key)\t\(.VersionId)\t\(.tipo)"' <<< "$plan")
-  rm -f "$tmp"
+  fin_recuperar
   (( err == 0 )) || warn "$err cambios no se han podido deshacer (con el modo COMPLIANCE nadie puede, hasta que caduque el bloqueo)."
   info "Comprobando el repositorio…"
   restic_ -- check >/dev/null 2>&1 && ok "Repositorio recuperado y sin errores." || warn "El repositorio aún tiene errores: «sudo skyway copias comprobar»."
@@ -2833,7 +3085,7 @@ ayuda() {
   cat >&2 <<EOF
 ${C_BOLD}skyway copias${C_RESET} — copias externas cifradas (S3) de Skyway, sus proyectos y Mailway
 
-  ${C_ACC}configurar${C_RESET}                    Destino S3 (Cubbit…), contraseña y prueba del bucket
+  ${C_ACC}configurar${C_RESET}                    Destino S3 (Backblaze B2…), contraseña y prueba del bucket
   ${C_ACC}activar${C_RESET} [--hora HH:MM]        Copia diaria (por defecto 03:30) y peticiones del panel
   ${C_ACC}desactivar${C_RESET} | ${C_ACC}estado${C_RESET}
   ${C_ACC}copia${C_RESET} [--alcance A]           Copia ahora (todo, skyway, correo o proyecto:<id>)

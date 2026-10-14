@@ -1066,7 +1066,7 @@ En el servidor donde corre Skyway:
   ${C_ACC}skyway update --auto${C_RESET}             Lo mismo sin preguntas, con aviso por los canales de alertas
   ${C_ACC}skyway auto-update${C_RESET} on [--hora HH:MM] [--sistema] | off [--sistema] | status
                                    Actualización automática cada noche (systemd; con sudo)
-  ${C_ACC}skyway copias${C_RESET} [orden]           Copias externas cifradas en S3 (Cubbit…) de Skyway, sus
+  ${C_ACC}skyway copias${C_RESET} [orden]           Copias externas cifradas en S3 (Backblaze B2…) de Skyway, sus
                                    proyectos y Mailway: copiar, restaurar todo o por partes,
                                    kit para guardar en local (con sudo; «skyway copias ayuda»)
 

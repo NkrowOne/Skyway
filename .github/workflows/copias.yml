@@ -35,4 +35,5 @@ jobs:
       - name: shellcheck
         run: shellcheck -S warning scripts/skyway scripts/copias/*.sh scripts/copias/kit/descodificar.sh
       - name: Prueba real
-        run: bash scripts/copias/prueba-real.sh
+        # Como root, igual que las copias en un servidor (las órdenes lo exigen).
+        run: sudo bash scripts/copias/prueba-real.sh

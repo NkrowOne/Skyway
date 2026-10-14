@@ -324,7 +324,11 @@ del servidor confirmando las cabeceras y que las rutas nuevas exigen sesión.
   borra a las 24 horas. Con el bloqueo de objetos del bucket, quien entrara en
   el servidor con su clave no podría borrar las copias (solo añadir marcas),
   y `skyway copias recuperar-bucket` lo deshace con la clave de
-  administración, que no se guarda. La copia pausa los contenedores unos
+  administración, que no se guarda. Con Backblaze B2, `configurar` crea la
+  clave del servidor con su API nativo, limitada al bucket y sin
+  `bypassGovernance` (las que se crean en su web pueden llevarlo), y
+  `recuperar-bucket` usa una clave temporal de una hora, creada con la clave
+  maestra y borrada al terminar; la clave maestra nunca se guarda. La copia pausa los contenedores unos
   segundos y siempre los reanuda (también si falla o se interrumpe), con un
   tope (`PAUSA_MAXIMA`). Lo prueban `scripts/copias/prueba-real.sh` (Docker,
   restic y un S3 local con bloqueo, en `.github/workflows/copias.yml`),

@@ -5,16 +5,20 @@
 # servidor con Skyway (un panel falso que responde a lo que usan las copias),
 # un proyecto con una base PostgreSQL y una web con su volumen, Mailway y un
 # volumen suelto. Hace copias, estropea datos y restaura por partes, prepara un
-# kit y lo descodifica, atiende una petición del panel, aplica la retención y,
-# al final, lo borra TODO (contenedores, volúmenes, imágenes, código y
-# configuración) y lo vuelve a montar con restaurar.sh, como en un servidor nuevo.
+# kit y lo descodifica, atiende una petición del panel, aplica la retención,
+# lo borra TODO (contenedores, volúmenes, imágenes, código y configuración) y
+# lo vuelve a montar con restaurar.sh, como en un servidor nuevo. Al final,
+# configura Backblaze B2 contra un API nativo falso (el S3 sigue siendo el
+# local) y recupera el bucket tras un borrado.
 #
-#   bash scripts/copias/prueba-real.sh        (necesita Docker y unos minutos)
+#   sudo bash scripts/copias/prueba-real.sh   (como root, igual que las copias; necesita Docker y unos minutos)
 #
 # Usa los nombres que fijan Skyway y Mailway (skyway, skyway-traefik,
 # mailway-mail…): no se ejecuta si ya existen contenedores con esos nombres que
 # no sean de una prueba anterior.
 set -euo pipefail
+
+[[ "$(id -u)" == 0 ]] || { printf 'Ejecútala como root («sudo bash %s»): las copias lo exigen.\n' "$0" >&2; exit 2; }
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
 IMG_ALPINE="${COPIAS_IMAGEN_AUX:-alpine:3.22.2}"
@@ -23,6 +27,7 @@ IMG_S3='versity/versitygw:v1.8.0'
 IMG_AWS="${COPIAS_IMAGEN_AWS:-amazon/aws-cli:2.37.4}"
 PUERTO_S3=7071
 PUERTO_API=7072
+PUERTO_B2=7073
 ETIQUETA='copias-prueba-real=1'
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/copias-prueba.XXXXXX")"
@@ -62,6 +67,7 @@ limpiar() {
 al_salir() {
   local codigo=$?
   [[ -n "${PID_API:-}" ]] && kill "$PID_API" 2>/dev/null || true
+  [[ -n "${PID_B2:-}" ]] && kill "$PID_B2" 2>/dev/null || true
   if [[ -z "${COPIAS_PRUEBA_CONSERVAR:-}" ]]; then limpiar; rm -rf "$TMP"; else printf 'Conservado en %s\n' "$TMP"; fi
   return "$codigo"
 }
@@ -460,6 +466,121 @@ comprobar "Todo en marcha en el servidor nuevo" todos_en_marcha
 comprobar "Las copias siguen configuradas en el servidor nuevo" test -s "$COPIAS_CONFIG_DIR/config" -a -s "$COPIAS_CONFIG_DIR/contrasena"
 grep -q "$ID_ULTIMA" "$TMP/nuevo.log" && bien "Restaurada la última copia ($ID_ULTIMA)" || mal "No se ha restaurado la última copia"
 rm -f /tmp/copias-prueba-mailway.log
+
+seccion "Backblaze B2: configurar con la clave maestra y recuperar el bucket"
+# API nativo de Backblaze falso: guarda lo que se le pide (para comprobarlo) y
+# crea los buckets en el S3 local. Las claves que «crea» son las del S3 local,
+# que solo tiene una cuenta.
+cat > "$TMP/b2.py" <<'PY'
+import base64, http.server, itertools, json, subprocess, sys
+PUERTO, LOG, S3, AWS = int(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
+MAESTRA, CUENTA, TOKEN = 'cuentab2prueba:K00maestraDePrueba+/123', 'cuentab2prueba', 'token-b2-prueba'
+TODAS = ['listKeys', 'writeKeys', 'deleteKeys', 'listAllBucketNames', 'listBuckets', 'readBuckets', 'writeBuckets', 'deleteBuckets',
+  'readBucketRetentions', 'writeBucketRetentions', 'readBucketEncryption', 'writeBucketEncryption', 'listFiles', 'readFiles',
+  'shareFiles', 'writeFiles', 'deleteFiles', 'readFileLegalHolds', 'writeFileLegalHolds', 'readFileRetentions', 'writeFileRetentions', 'bypassGovernance']
+BUCKETS, ids = {}, itertools.count(1)
+def aws(*args):
+  return subprocess.run(['docker', 'run', '--rm', '--network', 'host', '-e', 'AWS_ACCESS_KEY_ID=clave-prueba',
+    '-e', 'AWS_SECRET_ACCESS_KEY=secreto-prueba-123', '-e', 'AWS_DEFAULT_REGION=us-east-1', AWS, '--endpoint-url', S3, *args], capture_output=True)
+class H(http.server.BaseHTTPRequestHandler):
+  def log_message(self, *a): pass
+  def responder(self, codigo, cuerpo):
+    datos = json.dumps(cuerpo).encode()
+    self.send_response(codigo); self.send_header('Content-Type', 'application/json'); self.end_headers(); self.wfile.write(datos)
+  def error(self, codigo, mensaje): return self.responder(codigo, {'status': codigo, 'code': 'bad_request', 'message': mensaje})
+  def do_GET(self):
+    if self.path != '/b2api/v4/b2_authorize_account': return self.error(404, 'no')
+    if self.headers.get('Authorization') != 'Basic ' + base64.b64encode(MAESTRA.encode()).decode(): return self.error(401, 'clave incorrecta')
+    self.responder(200, {'accountId': CUENTA, 'authorizationToken': TOKEN, 'apiInfo': {'storageApi': {'apiUrl': 'http://127.0.0.1:%d' % PUERTO,
+      's3ApiUrl': S3, 'allowed': {'buckets': None, 'capabilities': TODAS, 'namePrefix': None}}}})
+  def do_POST(self):
+    cuerpo = json.loads(self.rfile.read(int(self.headers.get('Content-Length') or 0)) or b'{}')
+    if self.headers.get('Authorization') != TOKEN: return self.error(401, 'token incorrecto')
+    op = self.path.rsplit('/', 1)[-1]
+    with open(LOG, 'a') as f: f.write(json.dumps({'op': op, 'cuerpo': cuerpo}) + '\n')
+    if op == 'b2_list_buckets':
+      b = BUCKETS.get(cuerpo.get('bucketName'))
+      return self.responder(200, {'buckets': [b] if b else []})
+    if op == 'b2_create_bucket':
+      if aws('s3api', 'create-bucket', '--bucket', cuerpo['bucketName'], '--object-lock-enabled-for-bucket').returncode != 0: return self.error(400, 'no se crea')
+      b = BUCKETS[cuerpo['bucketName']] = {'accountId': CUENTA, 'bucketId': 'bucketb2%d' % next(ids), 'bucketName': cuerpo['bucketName'],
+        'bucketType': cuerpo['bucketType'], 'lifecycleRules': cuerpo.get('lifecycleRules') or [], 'revision': 1,
+        'fileLockConfiguration': {'isClientAuthorizedToRead': True, 'value': {'isFileLockEnabled': bool(cuerpo.get('fileLockEnabled')), 'defaultRetention': {'mode': None, 'period': None}}}}
+      return self.responder(200, b)
+    if op == 'b2_update_bucket':
+      b = next((x for x in BUCKETS.values() if x['bucketId'] == cuerpo.get('bucketId')), None)
+      if not b: return self.error(400, 'bucket desconocido')
+      if 'defaultRetention' in cuerpo:
+        d = cuerpo['defaultRetention']
+        conf = {'ObjectLockEnabled': 'Enabled', 'Rule': {'DefaultRetention': {'Mode': d['mode'].upper(), 'Days': d['period']['duration']}}}
+        if aws('s3api', 'put-object-lock-configuration', '--bucket', b['bucketName'], '--object-lock-configuration', json.dumps(conf)).returncode != 0: return self.error(400, 'sin retención')
+        b['fileLockConfiguration']['value']['defaultRetention'] = d
+      if 'lifecycleRules' in cuerpo: b['lifecycleRules'] = cuerpo['lifecycleRules']
+      b['revision'] += 1
+      return self.responder(200, b)
+    if op == 'b2_create_key':
+      return self.responder(200, {'applicationKeyId': 'clave-prueba', 'applicationKey': 'secreto-prueba-123', 'keyName': cuerpo['keyName'],
+        'capabilities': cuerpo['capabilities'], 'accountId': CUENTA, 'bucketIds': cuerpo.get('bucketIds')})
+    if op == 'b2_delete_key': return self.responder(200, {'applicationKeyId': cuerpo.get('applicationKeyId')})
+    self.error(404, 'no')
+http.server.ThreadingHTTPServer(('127.0.0.1', PUERTO), H).serve_forever()
+PY
+# Las órdenes interactivas («configurar», «recuperar-bucket») leen de la
+# terminal: se ejecutan en una pseudoterminal con las respuestas ya escritas.
+cat > "$TMP/terminal.py" <<'PY'
+import os, pty, sys
+pid, fd = pty.fork()
+if pid == 0:
+  os.execvp(sys.argv[2], sys.argv[2:])
+os.write(fd, sys.argv[1].encode())
+salida = bytearray()
+while True:
+  try:
+    datos = os.read(fd, 65536)
+  except OSError:
+    break
+  if not datos:
+    break
+  salida += datos
+_, estado = os.waitpid(pid, 0)
+sys.stdout.buffer.write(bytes(salida))
+sys.exit(os.waitstatus_to_exitcode(estado))
+PY
+python3 "$TMP/b2.py" "$PUERTO_B2" "$TMP/b2.log" "http://127.0.0.1:$PUERTO_S3" "$IMG_AWS" &
+PID_B2=$!
+for _ in $(seq 1 20); do curl -s -o /dev/null "http://127.0.0.1:$PUERTO_B2" && break; sleep 0.5; done
+B2="$TMP/b2"
+mkdir -p "$B2"
+con_b2() { COPIAS_CONFIG_DIR="$B2/etc" COPIAS_ESTADO_DIR="$B2/var" COPIAS_URL_B2="http://127.0.0.1:$PUERTO_B2" "$@"; }
+# Menú (1: Backblaze), keyID, applicationKey, región (la del S3 local), bucket y carpeta.
+con_b2 python3 "$TMP/terminal.py" $'1\ncuentab2prueba\nK00maestraDePrueba+/123\n\ncopias-b2\nb2-servidor\n' \
+  bash "$COPIAS" configurar -y > "$TMP/b2-configurar.log" 2>&1 || { cat "$TMP/b2-configurar.log"; mal "configurar con Backblaze ha fallado"; }
+peticion_b2() { jq -c --arg op "$1" 'select(.op == $op) | .cuerpo' "$TMP/b2.log" | sed -n "${2:-1}p"; }
+comprobar "Backblaze: el bucket se crea privado, con bloqueo y con la regla de la carpeta" \
+  jq -e '.bucketType == "allPrivate" and .fileLockEnabled == true and .lifecycleRules == [{"fileNamePrefix": "b2-servidor/", "daysFromHidingToDeleting": 31, "daysFromUploadingToHiding": null}]' \
+  <<< "$(peticion_b2 b2_create_bucket)"
+comprobar "Backblaze: retención por defecto de 30 días en modo governance" \
+  jq -e '.defaultRetention == {"mode": "governance", "period": {"duration": 30, "unit": "days"}}' <<< "$(peticion_b2 b2_update_bucket)"
+comprobar "Backblaze: la clave del servidor es solo del bucket y no puede saltarse el bloqueo" \
+  jq -e '(.capabilities | index("bypassGovernance") == null and index("writeKeys") == null and index("writeFiles") != null)
+         and .bucketIds == ["bucketb21"] and (has("validDurationInSeconds") | not)' <<< "$(peticion_b2 b2_create_key)"
+comprobar "Backblaze: la configuración lo recuerda" grep -qx 'S3_PROVEEDOR=backblaze' "$B2/etc/config"
+comprobar "Backblaze: el repositorio funciona con la clave nueva" grep -q 'El repositorio funciona' "$TMP/b2-configurar.log"
+# (En el registro sí sale: la pseudoterminal repite lo que se le escribe antes de que se pida.)
+comprobar "Backblaze: la clave maestra no se guarda" bash -c "! grep -rq 'K00maestra' '$B2/etc' '$B2/var'"
+# Un intruso con la clave del servidor «borra» las copias: con el bloqueo solo
+# deja marcas de borrado, y recuperar-bucket las quita.
+DESDE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+sleep 2
+docker run --rm --network host -e AWS_ACCESS_KEY_ID=clave-prueba -e AWS_SECRET_ACCESS_KEY=secreto-prueba-123 -e AWS_DEFAULT_REGION=us-east-1 \
+  "$IMG_AWS" --endpoint-url "http://127.0.0.1:$PUERTO_S3" s3 rm --recursive --quiet s3://copias-b2/b2-servidor/ >/dev/null 2>&1 || true
+comprobar "Backblaze: tras el borrado, las copias no se leen" bash -c "! COPIAS_CONFIG_DIR='$B2/etc' COPIAS_ESTADO_DIR='$B2/var' bash '$COPIAS' lista --json >/dev/null 2>&1"
+con_b2 python3 "$TMP/terminal.py" $'cuentab2prueba\nK00maestraDePrueba+/123\n' \
+  bash "$COPIAS" recuperar-bucket --desde "$DESDE" -y > "$TMP/b2-recuperar.log" 2>&1 || { cat "$TMP/b2-recuperar.log"; mal "recuperar-bucket con Backblaze ha fallado"; }
+comprobar "Backblaze: recuperar-bucket usa una clave temporal de una hora que sí puede saltarse el bloqueo" \
+  jq -e '(.capabilities | index("bypassGovernance") != null) and .validDurationInSeconds == 3600 and .bucketIds == ["bucketb21"]' <<< "$(peticion_b2 b2_create_key 2)"
+comprobar "Backblaze: y la borra al terminar" test "$(peticion_b2 b2_delete_key)" = '{"applicationKeyId":"clave-prueba"}'
+comprobar "Backblaze: las copias vuelven sin errores" grep -q 'Repositorio recuperado y sin errores' "$TMP/b2-recuperar.log"
 
 printf '\n%d comprobaciones correctas, %d fallos.\n' "$PASOS" "$FALLOS"
 (( FALLOS == 0 ))

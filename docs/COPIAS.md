@@ -10,10 +10,12 @@ Las copias de la pestaña Backups de un servicio y las del panel (Ajustes →
 Copias de seguridad) siguen existiendo, pero viven en el mismo disco que los
 datos: protegen de un error, no de perder el servidor. Las externas sí.
 
-Destino: cualquier almacenamiento compatible con S3. La guía usa
-[Cubbit](https://www.cubbit.io) (DS3 Cloud, en Europa, sin coste por
-descargar), pero vale igual Backblaze B2, Wasabi, Hetzner Object Storage,
-AWS S3 o un MinIO propio.
+Destino: la guía recomienda
+[Backblaze B2](https://www.backblaze.com/cloud-storage) (en Europa, sin coste
+por descargar en la práctica y con una configuración que `configurar` hace
+casi entera, §1.1). Vale igual cualquier almacenamiento compatible con S3 y
+con bloqueo de objetos (Object Lock), como Cubbit, Wasabi, Hetzner Object
+Storage, Amazon S3 o un MinIO propio (§1.2).
 
 ## Índice
 
@@ -36,20 +38,94 @@ En el servidor donde corre Skyway, con `sudo`. Hace falta `jq`, `git` y `curl`
 (y `zip` o `python3` para el kit); restic y la CLI de AWS corren en
 contenedores con versión exacta.
 
-### 1.1 El bucket en Cubbit
+### 1.1 Backblaze B2 (recomendado)
 
-1. En la consola de Cubbit, crea un bucket con **Object Lock** activado. Solo
-   se puede activar al crearlo. Retención por defecto: **30 días, modo
-   GOVERNANCE**. (Si lo prefieres, `configurar` lo crea por ti con la clave
-   de administración; la de diario no puede.)
-2. Crea una clave de acceso (*service account*) solo para este servidor, con
-   permiso de leer, escribir, listar y borrar objetos del bucket, pero **sin**
-   `s3:BypassGovernanceRetention` ni permisos sobre la configuración del
-   bucket. Así, quien entrara en el servidor no podría borrar las copias
-   (§9).
-3. Endpoint: `https://s3.cubbit.eu`; región: `eu-west-1`.
+Con Backblaze B2, `configurar` lo prepara casi todo con la clave maestra de tu
+cuenta: el bucket con bloqueo de objetos, la regla que borra las versiones
+antiguas y la clave del servidor, ya limitada. Solo hay que crear la cuenta y
+la clave maestra.
 
-### 1.2 Configurar y activar
+1. Crea una cuenta en [Backblaze](https://www.backblaze.com/cloud-storage) y
+   elige la región **EU Central** (Ámsterdam) al registrarte. La región se
+   fija al crear la cuenta y no se puede cambiar después: con una cuenta de la
+   región de EE. UU. hay que crear otra para almacenar las copias en la UE.
+2. En «Billing», añade una tarjeta de pago si vas a superar los 10 GB
+   gratuitos.
+3. En la web de Backblaze, abre «Application Keys» y pulsa «Generate New
+   Master Application Key». Se muestran el `keyID` y la `applicationKey`
+   **una sola vez**. Si la cuenta ya tenía una clave maestra, generar otra
+   anula la anterior (las claves normales siguen valiendo).
+4. Ejecuta `sudo skyway copias configurar` (§1.3), elige la opción 1 e
+   introduce el `keyID` y la `applicationKey`.
+
+`configurar` usa la clave maestra solo durante la configuración, a través de la
+API nativa de Backblaze, y **no la guarda en el servidor**. Guárdala en tu
+gestor de contraseñas, nunca en el servidor: volverá a hacer falta para
+`recuperar-bucket` (§9) y si repites `configurar`.
+
+Con ella, `configurar`:
+
+- lee el endpoint y la región S3 de la cuenta (por ejemplo,
+  `https://s3.eu-central-003.backblazeb2.com` y `eu-central-003`) y avisa si
+  la cuenta no está en una región de la UE;
+- pide el nombre del bucket (por defecto, `skyway-copias-` más un sufijo
+  aleatorio; los nombres son únicos en todo Backblaze) y la carpeta dentro del
+  bucket (una por servidor);
+- crea el bucket si no existe: privado y con bloqueo de objetos;
+- fija la retención por defecto en **30 días, modo GOVERNANCE** si el bucket no
+  tiene ninguna;
+- añade una regla de ciclo de vida para la carpeta del servidor que borra las
+  versiones ocultas (antiguas o borradas) **31 días** después de ocultarse. La
+  API S3 de Backblaze no admite reglas de ciclo de vida, por eso `configurar`
+  usa la API nativa; sin la regla, lo borrado se conservaría, y se
+  facturaría, para siempre;
+- crea la clave del servidor, `skyway-copias-<servidor>`, limitada a ese
+  bucket y **sin** `bypassGovernance` ni permisos para gestionar claves o
+  buckets. Las claves que se crean desde la web de Backblaze pueden incluir
+  `bypassGovernance`, y con él quien entrara en el servidor podría borrar
+  copias bloqueadas (§9).
+
+Después siguen los pasos comunes de §1.3: contraseña, repositorio, prueba real
+de escritura y datos de recuperación.
+
+Si repites `configurar` con Backblaze, reutiliza el bucket y crea una clave de
+servidor nueva. La anterior sigue activa: la orden lo recuerda y conviene
+borrarla en «Application Keys» si ya no se usa.
+
+**Coste** (aproximado, a octubre de 2026; la tarifa vigente está en
+[la web de Backblaze](https://www.backblaze.com/cloud-storage/pricing)): unos
+6,95 USD por TB al mes, con los primeros 10 GB gratis. Las descargas son
+gratuitas hasta 3 veces el promedio mensual de datos almacenados. Lo que
+descargan las copias (la comprobación mensual del 5 % de los datos, la
+restauración de prueba mensual de la base del panel, los kits y las
+restauraciones) queda lejos de ese límite, de modo que en la práctica las
+descargas no tienen coste. Por ejemplo, 200 GB de copias suponen unos 1,40 USD
+al mes.
+
+### 1.2 Otro S3 compatible
+
+Con cualquier otro proveedor de S3 (Cubbit, Amazon S3, Wasabi…), el bucket y la
+clave se preparan a mano en su consola y `configurar` (opción 2) los
+comprueba:
+
+1. Crea un bucket con **Object Lock** activado. Solo se puede activar al
+   crearlo. Retención por defecto: **30 días, modo GOVERNANCE**; si falta,
+   `configurar` ofrece fijarla. (Si lo prefieres, `configurar` también crea el
+   bucket por ti con la clave de administración; la de diario no puede.)
+2. Añade una regla de ciclo de vida que borre las versiones antiguas a los
+   **31 días**; sin ella, lo que se retira ocupa espacio para siempre (§8).
+   `configurar` ofrece crearla si falta.
+3. Crea una clave de acceso (en Cubbit, una *service account*) solo para este
+   servidor, con permiso de leer, escribir, listar y borrar objetos del
+   bucket, pero **sin** `s3:BypassGovernanceRetention` ni permisos sobre la
+   configuración del bucket. Así, quien entrara en el servidor no podría
+   borrar las copias (§9).
+4. Toma el endpoint y la región de la consola del proveedor. Por ejemplo:
+   - Cubbit: `https://s3.cubbit.eu` y `eu-west-1`.
+   - Amazon S3 en España: `https://s3.eu-south-2.amazonaws.com` y
+     `eu-south-2`.
+
+### 1.3 Configurar y activar
 
 ```bash
 sudo skyway copias configurar          # destino, clave, contraseña; comprueba el bucket y lo prueba
@@ -57,14 +133,23 @@ sudo skyway copias activar             # copia diaria a las 03:30 (o --hora HH:M
 sudo skyway copias copia               # la primera, ahora (sube todo; las siguientes, solo lo nuevo)
 ```
 
-`configurar`:
+`configurar` empieza con un menú:
 
-- pide endpoint, región, bucket, carpeta (una por servidor; por defecto, su
-  nombre) y la clave;
-- comprueba el bucket: si no existe, ofrece crearlo con bloqueo de objetos;
-  si el bloqueo no tiene retención por defecto, ofrece fijar 30 días; si no
-  hay regla de ciclo de vida, ofrece borrar las versiones antiguas a los 31
-  días (para no llenar el espacio, §8);
+```
+1  Backblaze B2 (recomendado): lo prepara todo con la clave maestra de tu cuenta
+2  Otro S3 compatible (Cubbit, Amazon S3…)
+```
+
+- **Backblaze B2:** pide la clave maestra de la cuenta y prepara el bucket,
+  sus reglas y la clave del servidor (§1.1).
+- **Otro S3:** pide endpoint, región, bucket, carpeta (una por servidor; por
+  defecto, su nombre) y la clave; comprueba el bucket: si no existe, ofrece
+  crearlo con bloqueo de objetos; si el bloqueo no tiene retención por
+  defecto, ofrece fijar 30 días; si no hay regla de ciclo de vida, ofrece
+  borrar las versiones antiguas a los 31 días (para no llenar el espacio, §8).
+
+En los dos casos, a continuación:
+
 - genera la contraseña de las copias (o la escribes tú, mínimo 16
   caracteres);
 - inicia el repositorio y **prueba de verdad** a escribir y a retirar una
@@ -75,6 +160,8 @@ sudo skyway copias copia               # la primera, ahora (sube todo; las sigui
 > **Guarda los datos de recuperación fuera del servidor** (en tu gestor de
 > contraseñas). Sin la contraseña, las copias no se pueden leer: nadie puede
 > recuperarla. Se vuelven a ver con `sudo skyway copias datos-recuperacion`.
+> Con Backblaze, guarda también la clave maestra (§1.1): no forma parte de
+> esos datos ni se conserva en el servidor.
 
 `activar` instala un temporizador de systemd (`skyway-copias.timer`, con hasta
 10 minutos de margen aleatorio y que recupera la ejecución perdida si el
@@ -82,7 +169,7 @@ servidor estaba apagado) y la unidad que atiende las peticiones del panel
 (`skyway-copias-peticiones.path`). `desactivar` los retira; las copias del
 bucket se conservan.
 
-### 1.3 Avisos
+### 1.4 Avisos
 
 - Si una copia falla o queda incompleta, se avisa por los canales de Ajustes
   → Alertas, y el panel muestra el fallo.
@@ -95,7 +182,7 @@ bucket se conservan.
   `AVISO_URL=` de `/etc/skyway-copias/config`: cada copia correcta la llama y
   una fallida llama a `<URL>/fail`.
 
-### 1.4 Antes de cada actualización
+### 1.5 Antes de cada actualización
 
 `skyway update` (también la automática) hace una copia del panel de Skyway
 (alcance `skyway`) justo antes de aplicar una versión nueva, y `mailway update`
@@ -201,6 +288,11 @@ sudo bash restaurar.sh                       # pide los datos de recuperación
 sudo bash restaurar.sh --datos datos.txt     # o los lee de un fichero (el formato de «datos-recuperacion»)
 sudo bash restaurar.sh --kit kit-….zip       # o desde un kit (§5)
 ```
+
+Cuando pregunta el endpoint, propone el de Backblaze B2 en la UE
+(`https://s3.eu-central-003.backblazeb2.com`). Con un endpoint de Backblaze, la
+región se toma del propio endpoint y no hace falta escribirla; con otro
+proveedor, se pregunta.
 
 `restaurar.sh` también va dentro de cada kit. Lo que hace:
 
@@ -319,7 +411,9 @@ Skyway y Mailway cambian; las copias se pensaron para eso:
 - `sudo skyway copias comprobar` hace las dos cosas a demanda.
 - Con el bloqueo de objetos, lo que se retira no se borra al momento: queda
   como versión antigua hasta que la regla de ciclo de vida la borra (31 días).
-  Cuenta en el espacio usado durante ese tiempo.
+  Cuenta en el espacio usado durante ese tiempo. En Backblaze, `configurar`
+  crea esa regla para la carpeta del servidor; sin ella, lo que se retira se
+  conservaría, y se facturaría, para siempre.
 - Orientación: la primera copia ocupa algo menos que los datos (restic
   comprime); cada noche se suma solo lo nuevo.
 
@@ -331,24 +425,38 @@ Skyway y Mailway cambian; las copias se pensaron para eso:
 - **Secretos en el servidor:** `/etc/skyway-copias/` (700) guarda la
   configuración, las credenciales del S3 (`s3.env`) y la contraseña
   (`contrasena`), los tres de root con permisos 600. Nunca salen en registros,
-  estado del panel ni manifiestos.
+  estado del panel ni manifiestos. La clave maestra de Backblaze no se guarda
+  en el servidor: `configurar` y `recuperar-bucket` la piden cuando la
+  necesitan.
 - **Lo que hay dentro de una copia:** los `.env` y la base del panel llevan
   secretos (tokens, claves). Por eso la copia va cifrada y la descarga del kit
   desde el panel exige sesión de administrador en el navegador.
 - **Bloqueo de objetos:** con Object Lock, borrar o sobrescribir solo añade
   marcas y versiones nuevas; lo anterior queda bloqueado 30 días. Si alguien
-  con acceso al servidor borrara las copias, se deshace con la clave de
-  **administración** del bucket (no se guarda):
+  con acceso al servidor borrara las copias, se deshace con una clave de
+  **administración** que el servidor no guarda:
 
   ```bash
   sudo skyway copias recuperar-bucket --desde 2026-10-10
   ```
 
   Devuelve la carpeta de las copias a como estaba en esa fecha (las copias
-  posteriores también desaparecen) y comprueba el repositorio.
+  posteriores también desaparecen) y comprueba el repositorio. La clave que
+  pide depende del proveedor:
+
+  - **Backblaze B2:** la clave maestra de la cuenta. Con ella crea una clave
+    temporal (válida 1 hora, limitada al bucket y con `bypassGovernance`),
+    deshace los cambios desde la fecha indicada y borra la clave temporal al
+    terminar.
+  - **Otro S3:** la clave de acceso y la clave secreta de administración del
+    bucket.
 - **Clave del servidor sin permisos de más:** sin `BypassGovernanceRetention`
-  ni permisos sobre el bucket (§1.1). En modo COMPLIANCE nadie, ni la
-  administración, puede borrar antes de que caduque el bloqueo.
+  (`bypassGovernance` en Backblaze) ni permisos sobre el bucket (§1.1 y §1.2).
+  En Backblaze, `configurar` la crea así (`skyway-copias-<servidor>`, solo para
+  su bucket) porque las claves creadas desde la web de Backblaze pueden incluir
+  `bypassGovernance`, y con él quien entrara en el servidor podría borrar
+  copias bloqueadas. En modo COMPLIANCE nadie, ni la administración, puede
+  borrar antes de que caduque el bloqueo.
 
 ## 10. Configuración
 
@@ -357,14 +465,15 @@ comillas). La escribe `configurar`; se puede editar a mano.
 
 | Clave | Por defecto | Qué es |
 | --- | --- | --- |
-| `S3_ENDPOINT` | — | `https://s3.cubbit.eu` |
-| `S3_REGION` | — | `eu-west-1` |
+| `S3_PROVEEDOR` | — | `backblaze` u `otro`; lo escribe `configurar`. Con `backblaze`, `recuperar-bucket` usa la clave maestra y la regla de ciclo de vida se gestiona en Backblaze. Un endpoint `https://s3.<región>.backblazeb2.com` cuenta siempre como Backblaze |
+| `S3_ENDPOINT` | — | `https://s3.eu-central-003.backblazeb2.com` |
+| `S3_REGION` | — | `eu-central-003` |
 | `S3_BUCKET` | — | Bucket |
 | `S3_PREFIJO` | nombre del servidor | Carpeta dentro del bucket: una por servidor |
 | `S3_ESTILO` | `auto` | `path` o `dns` si el proveedor lo exige |
 | `HORA` | `03:30` | Hora de la copia diaria (`activar` la aplica) |
 | `RETENCION_DIARIAS` / `_SEMANALES` / `_MENSUALES` | 7 / 4 / 6 | §8 |
-| `AVISO_URL` | — | Vigilante externo (§1.3) |
+| `AVISO_URL` | — | Vigilante externo (§1.4) |
 | `IMAGENES` | `si` | `no` para no copiar las imágenes de las webs |
 | `EXCLUIR` | — | Volúmenes que no se copian, separados por espacios |
 | `PAUSA_MAXIMA` | `900` | Segundos máximos de pausa en la segunda pasada |
@@ -388,6 +497,20 @@ copias internas del panel 04:00, actualización de Skyway 04:30.
 - **La prueba de escritura falla al configurar:** la clave no tiene permisos
   de escritura en el bucket, o el proveedor exige algo con el bloqueo de
   objetos que restic no envía. El mensaje de restic lo dice.
+- **La cuenta de Backblaze no está en la UE:** `configurar` lo avisa cuando la
+  región de la cuenta no es europea. La región se elige al crear la cuenta y no
+  se puede cambiar: crea otra cuenta con la región **EU Central** (Ámsterdam) y
+  repite `configurar` con su clave maestra.
+- **El nombre del bucket ya existe:** los nombres de bucket son únicos en todo
+  Backblaze, no solo en tu cuenta. Elige otro (el propuesto incluye un sufijo
+  aleatorio).
+- **Las copias ocupan más de lo esperado en Backblaze:** comprueba en el
+  bucket, en «Lifecycle Settings», que la carpeta del servidor tiene la regla
+  que borra las versiones ocultas 31 días después de ocultarse. `configurar` la
+  añade; si falta, vuelve a ejecutarlo. Si avisa de que otra regla del bucket
+  se solapa con la carpeta, ajústala en esa misma pantalla: Backblaze no admite
+  reglas que se solapen. Sin la regla, lo que se retira se conserva, y se
+  factura, para siempre (§8).
 - **«Volumen sin regla copiado»:** un volumen que no declara ni Skyway ni
   Mailway (uno creado a mano, de otro compose). Se copia igual; si no hace
   falta, añádelo a `EXCLUIR=`.
@@ -410,7 +533,10 @@ copias internas del panel 04:00, actualización de Skyway 04:30.
 - `scripts/copias/prueba-real.sh`: prueba completa con Docker, restic y un S3
   local con bloqueo de objetos (versitygw): copia, restauraciones por partes,
   volcados, kit y descodificación, peticiones del panel, S3 caído, retención
-  y un servidor nuevo desde cero con `restaurar.sh`. La ejecuta la CI
+  un servidor nuevo desde cero con `restaurar.sh` y, contra un API nativo
+  falso de Backblaze, `configurar` y `recuperar-bucket` tras un borrado. Se
+  ejecuta como root, igual que las copias (`sudo bash
+  scripts/copias/prueba-real.sh`), y la ejecuta la CI
   (`.github/workflows/copias.yml`).
 
 **Regla:** todo estado nuevo debe quedar cubierto. Un volumen de un servicio

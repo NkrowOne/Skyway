@@ -1658,7 +1658,7 @@ con lo ya aprobado». Nunca se escriben valores en el registro ni en la auditor�
   la BD del panel al arrancar (alerta crítica si falla).
 - **Copias externas** (docs/COPIAS.md): copia cifrada de todo el servidor
   (panel, proyectos con sus volúmenes, volcados e imágenes, Mailway, código y
-  configuración) en un S3 externo (Cubbit…) cada noche con restic, con
+  configuración) en un S3 externo (Backblaze B2…) cada noche con restic, con
   restauración de todo o por partes y de cualquier fecha (también en un
   servidor nuevo con `restaurar.sh`) y kit ZIP para guardar en local. Se
   gestiona con `sudo skyway copias`; el panel (Ajustes → Copias externas)
@@ -3137,7 +3137,7 @@ para que actualizar el código no lo reescriba a mitad de ejecución.
    `SKYWAY_DOMAIN` público (no `*.localhost`), si el panel responde por HTTPS a
    través de Traefik con un certificado válido
    (`curl --resolve <dominio>:443:127.0.0.1`). Con las copias externas
-   configuradas (docs/COPIAS.md §1.4), hace además una copia del panel
+   configuradas (docs/COPIAS.md §1.5), hace además una copia del panel
    (`skyway copias copia --alcance skyway --motivo antes-de-actualizar`) antes
    de tocar nada: si la versión nueva estropeara algo, se vuelve a ese momento
    con `skyway copias restaurar skyway`. Si esa copia falla, la actualización

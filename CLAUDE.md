@@ -47,7 +47,7 @@ npm run typecheck   # SIEMPRE antes de dar por terminado un cambio
 npm run lint        # reglas de hooks de React en la web (orden de hooks, dependencias)
 npm test            # pruebas del servidor (vitest, base SQLite temporal por fichero)
 npm start           # producción, todo en :4000
-bash scripts/copias/prueba-real.sh   # copias externas con Docker, restic y un S3 local (unos minutos)
+sudo bash scripts/copias/prueba-real.sh   # copias externas con Docker, restic y un S3 local (unos minutos)
 ```
 
 **`npm run typecheck` y `npm test` son la verificación mínima obligatoria** tras
@@ -96,7 +96,7 @@ Si arreglas un fallo con una prueba que lo reproduce, mejor.
   `FORMATO` en `copias.sh`: cada copia se restaura con el `copias.sh` que
   viaja dentro de ella, y `restaurar.sh` debe seguir sabiendo arrancar
   cualquiera. Si tocas `scripts/copias/`, pasa `shellcheck -S warning` y
-  `bash scripts/copias/prueba-real.sh` (la CI la ejecuta en
+  `sudo bash scripts/copias/prueba-real.sh` (la CI la ejecuta en
   `.github/workflows/copias.yml`).
 - **Docker/BBDD/archivos**: nunca interpoles entrada del usuario en un shell;
   pásala como variable de entorno del `exec` (patrón en `dbconsole.ts` y

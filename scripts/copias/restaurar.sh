@@ -128,8 +128,12 @@ else
     done < "$DATOS"
   fi
   info "Datos de recuperación (los que guardaste al configurar las copias):"
-  [[ -n "${D[S3_ENDPOINT]:-}" ]] || D[S3_ENDPOINT]="$(preguntar 'Endpoint del S3' https://s3.cubbit.eu)"
-  [[ -n "${D[S3_REGION]:-}" ]] || D[S3_REGION]="$(preguntar 'Región' eu-west-1)"
+  [[ -n "${D[S3_ENDPOINT]:-}" ]] || D[S3_ENDPOINT]="$(preguntar 'Endpoint del S3' https://s3.eu-central-003.backblazeb2.com)"
+  # En Backblaze la región es la segunda parte del endpoint.
+  if [[ -z "${D[S3_REGION]:-}" && "${D[S3_ENDPOINT]}" =~ ^https://s3\.([a-z0-9-]+)\.backblazeb2\.com/?$ ]]; then
+    D[S3_REGION]="${BASH_REMATCH[1]}"
+  fi
+  [[ -n "${D[S3_REGION]:-}" ]] || D[S3_REGION]="$(preguntar 'Región')"
   [[ -n "${D[S3_BUCKET]:-}" ]] || D[S3_BUCKET]="$(preguntar 'Bucket')"
   [[ -n "${D[S3_PREFIJO]:-}" ]] || D[S3_PREFIJO]="$(preguntar 'Carpeta dentro del bucket')"
   [[ -n "${D[S3_ACCESS_KEY]:-}" ]] || D[S3_ACCESS_KEY]="$(preguntar 'Access key')"
