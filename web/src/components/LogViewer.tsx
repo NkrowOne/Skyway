@@ -1555,8 +1555,18 @@ function LogViewerImpl({
   layout.start = start;
   layout.end = end;
   const canvasShift = canvasOffset(layout.offsets[start] + padAdjRef.current);
-  prevLayoutRef.current = layoutRef.current;
-  layoutRef.current = layout;
+  /*
+   * El layout se publica al confirmarse el render, no al calcularlo. React
+   * puede llamar al componente y descartar el resultado (un `setFollow` con
+   * el mismo valor, por ejemplo): antes la ref se quedaba con un tramo que no
+   * llegó a pintarse, el scroll creía pintado el bloque de arriba y no lo
+   * pedía nunca, y al subir se veía un hueco en blanco. Este efecto va antes
+   * que los demás, que leen la ref.
+   */
+  useLayoutEffect(() => {
+    prevLayoutRef.current = layoutRef.current;
+    layoutRef.current = layout;
+  });
 
   /*
    * Medición de bloques con un único ResizeObserver. Un bloque entero por
@@ -1850,12 +1860,14 @@ function LogViewerImpl({
 
   /*
    * Siguiendo el final, el fondo se garantiza cuando cambia lo pintado: líneas
-   * nuevas o una estimación de alto sustituida por su medida.
+   * nuevas, una estimación de alto sustituida por su medida o el paso a
+   * seguir, que cambia el tramo de bloques. Sin `follow`, el seguimiento podía
+   * activarse con la vista a media altura y quedarse ahí.
    */
   useLayoutEffect(() => {
     syncScrollable();
     if (followRef.current) scrollToBottom();
-  }, [model, layoutTick, maximized, syncScrollable, scrollToBottom]);
+  }, [model, layoutTick, maximized, follow, syncScrollable, scrollToBottom]);
 
   // Si el hueco cambia de tamaño (acordeón, teclado del móvil, giro) y se
   // estaba siguiendo, el fondo sigue siendo el fondo; si no, se recalcula qué
