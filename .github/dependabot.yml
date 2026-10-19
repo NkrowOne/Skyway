@@ -41,6 +41,12 @@ updates:
         update-types: [patch]
         patterns: ["*"]
     ignore:
+      # Ninguna versión mayor llega por Dependabot (decisión del 12 de
+      # octubre: lo que funciona no se toca si no hace falta). Se sube a mano,
+      # en un PR propio, solo por algo crítico. Las de abajo explican por qué
+      # algunas concretas no se suben.
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
       # zod 4 retira required_error, invalid_type_error y errorMap (las rutas
       # los usan) y cambia los textos por defecto de los errores, que llegan
       # a las respuestas de la API: es una migración aparte, como en Mailway.
