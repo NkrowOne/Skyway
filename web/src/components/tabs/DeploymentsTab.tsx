@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { Check, ChevronDown, Hammer, History, LifeBuoy, Lightbulb, RotateCcw, ScrollText, XCircle } from 'lucide-react';
+import { Check, ChevronDown, Hammer, History, LifeBuoy, Lightbulb, RotateCcw, ScrollText, Terminal, XCircle } from 'lucide-react';
 import { api, ApiError, openStream } from '../../api';
 import { Deployment, Diagnosis } from '../../types';
 import { cx, DEPLOY_STATUS_LABEL, DEPLOY_TRIGGER_LABEL, EMPTY_LIST, fmtDuration, isActiveDeploy, ServiceStatusKind, timeAgo } from '../../utils';
+import { createBatcher } from '../../logbatch';
 import LogViewer from '../LogViewer';
 import { ConfirmModal, EmptyState, ErrorState, Skeleton, useToast } from '../ui';
 
@@ -172,84 +173,68 @@ function DiagnosisCard({ raw, serviceId }: { raw: string | null; serviceId: stri
 }
 
 /**
- * Marca una línea de ejecución como `[runtime]` DETRÁS del sello de tiempo de
- * Docker. Delante, el visor no encontraba el sello (busca «AAAA-MM-DD» al
- * principio) y la columna de hora salía vacía con el ISO pegado al texto.
+ * Registro de un despliegue: compilación y despliegue, nada más. Antes se le
+ * añadía la salida de la aplicación, y como la primera tarjeta se abre sola,
+ * lo primero que se veía al entrar en un servicio eran logs de la aplicación
+ * mezclados con los del despliegue. Esa salida está en la pestaña Logs.
  */
-function tagRuntime(line: string): string {
-  if (line.includes('[runtime]')) return line;
-  const idx = line.indexOf(' ');
-  if (idx >= 20 && line[4] === '-' && Number.isFinite(Date.parse(line.slice(0, idx)))) {
-    return `${line.slice(0, idx)} [runtime] ${line.slice(idx + 1)}`;
-  }
-  return `[runtime] ${line}`;
-}
-
-/** Logs de un despliegue: histórico + streaming en vivo si está activo. */
-function DeploymentLogs({ deployment }: { deployment: Deployment }) {
+function DeploymentLogs({
+  deployment,
+  onOpenAppLogs,
+}: {
+  deployment: Deployment;
+  onOpenAppLogs?: (deploymentId: string) => void;
+}) {
   const [streamLines, setStreamLines] = useState<string[]>([]);
   const isLive = isActiveDeploy(deployment.status);
   const queryClient = useQueryClient();
 
+  // Clave propia: la pestaña Logs guarda en `deploymentLogs` la respuesta con
+  // la salida de la aplicación, y esta no la pide (`runtime=0`).
   const logsQuery = useQuery({
-    queryKey: ['deploymentLogs', deployment.id],
-    queryFn: () =>
-      api.get<{ buildLogs: string; runtimeLogs: string | null }>(`/deployments/${deployment.id}/logs`),
+    queryKey: ['deploymentBuildLogs', deployment.id],
+    queryFn: () => api.get<{ buildLogs: string }>(`/deployments/${deployment.id}/logs?runtime=0`),
     enabled: !isLive,
   });
 
   useEffect(() => {
     if (!isLive) return;
     setStreamLines([]);
-    const pending: string[] = [];
-    let raf = 0;
-    const flush = () => {
-      raf = 0;
-      if (!pending.length) return;
-      const incoming = pending.splice(0);
+    // Un build escupe ráfagas de cientos de líneas: se pintan por tandas.
+    const batch = createBatcher<string>((incoming) =>
       setStreamLines((prev) => {
         const next = prev.length ? prev.concat(incoming) : incoming;
         return next.length > 8_000 ? next.slice(next.length - 8_000) : next;
-      });
-    };
+      }),
+    );
     const es = openStream(`/deployments/${deployment.id}/logs/stream`);
     es.addEventListener('snapshot', (ev) => {
       const data = JSON.parse((ev as MessageEvent).data);
-      pending.length = 0;
-      if (raf) {
-        cancelAnimationFrame(raf);
-        // Sin reponerlo, `log` creía que seguía habiendo un pintado programado
-        // y no pedía otro: la consola se congelaba tras cada (re)conexión.
-        raf = 0;
-      }
+      batch.clear();
       setStreamLines(data.logs ? data.logs.split('\n').filter(Boolean) : []);
     });
     es.addEventListener('log', (ev) => {
-      pending.push(JSON.parse((ev as MessageEvent).data).line);
-      if (!raf) raf = requestAnimationFrame(flush);
+      batch.push(JSON.parse((ev as MessageEvent).data).line);
     });
     es.addEventListener('done', () => {
-      flush();
+      batch.flush();
       queryClient.invalidateQueries({ queryKey: ['deployments', deployment.service_id] });
       queryClient.invalidateQueries({ queryKey: ['service', deployment.service_id] });
+      queryClient.invalidateQueries({ queryKey: ['deploymentBuildLogs', deployment.id] });
       queryClient.invalidateQueries({ queryKey: ['deploymentLogs', deployment.id] });
       queryClient.invalidateQueries({ queryKey: ['alerts'] });
       queryClient.invalidateQueries({ queryKey: ['projects'] });
       es.close();
     });
     return () => {
-      if (raf) cancelAnimationFrame(raf);
+      batch.clear();
       es.close();
     };
   }, [deployment.id, isLive, deployment.service_id, queryClient]);
 
   const lines = useMemo(() => {
     if (isLive) return streamLines;
-    if (logsQuery.data) {
-      const b = logsQuery.data.buildLogs ? logsQuery.data.buildLogs.split('\n').filter(Boolean) : [];
-      const r = logsQuery.data.runtimeLogs ? logsQuery.data.runtimeLogs.split('\n').filter(Boolean).map(tagRuntime) : [];
-      return [...b, ...r];
-    }
+    if (logsQuery.data) return logsQuery.data.buildLogs ? logsQuery.data.buildLogs.split('\n').filter(Boolean) : [];
     /*
      * Justo al terminar el despliegue, mientras llega el log archivado, se
      * sigue enseñando lo que se estuvo viendo en directo: antes la consola se
@@ -261,16 +246,28 @@ function DeploymentLogs({ deployment }: { deployment: Deployment }) {
   }, [isLive, streamLines, logsQuery.data, deployment.logs]);
 
   return (
-    <LogViewer
-      lines={lines}
-      toolbar
-      title={deployment.id}
-      state={isLive || lines.length > 0 ? 'ready' : logsQuery.isLoading ? 'loading' : logsQuery.isError ? 'error' : 'ready'}
-      onRetry={() => logsQuery.refetch()}
-      emptyMessage={isLive ? 'Esperando la primera línea de la compilación…' : 'Este despliegue no ha generado ningún registro.'}
-      downloadName={`deploy-${deployment.id}.txt`}
-      className="h-[min(52dvh,420px)] overflow-hidden rounded-lg border border-line"
-    />
+    <div className="flex flex-col gap-1.5">
+      <LogViewer
+        lines={lines}
+        live={isLive}
+        title={deployment.id}
+        state={isLive || lines.length > 0 ? 'ready' : logsQuery.isLoading ? 'loading' : logsQuery.isError ? 'error' : 'ready'}
+        onRetry={() => logsQuery.refetch()}
+        emptyMessage={isLive ? 'Esperando la primera línea de la compilación…' : 'Este despliegue no ha generado ningún registro.'}
+        downloadName={`deploy-${deployment.id}.txt`}
+        // En el móvil algo más alta: la barra de la consola ocupa dos filas.
+        className="h-[min(60dvh,440px)] overflow-hidden rounded-lg border border-line sm:h-[min(52dvh,420px)]"
+      />
+      {onOpenAppLogs && deployment.status === 'success' && (
+        <button
+          type="button"
+          onClick={() => onOpenAppLogs(deployment.id)}
+          className="tap inline-flex items-center gap-1.5 self-start text-xs font-medium text-acc-soft hover:underline max-sm:min-h-10"
+        >
+          <Terminal size={12} aria-hidden /> Ver la salida de la aplicación de esta versión
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -634,7 +631,7 @@ export default function DeploymentsTab({
                     <p className="rounded-lg border border-err/30 bg-err/[.08] px-3 py-2 text-xs text-err">{d.error}</p>
                   )}
                   <DiagnosisCard raw={d.diagnosis} serviceId={serviceId} />
-                  <DeploymentLogs deployment={d} />
+                  <DeploymentLogs deployment={d} onOpenAppLogs={onNavigateToLogs} />
                 </div>
               </Collapse>
             )}

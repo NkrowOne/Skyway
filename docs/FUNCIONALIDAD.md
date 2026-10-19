@@ -537,25 +537,31 @@ con código 1, que es lo que permite a Docker levantarlo limpio.
      una en servicio, como antes de la parada limpia); con «una sola copia»,
      para todas a la vez y no arranca ninguna hasta que se han parado todas. Si la parada
      termina con el código 137, sin `OOMKilled` y tras agotar la gracia, el
-     registro avisa: «⚠ <nombre> no terminó con SIGTERM en <N> s y se detuvo con
-     SIGKILL. Si la aplicación es el proceso principal del contenedor, tiene que
-     atender SIGTERM (cerrar y salir): sin un manejador, el sistema descarta la
-     señal. Si el comando de arranque es una sola orden, empiézalo con «exec».
-     Aumenta la gracia de parada en Ajustes del servicio solo si el proceso ya
-     atiende SIGTERM y necesita más tiempo para cerrar.». Hay dos causas
-     habituales. La primera: el proceso principal (PID 1) es la propia
-     aplicación y no tiene manejador de SIGTERM; el kernel descarta las señales
-     sin manejador que llegan al PID 1, así que Node sin
-     `process.on('SIGTERM', …)` o Python sin `signal.signal(signal.SIGTERM, …)`
-     siguen en marcha hasta el SIGKILL. La segunda: el comando de arranque va
-     envuelto en `sh -c` (Skyway lo envuelve así cuando la imagen no tiene un
-     shell como entrypoint) y el shell se queda como PID 1 sin reenviar la señal,
-     como hacen busybox y Alpine; con `exec`, la aplicación sustituye al shell
-     (y entonces tiene que atender SIGTERM, como en el primer caso). Subir la
-     gracia no arregla ninguna de las dos: con «una sola copia», la gracia se
-     suma al tiempo sin servicio, así que en un proceso que no atiende SIGTERM
-     conviene **bajarla**. No se activa `Init` (tini) de forma general: rompe
-     imágenes que necesitan ser el PID 1 (s6-overlay). El borrado de servicios y
+     registro avisa («⚠ <nombre> no terminó con SIGTERM en <N> s y se detuvo con
+     SIGKILL.») y añade la causa según la copia.
+     **Init**: las copias de las aplicaciones (repositorio e imagen, también la
+     `--next`) se crean con `Init` (`runServiceContainer`): el PID 1 es el init
+     de Docker (tini), que entrega las señales a la aplicación. Sin él, la
+     aplicación es el PID 1 y el kernel descarta las señales para las que no
+     tiene manejador; Node, además, atiende SIGTERM solo para restaurar el
+     terminal y la relanza sin manejador, así que tampoco termina. «Detener»,
+     «Reiniciar» y cada despliegue esperaban la gracia entera (30 s por
+     defecto) con la aplicación en marcha, como si el botón no hiciera nada, y
+     acababan en SIGKILL; con el init, la aplicación termina al momento o cierra
+     con su manejador. No llevan init las bases de datos ni las imágenes con su
+     propio proceso de inicio (`initPropioDeLaImagen`: `/init` de s6-overlay o
+     variables `S6_*`, systemd, `my_init`, tini, dumb-init, catatonit), que no
+     arrancan fuera del PID 1 o ya entregan las señales; el registro del
+     despliegue lo dice («ℹ La imagen arranca con su propio proceso de
+     inicio…»). Si el daemon no tiene el binario del init, el contenedor se crea
+     otra vez sin él y el registro lo avisa. La causa que añade el aviso: con
+     init, la aplicación recibe SIGTERM y su manejador tiene que cerrar y salir;
+     en una copia creada antes del init (`sinInit`), basta con volver a
+     desplegar una vez, y esa parada no abre la alerta «no atiende SIGTERM»; sin
+     init (bases de datos, imágenes con init propio), un manejador de SIGTERM y
+     `exec` delante de una orden única en `sh -c`. Subir la gracia solo sirve si
+     el proceso atiende SIGTERM y necesita más tiempo: con «una sola copia», la
+     gracia se suma al tiempo sin servicio. El borrado de servicios y
      proyectos (`purge.ts`) no cambia: 10 s de cortesía antes de borrar.
    - **Configuración del repositorio al volver a desplegar una imagen**: un
      despliegue que reutiliza una imagen sin compilar (vuelta atrás, pestaña
@@ -1363,9 +1369,23 @@ null` si hay que crearla), `missing` (variables esperadas sin propuesta
 automática) y `needs` (motores con su pista). Los nombres se casan por papel:
 `DB_HOST` → `${{Postgres.PGHOST}}`, `S3_ACCESS_KEY` → `${{MinIO.MINIO_ROOT_USER}}`,
 `NEXTAUTH_URL` → `${{<este servicio>.PUBLIC_URL}}` si tiene dominio. La pestaña
-Variables lo pinta como aviso con «Añadir», «Añadir todas» y «Crear <motor> y
-conectar» (crea la base en el proyecto y añade las referencias de golpe). Nada de
-esto escribe una variable por su cuenta: todo se propone y se aplica al guardar y
+Variables lo pinta en la sección plegable «Variables sugeridas» (siempre
+plegada al entrar; la cabecera dice cuántas hay y se abre al pulsarla): cada sugerencia con su «Añadir» propio
+—las que no tienen valor añaden solo esa fila, con el cursor en el valor; nunca
+se añade un lote de variables vacías—, «Añadir las N referencias» cuando hay
+varias con valor real, «Crear <motor> y conectar» (crea la base en el proyecto y
+añade sus referencias) y unas habituales (`NODE_ENV`, `TZ`, `LOG_LEVEL`; `PORT`
+no, porque Skyway la pone sola con el puerto interno). **No se propone lo que
+ya está cubierto**: lo que hay en la tabla (también sin guardar), las variables
+compartidas del proyecto, las que Skyway pone a ese servicio (`PORT`, `RAILWAY_*`,
+sus `SKYWAY_*`, y `PUBLIC_URL` o `INTERNAL_URL` solo si tiene dominio o
+puerto) y las que ya proponen el plan del manifiesto o, sin manifiesto, la
+conexión con el correo. Lo que el `.env` del repositorio dejó sin valor se guarda al
+desplegar, pero el servidor lo vuelve a cruzar en cada consulta (`repoPending`)
+con lo que existe en ese momento. Los **nombres nuevos se escriben en mayúsculas** al teclear, pegar o
+editar el texto `.env` (solo lo que va antes del `=`); los que ya existen, o los
+que el repositorio espera con minúsculas, se respetan tal cual. Nada de esto
+escribe una variable por su cuenta: todo se propone y se aplica al guardar y
 redesplegar.
 
 Lo mismo **antes de crear el servicio**: al elegir repositorio y rama en «Nuevo
@@ -2514,8 +2534,8 @@ devuelve, y solo se usa para listar repos y clonar. Todo queda auditado
 | PATCH | `/services/:id` | +access | edita `name`/`config` (recursos en caliente, en todas las réplicas); cada dominio **nuevo** registrable o con www llega con su pareja con o sin www salvo que esté en `config.dominiosSinPareja` (§5.5; la lista de renuncias se guarda limpia y, enviada sin `domains`, solo se filtra contra los actuales); los dominios **nuevos** pasan la misma comprobación que al crear (409), los que ya tenía el servicio se conservan; `domainsBase` opcional (lista de los dominios de los que parte quien edita): si no coincide con los actuales, unos `config.domains` iguales a la base se ignoran (se conservan los actuales) y unos distintos dan 409 («han cambiado mientras los editabas»); solo los nuevos pasan por el DNS automático, y solo con `domainsBase` (`dns`, §7.13, solo admin); la lista se guarda en el orden del dominio principal (§5.5), y un cambio solo de orden no cuenta como dominio nuevo (ni pide volver a desplegar si, ordenada, la lista queda igual); responde con `buildArgs` tapados, y un valor `•••` recibido conserva el build arg que ya había. `config` admite además `deployStrategy` (`'auto'`\|`'overlap'`\|`'recreate'`; `'auto'` lo deja sin fijar; se ignora en bases de datos), `stopGraceSeconds` (entero 0–600, también como cifras en texto; `null` o `""` lo dejan sin fijar; otro tipo da 400; en una base de datos, de 10 a 600: un valor menor da 400) y `stopCommand` (texto de hasta 1000 caracteres o `null`; vacío o `null` lo quita; se ignora en bases de datos; guardar uno nuevo exige el módulo «Terminal de comandos» y un workspace no suspendido, 403 si no, salvo a la administración, y queda en la auditoría como `service_stop_command` con los primeros 120 caracteres): ninguno pide volver a desplegar (la estrategia vale desde el siguiente despliegue y las paradas leen siempre la configuración actual). Al guardar `domains` o `port`, los demás servicios del proyecto cuyo entorno resuelto cambia (los que lo referencian con `${{<servicio>.PUBLIC_URL}}`, `INTERNAL_URL`…) quedan con cambios sin desplegar (`bumpConfigRev`) |
 | DELETE | `/services/:id?confirm=<nombre>` | +access | elimina el servicio con **todos sus datos** (§3.1), salvo los volúmenes que comparta con otro servicio del proyecto; `confirm` (nombre o slug), 503 y los dos 409 como en proyectos → `{ok, warnings, removed: {volumes[], images, backups}}` |
 | POST | `/services/:id/deploy` | +access | dispara despliegue manual (`{force: true}` recompila sin reutilizar imagen; `{commit: <SHA de 40>}` reconstruye ese commit, solo git) |
-| POST | `/services/:id/{start,stop,restart}` | +access | acciones sobre el contenedor. Si el servicio no tiene un despliegue en cola o en marcha, antes retiran (o devuelven a su nombre) los restos de intercambios `--next`/`--prev` con parada limpia (un error ahí se registra y no impide la acción). `stop` detiene todas las réplicas en paralelo con parada limpia (comando al parar, SIGTERM y la gracia, después SIGKILL; §2), archiva su registro después de pararlas y responde además `forced: string[]`, las copias que no terminaron con SIGTERM a tiempo y se detuvieron con SIGKILL (el panel lo avisa). `restart` detiene a la vez todas las copias con la misma parada limpia y vuelve a arrancar cada contenedor (el mismo: conserva su identidad, §2), y también responde `forced`. Las dos responden cuando termina la parada: con un comando al parar y una gracia largos puede tardar hasta el doble de la gracia. Si un proxy corta antes la conexión (el de Cloudflare espera 100 s), la parada sigue en el servidor hasta el final; el estado se ve al recargar |
-| GET | `/services/:id/env` | +access | variables (crudas, resueltas, referencias con `vars`/`auto`/`connect`) y propuestas de la detección de dependencias (`needs`, `suggestions`, `missing`, `mail`, `manifest`, §5.5) |
+| POST | `/services/:id/{start,stop,restart}` | +access | acciones sobre el contenedor. Si el servicio no tiene un despliegue en cola o en marcha, antes retiran (o devuelven a su nombre) los restos de intercambios `--next`/`--prev` con parada limpia (un error ahí se registra y no impide la acción). `stop` detiene todas las réplicas en paralelo con parada limpia (comando al parar, SIGTERM y la gracia, después SIGKILL; §2), archiva su registro después de pararlas y responde además `forced: string[]`, las copias que no terminaron con SIGTERM a tiempo y se detuvieron con SIGKILL (el panel lo avisa). `restart` detiene a la vez todas las copias con la misma parada limpia y vuelve a arrancar cada contenedor (el mismo: conserva su identidad, §2), y también responde `forced`. Las dos responden además `initOnRedeploy: boolean`: alguna copia forzada se creó sin el init que llevan las nuevas (§2), y el panel pide volver a desplegar una vez en lugar de cambiar la aplicación. Tras «Reiniciar», el panel avisa «Servicio reiniciado» (el estado que se ve no cambia). Las dos responden cuando termina la parada: con un comando al parar y una gracia largos puede tardar hasta el doble de la gracia. Si un proxy corta antes la conexión (el de Cloudflare espera 100 s), la parada sigue en el servidor hasta el final; el estado se ve al recargar |
+| GET | `/services/:id/env` | +access | variables (crudas, resueltas, referencias con `vars`/`auto`/`connect`) y propuestas de la detección de dependencias (`needs`, `suggestions`, `missing`, `mail`, `manifest`, §5.5), más `repoPending`: lo que el `.env` del repositorio dejó sin valor en el último despliegue y sigue sin cubrir (sin lo definido en el servicio o compartido, lo que Skyway pone a ese servicio y lo que proponen el manifiesto o, sin él, el correo). El asistente de ayuda (`env:pending`) usa la misma lista |
 | GET | `/services/:id/integrations` | +access | plan de integraciones del servicio sin efectos (§5.7) → `{plan, pending}`; `plan` null si no es de repositorio. `plan.fingerprint` es la huella que exige aprobar; cada recurso trae `canApprove` y `confirmation` |
 | POST | `/services/:id/integrations/apply` | +access | `{skip?, expect?, confirmMailboxAccess?, redeploy?}` → `{result: {applied, pending, kept, blocked, created, errors}, plan, needsRedeploy, deploymentId}`. Lo inofensivo lo aplica cualquiera con acceso; las bases también; el correo solo **manage** (si no, `pending`). Lo privilegiado exige `expect` = `plan.fingerprint` del plan revisado (sin él, `pending`; si no coincide, **409** `{error, plan}` sin aplicar nada); reutilizar en SMTP un buzón existente exige además `confirmMailboxAccess`. Nunca pisa variables puestas a mano. 409 si ya se está aplicando. 10/min. Audita `service_integrations_applied` (nombres, nunca valores) |
 | PUT | `/services/:id/env` | +access | reemplaza variables del servicio (la lista entera) |
@@ -2530,12 +2550,35 @@ devuelve, y solo se usa para listar repos y clonar. Todo queda auditado
 | POST | `/deployments/:id/cancel` | +access | cancela uno en curso |
 | POST | `/deployments/:id/rollback` | +access | redespliega una imagen anterior (solo git); 409 `image_purged` (con `commit`) si la imagen ya no está en el servidor, sin crear despliegue ni alerta |
 | GET | `/deployments/:id/logs/stream` | +access | **SSE** de build/deploy |
+| GET | `/deployments/:id/logs` | +access | registro de compilación y despliegue (`buildLogs`) y salida de la aplicación (`runtimeLogs`: del contenedor de esa versión si sigue vivo, si no la archivada). Con `?runtime=0` solo el de compilación y despliegue, sin consultar a Docker: es lo que pide la lista de despliegues |
+| GET | `/deployments/:id/logs/download` | +access | registro completo del despliegue (compilación, despliegue y aplicación) como adjunto de texto |
 | GET | `/projects/:id/deploys/stream` | +access | **SSE** del feed de despliegues del proyecto (evento `snapshot` + un `deploy` por cambio de fase). Independiente: pensado para agentes y automatizaciones que solo quieren los despliegues |
 | GET | `/services/:id/logs/stream` | +access | **SSE** de logs de ejecución de todas las réplicas (cada línea con su cursor de tiempo, que viaja también como `id` del evento; las réplicas 2..n llevan prefijo `[rN]`). Si el contenedor se sustituye o se para, avisa (`notice`) y se vuelve a enganchar solo. Al reconectar, `Last-Event-ID` reanuda desde ese cursor |
 | GET | `/services/:id/logs/tail` | +access | páginado hacia atrás: solo líneas **estrictamente** anteriores a un cursor (`?limit=&before=`) para cargar historial al subir. Docker filtra por segundos enteros: se pide de más y se recorta, y `hasMore` dice si queda historial |
 | GET | `/services/:id/logs/download` | +access | descarga íntegra del log del contenedor como adjunto de texto (`?timestamps=1` para incluir sellos) |
 | GET | `/projects/:id/metrics/stream` | +access | **SSE** de métricas en vivo del proyecto: `metrics` cada 2,5 s y, por la misma conexión, los despliegues (`deploys` al conectar + un `deploy` por cambio de fase). El panel abre solo esta, no las dos |
 | GET | `/services/:id/metrics/history` | +access | histórico de consumo del servicio (`?hours=`): CPU/RAM (media y pico), red y disco |
+
+**Consola de logs** (`web/src/components/LogViewer.tsx`, la misma en Logs,
+Despliegues y la copia de datos). La lista de Despliegues enseña solo
+compilación y despliegue; la salida de la aplicación está en Logs («Aplicación»)
+y se llega desde cada versión con «Ver la salida de la aplicación de esta
+versión».
+
+- **Fecha y hora** en cada línea (`12 oct 14:03:22`, hora local), o solo la
+  hora, UTC o tiempo transcurrido. Tocar una línea abre su detalle: fecha
+  completa, ISO en UTC, JSON legible si la línea lo es, «Copiar línea» y, con
+  filtros, «Ver en contexto» (quita los filtros y salta a esa línea).
+- **Búsqueda** sin distinguir mayúsculas: palabras (todas), `"frase exacta"`,
+  `-excluir`, `a OR b`, `/expresión regular/` y `level:error` / `level:warn`;
+  más los botones Todo / Errores / Avisos. El nivel sale del propio log cuando
+  lo declara (JSON, `level=`, etiqueta `ERROR`/`[warn]`, escala de pino) y, si
+  no, de palabras completas (`TypeError`, `Traceback`, `✖`, `⚠`…).
+- **En vivo**: al subir a leer, o con «En vivo» → pausa, la vista se congela y
+  las líneas nuevas se cuentan en «Reanudar +N» sin mover lo que se lee. Las
+  líneas de los streams se pintan por tandas de 60 ms (`web/src/logbatch.ts`).
+- La vista (fecha, ajuste de línea, numeración) se recuerda en el navegador; en
+  el móvil la numeración arranca apagada.
 
 ### 7.5.1 Copia de datos desde una base externa (§5.6)
 | Método | Ruta | Nivel | Descripción |

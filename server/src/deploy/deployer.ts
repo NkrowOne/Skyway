@@ -50,6 +50,7 @@ import {
   imageExists,
   imageExposedPorts,
   imageHealthcheckWindowMs,
+  initParaServicio,
   listServiceContainers,
   normalizeContainerPath,
   pararConGracia,
@@ -1488,7 +1489,15 @@ async function deployContainer(
   const estrategia = estrategiaEfectiva(service, repoConfig?.healthcheckPath ?? null);
   const gracia = graciaParada(service, env);
   const comando = comandoParada(service);
-  const parar = (nombre: string) => pararConGracia(nombre, { graciaSegundos: gracia.segundos, comando, log });
+  // Las aplicaciones van con el init de Docker, que les entrega SIGTERM (ver
+  // `runServiceContainer`), salvo una imagen con su propio proceso de inicio.
+  // Las bases de datos, no: sus imágenes ya atienden las señales.
+  const init = service.type === 'database' ? { init: false, propio: null } : await initParaServicio(image, cmd, entrypoint);
+  if (init.propio) {
+    log(`ℹ La imagen arranca con su propio proceso de inicio («${init.propio}»): se ejecuta como proceso principal, sin el init de Docker.`);
+  }
+  const parar = (nombre: string) =>
+    pararConGracia(nombre, { graciaSegundos: gracia.segundos, comando, log, initEnServicio: init.init });
   /**
    * La copia de validación «--next» se para con SIGTERM, pero SIN el comando al
    * parar: nunca ha atendido (lleva SKYWAY_VALIDATION=1) y la versión anterior
@@ -1524,6 +1533,8 @@ async function deployContainer(
     volumes,
     ...(restartPolicy ? { restartPolicy } : {}),
     stopGraceSeconds: gracia.segundos,
+    init: init.init,
+    log,
   };
 
   const name = containerName(project, service);
@@ -1977,8 +1988,10 @@ async function desplegarUnaSolaCopia(o: DespliegueUnaSolaCopia): Promise<void> {
         throw new Error(errorParada);
       }
       // Una parada forzada aquí es tiempo sin servicio en cada despliegue: se
-      // recuerda en Alertas, fuera de este registro (o se cierra el aviso).
-      const forzadas = paradas.filter((r) => r.status === 'fulfilled' && r.value.forzada).length;
+      // recuerda en Alertas, fuera de este registro (o se cierra el aviso). La
+      // de una copia creada sin init no cuenta: las nuevas lo llevan, y es el
+      // próximo despliegue el que dirá si la aplicación se detiene a tiempo.
+      const forzadas = paradas.filter((r) => r.status === 'fulfilled' && r.value.forzada && !r.value.sinInit).length;
       try {
         anotarParadaForzada(service, forzadas, o.graciaSegundos);
       } catch {

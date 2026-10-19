@@ -2,6 +2,7 @@ import { FastifyRequest } from 'fastify';
 import { accessibleProjectRows, canAccessProjectRow, currentUser } from '../auth';
 import { getDeployment, getProject, getService, latestDeployment, listProjects, listServicesForProjects } from '../db';
 import { diagnose, explainExitCode } from '../deploy/diagnose';
+import { repoPendingOf } from '../needs';
 import { containerName, fetchLogsBefore } from '../docker/containers';
 import { dockerSnapshot, runtimeIn, sampleIn } from '../docker/sampler';
 import { Diagnosis, ProjectRow, ServiceRow, UserRow } from '../types';
@@ -180,14 +181,6 @@ const REF_LITERAL = /\$\{\{[^}]*\}\}/g;
  * escribe el importador de .env y puede no existir (servicios anteriores,
  * bases de datos, imágenes).
  */
-function envImportPending(config: unknown): string[] {
-  const pending = (config as { envImport?: { pending?: unknown } } | null)?.envImport?.pending;
-  if (!Array.isArray(pending)) return [];
-  return pending
-    .map((p) => (p && typeof p === 'object' ? (p as { key?: unknown }).key : undefined))
-    .filter((k): k is string => typeof k === 'string' && k.length > 0);
-}
-
 /**
  * Revisa un servicio y devuelve lo que encuentre, de más grave a menos:
  * último despliegue fallido (con su diagnóstico), estado del contenedor,
@@ -365,8 +358,9 @@ export async function detectServiceIssues(service: ServiceRow, opts: { deep: boo
     );
   }
 
-  // 4. Claves del .env del repositorio que siguen sin valor.
-  const pending = envImportPending(service.config);
+  // 4. Claves del .env del repositorio que siguen sin valor: las mismas que
+  // propone la pestaña Variables, no la foto del último despliegue.
+  const pending = repoPendingOf(service).map((p) => p.key);
   if (pending.length > 0) {
     issues.push(
       issue(ctx, {

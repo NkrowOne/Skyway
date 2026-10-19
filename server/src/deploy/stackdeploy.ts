@@ -43,7 +43,9 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * un margen a ciegas, porque el volcado periódico podía llegar después.)
  */
 function appendLog(deploymentId: string, line: string): void {
-  const stamped = `${new Date().toISOString().slice(11, 19)} ${line}`;
+  // Sello ISO completo, como `makeLogger`: con solo la hora (en UTC) el visor
+  // no podía enseñar la fecha y la pintaba como si fuera local.
+  const stamped = `${new Date().toISOString()} ${line}`;
   const row = getDeployment(deploymentId);
   if (row) updateDeployment(deploymentId, { logs: `${row.logs}${stamped}\n` });
   emitDeploy(deploymentId, { type: 'log', line: stamped });
@@ -115,7 +117,7 @@ function markSkipped(serviceId: string, reason: string): void {
   updateDeployment(deployment.id, {
     status: 'failed',
     error: reason,
-    logs: `${new Date().toISOString().slice(11, 19)} ✖ ${reason}\n`,
+    logs: `${new Date().toISOString()} ✖ ${reason}\n`,
     finished_at: now(),
   });
   emitDeploy(deployment.id, { type: 'done', status: 'failed', error: reason });

@@ -188,6 +188,7 @@ web/src/
 - **[docs/FUNCIONALIDAD.md](docs/FUNCIONALIDAD.md)** — referencia completa (módulos, modelo de datos, seguridad y **toda la API REST**), consultable fácilmente por un LLM.
 - **[docs/AUDITORIA.md](docs/AUDITORIA.md)** — informe de auditoría de seguridad y backend, con correcciones y recomendaciones.
 - **[docs/CONTROL-REMOTO.md](docs/CONTROL-REMOTO.md)** — control por API/tokens (`Authorization: Bearer sky_…`) para automatizaciones y agentes.
+- **[docs/DESPLIEGUE-IA.md](docs/DESPLIEGUE-IA.md)** — guía para agentes de IA: preparar y desplegar bots, aplicaciones y webs (plantillas, lista de comprobación, errores frecuentes) y, opcional, la integración con Skyway webtools.
 - **[CLAUDE.md](CLAUDE.md)** — guía breve del repositorio para agentes/LLM.
 
 ## Configuración

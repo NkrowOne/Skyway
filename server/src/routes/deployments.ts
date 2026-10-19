@@ -1,4 +1,5 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { z } from 'zod';
 import { assertProjectAccess, requireAuth } from '../auth';
 import { audit } from '../audit';
 import {
@@ -149,21 +150,28 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
-  /** Devuelve el desglose estructurado de logs de un despliegue (Build, Deploy y Runtime). */
+  /**
+   * Devuelve el desglose estructurado de logs de un despliegue (Build, Deploy y Runtime).
+   * Con `?runtime=0` solo el de compilación y despliegue: la lista de
+   * despliegues no enseña la salida de la aplicación, y pedírsela a Docker
+   * (3000 líneas) cada vez que se abre una tarjeta era trabajo tirado.
+   */
   app.get('/api/deployments/:id/logs', async (req, reply) => {
     const { id } = req.params as { id: string };
+    const { runtime } = z.object({ runtime: z.enum(['0', '1']).optional() }).parse(req.query);
     const deployment = getDeployment(id);
     if (!deployment) return reply.code(404).send({ error: 'Despliegue no encontrado' });
     if (!serviceAccess(req, reply, deployment.service_id)) return reply;
 
+    const withRuntime = runtime !== '0';
     const service = getService(deployment.service_id);
     const project = service ? getProject(service.project_id) : undefined;
-    let runtimeLogs = deployment.runtime_logs ?? null;
+    let runtimeLogs = withRuntime ? deployment.runtime_logs ?? null : null;
     let isLiveRuntime = false;
 
     // Si el contenedor actual de este servicio pertenece a este despliegue (o es el último despliegue),
     // consultamos los logs de ejecución directamente desde Docker con marcas de tiempo íntegras.
-    if (project && service && (await dockerAvailable())) {
+    if (withRuntime && project && service && (await dockerAvailable())) {
       const cName = containerName(project, service);
       const info = await findContainer(cName);
       if (info) {
