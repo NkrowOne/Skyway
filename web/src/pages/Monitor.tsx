@@ -25,7 +25,7 @@ import { ModuleChip, moduleKind } from '../components/ModuleIcon';
 import type { BandPoint } from '../components/HistoryChart';
 import { Button, Chip, ConfirmModal, EmptyState, ErrorState, Segmented, Skeleton, StatusBadge, useToast } from '../components/ui';
 import { DiskBreakdown, HostMetricHistory, LogSearchResult, Me, MonitorOverview, MonitorService } from '../types';
-import { cx, EMPTY_LIST, fmtBytes, fmtDateTime, serviceStatus, timeAgo } from '../utils';
+import { avisoReinicio, cx, EMPTY_LIST, fmtBytes, fmtDateTime, RespuestaParada, serviceStatus, timeAgo } from '../utils';
 
 // El histórico del host solo se ve en la vista «host» (la vista por defecto es
 // «services»), así que su gráfico se carga bajo demanda al abrirla.
@@ -668,7 +668,7 @@ export default function MonitorPage() {
   // Una sola consulta de anchura para todas las filas.
   const isMobile = useMediaQuery('(max-width: 639px)');
   const restart = useMutation({
-    mutationFn: (serviceId: string) => api.post(`/services/${serviceId}/restart`),
+    mutationFn: (serviceId: string) => api.post<RespuestaParada>(`/services/${serviceId}/restart`),
     onMutate: (serviceId) => setRestarting((prev) => new Set(prev).add(serviceId)),
     onSettled: (_d, _e, serviceId) =>
       setRestarting((prev) => {
@@ -676,9 +676,10 @@ export default function MonitorPage() {
         next.delete(serviceId);
         return next;
       }),
-    onSuccess: () => {
+    onSuccess: (data) => {
       setConfirmRestart(null);
-      toast('Servicio reiniciado', 'ok');
+      const aviso = avisoReinicio(data);
+      toast(aviso.texto, aviso.tono);
       queryClient.invalidateQueries({ queryKey: ['monitorOverview'] });
     },
     onError: (err: Error) => toast(err.message, 'err'),

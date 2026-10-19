@@ -8,7 +8,8 @@ import { MailMode, mailRoleOf, mailVarsOf, suggestedMailMode } from './mailenv';
 import { MANIFEST_FILE, MANIFEST_MAX_BYTES, parseManifest } from './manifest';
 import { getTemplate } from './templates';
 import { DetectedNeeds, GitConfig, ProveedorWebhook, ServiceRow } from './types';
-import { ReferenceGroup } from './variables';
+import { isReservedKey } from './deploy/envimport';
+import { ReferenceGroup, systemVars } from './variables';
 
 /**
  * Dependencias que un repositorio declara sin decirlo: qué motores usa (por
@@ -292,8 +293,16 @@ const VAR_PATTERNS: { re: RegExp; engine: Engine | 'sql'; role: Role }[] = [
 const PUBLIC_URL_RE =
   /^(?:(?:PUBLIC|APP|BASE|SITE|WEB|FRONTEND|SERVER|HOST|NEXTAUTH|NEXT_PUBLIC_(?:SITE|APP|BASE)|AUTH)_?URL|(?:APP_)?ORIGIN)$/;
 
-/** Las pone Skyway en cada despliegue: que el .env.example las nombre no es una carencia. */
-const AUTO_COVERED_RE = /^(?:PORT|HOST|HOSTNAME|NODE_ENV|TZ|PUBLIC_URL|PUBLIC_DOMAIN|INTERNAL_(?:HOST|PORT|URL)|RAILWAY_.*|SKYWAY_.*)$/;
+/**
+ * Lo que no se propone aunque el .env.example lo nombre: lo pone Skyway en
+ * cada despliegue (puerto, direcciones, equivalentes de Railway y sus propias
+ * `SKYWAY_*`) o lo suele fijar la imagen (`HOST`, `HOSTNAME`, `NODE_ENV`, `TZ`;
+ * Skyway no las pone). El resto de `SKYWAY_*` sí se propone: son de la
+ * aplicación, como las de Skyway webtools (`SKYWAY_CONNECT_URL`…), y antes se
+ * daban por cubiertas sin estarlo.
+ */
+const AUTO_COVERED_RE =
+  /^(?:PORT|HOST|HOSTNAME|NODE_ENV|TZ|PUBLIC_URL|PUBLIC_DOMAIN|INTERNAL_(?:HOST|PORT|URL)|RAILWAY_.*|SKYWAY_(?:PROJECT|SERVICE|DEPLOYMENT|INSTANCE_ID|REPLICA|REPLICAS|VALIDATION))$/;
 
 const ENV_KEY_RE = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/;
 
@@ -689,6 +698,45 @@ export interface AdviceTarget {
   defined: Set<string>;
 }
 
+/** `SKYWAY_*` que el despliegue pone siempre en el contenedor, se guarden o no con otro valor. */
+const SKYWAY_INJECTED_RE = /^SKYWAY_(?:PROJECT|SERVICE|DEPLOYMENT|INSTANCE_ID|REPLICA|REPLICAS|VALIDATION)$/;
+
+/**
+ * Variables que propone otro sitio: con un `skyway.json` válido, su plan (las
+ * de su `env`); sin él, la conexión con el correo (las de correo que espera la
+ * web). La pestaña Variables sigue la misma regla: con manifiesto válido no
+ * enseña el bloque del correo, así que las de correo que el manifiesto no
+ * declare se proponen como cualquier otra.
+ */
+function handledElsewhere(needs: DetectedNeeds): Set<string> {
+  if (needs.manifest) return new Set(Object.keys(needs.manifest.env ?? {}));
+  return new Set((needs.mail?.vars ?? []).map((v) => v.name));
+}
+
+/**
+ * Lo que el `.env` del repositorio dejó sin valor en el último despliegue
+ * (`envImport.pending`) y sigue sin cubrir AHORA. El informe es una foto del
+ * despliegue, y la pestaña Variables y el asistente lo seguían dando por
+ * pendiente aunque después se hubiera definido como variable compartida, lo
+ * pusiera Skyway sola o ya lo propusieran el correo o el manifiesto.
+ */
+export function repoPendingOf(service: ServiceRow): { key: string; file: string }[] {
+  if (service.type !== 'git') return [];
+  const cfg = service.config as GitConfig;
+  const pending = cfg.envImport?.pending ?? [];
+  if (pending.length === 0) return [];
+  const covered = new Set([
+    ...Object.keys(getProjectVars(service.project_id)),
+    ...Object.keys(getEnv(service.id)),
+    // Las de sistema que este servicio tiene de verdad: sin dominio no hay `PUBLIC_URL`.
+    ...Object.keys(systemVars(service)),
+  ]);
+  const elsewhere = cfg.needs ? handledElsewhere(cfg.needs) : new Set<string>();
+  return pending.filter(
+    (p) => !covered.has(p.key) && !isReservedKey(p.key) && !SKYWAY_INJECTED_RE.test(p.key) && !elsewhere.has(p.key),
+  );
+}
+
 /** Propuestas para un servicio que ya existe: lo detectado en su último despliegue contra lo que tiene guardado. */
 export function adviseEnv(service: ServiceRow, references: ReferenceGroup[]): EnvAdvice {
   if (service.type !== 'git') return NO_ADVICE;
@@ -724,13 +772,10 @@ export function adviseNeeds(needs: DetectedNeeds | null | undefined, target: Adv
   const suggestions: EnvSuggestion[] = [];
   const missing: string[] = [];
   const covered = new Set<string>();
-  // Lo que declara el manifiesto lo resuelve el plan de integraciones, y las
-  // variables de correo, la conexión con el correo: proponerlas aquí también
-  // sería decir lo mismo dos veces (y con otra referencia).
-  const handledElsewhere = new Set<string>([
-    ...Object.keys(needs.manifest?.env ?? {}),
-    ...(needs.mail?.vars ?? []).map((v) => v.name),
-  ]);
+  // Lo que declara el manifiesto lo resuelve el plan de integraciones y, sin
+  // manifiesto, las variables de correo la conexión con el correo: proponerlas
+  // aquí también sería decir lo mismo dos veces (y con otra referencia).
+  const elsewhere = handledElsewhere(needs);
   const propose = (key: string, engine: Engine, role: Role, reason: string): boolean => {
     const refVar = getTemplate(engine)?.conn[role];
     if (!refVar) return false;
@@ -749,7 +794,7 @@ export function adviseNeeds(needs: DetectedNeeds | null | undefined, target: Adv
   };
 
   for (const v of needs.expectedVars) {
-    if (defined.has(v) || AUTO_COVERED_RE.test(v) || handledElsewhere.has(v)) continue;
+    if (defined.has(v) || AUTO_COVERED_RE.test(v) || elsewhere.has(v)) continue;
     const hit = VAR_PATTERNS.find((p) => p.re.test(v));
     if (hit) {
       const engine = hit.engine === 'sql' ? sqlEngine : hit.engine;
@@ -784,7 +829,7 @@ export function adviseNeeds(needs: DetectedNeeds | null | undefined, target: Adv
     const template = getTemplate(engine);
     if (!template) continue;
     for (const key of template.conn.connect) {
-      if (defined.has(key) || handledElsewhere.has(key)) continue;
+      if (defined.has(key) || elsewhere.has(key)) continue;
       const role = (Object.entries(template.conn) as [string, unknown][]).find(([r, name]) => r !== 'connect' && name === key)?.[0] as
         | Role
         | undefined;

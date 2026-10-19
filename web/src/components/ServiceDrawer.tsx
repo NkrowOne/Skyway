@@ -7,7 +7,7 @@ import { useLatch, useLocalStorage, useMediaQuery, useRootDomain } from '../hook
 import { MetricPoint } from '../pages/Project';
 import { useServiceLiveReplicas, useServiceLiveState } from '../livemetrics';
 import { AutoDeployStatus, Deployment, DbOverview, Project, Runtime, Service, ServiceDeployInfo, ServiceWebhookInfo } from '../types';
-import { cx, DEPLOY_STATUS_LABEL, isActiveDeploy, serviceStatus, timeAgo } from '../utils';
+import { AVISO_INIT_REDESPLEGAR, cx, DEPLOY_STATUS_LABEL, isActiveDeploy, RespuestaParada, serviceStatus, timeAgo } from '../utils';
 import { ModuleChip, moduleKind } from './ModuleIcon';
 import DeploymentsTab from './tabs/DeploymentsTab';
 import { Button, ConfirmModal, ErrorState, Skeleton, Spinner, StatusBadge, Tabs, useToast } from './ui';
@@ -213,7 +213,7 @@ export default function ServiceDrawer({
   });
 
   const action = useMutation({
-    mutationFn: (verb: 'start' | 'stop' | 'restart') => api.post<{ forced?: string[] }>(`/services/${serviceId}/${verb}`),
+    mutationFn: (verb: 'start' | 'stop' | 'restart') => api.post<RespuestaParada>(`/services/${serviceId}/${verb}`),
     onSuccess: (data, verb) => {
       setConfirmVerb(null);
       // Detener y Reiniciar: las copias que no atendieron SIGTERM dentro de la
@@ -221,7 +221,14 @@ export default function ServiceDrawer({
       const forzadas = data?.forced ?? [];
       const slug = detail.data?.service.slug;
       if (forzadas.length > 0 && slug) {
-        toast(avisoParadaForzada(forzadas, slug, configuredReplicasDe(detail.data?.service), verb === 'restart'), 'info');
+        toast(
+          avisoParadaForzada(forzadas, slug, configuredReplicasDe(detail.data?.service), verb === 'restart', data?.initOnRedeploy === true),
+          'info',
+        );
+      } else if (verb === 'restart') {
+        // Reiniciar no cambia el estado que se ve (sigue «En marcha»): sin
+        // aviso, no había forma de saber que había terminado.
+        toast('Servicio reiniciado', 'ok');
       }
       invalidate();
     },
@@ -718,7 +725,7 @@ function listaNumeros(n: number[]): string {
  * número de réplica y nunca con el nombre interno del contenedor
  * (`skyway-<proyecto>-<servicio>-r2`), que no se ve en ningún otro sitio.
  */
-function avisoParadaForzada(contenedores: string[], slug: string, replicas: number, reinicio: boolean): string {
+function avisoParadaForzada(contenedores: string[], slug: string, replicas: number, reinicio: boolean, sinInit: boolean): string {
   const sufijo = `-${slug}-r`;
   const indices = [
     ...new Set(
@@ -739,6 +746,8 @@ function avisoParadaForzada(contenedores: string[], slug: string, replicas: numb
   const parada = una ? 'se detuvo' : 'se detuvieron';
   return (
     `${sujeto} con SIGTERM a tiempo y ${parada} con SIGKILL${reinicio ? ' antes de volver a arrancar' : ''}. ` +
-    'Comprueba que el proceso atiende SIGTERM; si ya lo hace y necesita más tiempo para cerrar, aumenta la gracia de parada en Ajustes.'
+    (sinInit
+      ? AVISO_INIT_REDESPLEGAR
+      : 'Comprueba que el proceso atiende SIGTERM; si ya lo hace y necesita más tiempo para cerrar, aumenta la gracia de parada en Ajustes.')
   );
 }

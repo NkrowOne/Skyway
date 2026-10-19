@@ -1,8 +1,9 @@
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   AlertTriangle,
   Check,
+  ChevronDown,
   Copy,
   Eye,
   EyeOff,
@@ -260,21 +261,35 @@ interface EnvResponse {
   mail?: { mode: 'smtp' | 'api'; vars: { name: string; role: string }[]; evidence: string[] } | null;
   /** skyway.json del repositorio (si lo hay): manda sobre la detección. */
   manifest?: { file: string; error: string | null } | null;
+  /**
+   * Lo que el .env del repositorio dejó sin valor en el último despliegue y
+   * sigue sin cubrir: sin lo ya definido (también compartido), lo que pone
+   * Skyway sola y lo que proponen el correo o el manifiesto.
+   */
+  repoPending?: { key: string; file: string }[];
 }
 
 interface Row {
   id: string;
   key: string;
   value: string;
+  /**
+   * El nombre llegó con minúsculas (guardado así antes, o así lo espera el
+   * repositorio) y lo que se escriba en él se respeta tal cual. En el resto
+   * de filas el nombre pasa a mayúsculas mientras se escribe.
+   */
+  keepCase: boolean;
 }
 
 /** Qué le pasa a una fila respecto a lo guardado: es lo que la tiñe. */
 type RowStatus = 'saved' | 'new' | 'changed';
 
+const hasLowercase = (s: string) => s !== s.toUpperCase();
+
 /** Generador de ID único local para filas */
 let rowCounter = 0;
 function makeRow(key = '', value = ''): Row {
-  return { id: `var_${Date.now()}_${++rowCounter}`, key, value };
+  return { id: `var_${Date.now()}_${++rowCounter}`, key, value, keepCase: hasLowercase(key) };
 }
 
 /**
@@ -290,14 +305,15 @@ const rowsFromVars = (vars: Record<string, string>): Row[] =>
     // El id sale de la clave (única en lo guardado), no de un contador: con
     // ids nuevos en cada recarga React remontaba todos los campos, se perdía
     // el foco mientras escribías y se cerraban los valores revelados.
-    .map(([key, value]) => ({ id: `k:${key}`, key, value }));
+    .map(([key, value]) => ({ id: `k:${key}`, key, value, keepCase: hasLowercase(key) }));
 
 /** Variables típicas que casi toda app necesita, para añadirlas en un clic. */
+// PORT no está: Skyway la pone sola con el puerto interno del servicio, y
+// proponer 3000 a mano la desviaba en cuanto el puerto era otro.
 const SUGGESTED_VARS: { key: string; value: string; hint: string }[] = [
   { key: 'NODE_ENV', value: 'production', hint: 'Modo de ejecución para apps Node' },
   { key: 'TZ', value: 'Europe/Madrid', hint: 'Zona horaria del contenedor' },
   { key: 'LOG_LEVEL', value: 'info', hint: 'Nivel de registro de la aplicación' },
-  { key: 'PORT', value: '3000', hint: 'Puerto de escucha de la aplicación' },
 ];
 
 /**
@@ -362,10 +378,52 @@ export function parseEnvText(text: string): { key: string; value: string }[] {
   return out;
 }
 
+/**
+ * Nombre con el que se guarda una variable leída de un texto (pegado, vista
+ * .env): en mayúsculas, la convención de las variables de entorno. Los nombres
+ * de `keepCase` (los que ya existen, o los que el repositorio espera con
+ * minúsculas) se dejan como están: cambiarlos sería borrar la variable y crear
+ * otra, y la aplicación, que la busca por su nombre exacto, no la encontraría.
+ */
+export function upperKey(key: string, keepCase: ReadonlySet<string>): string {
+  return keepCase.has(key) ? key : key.toUpperCase();
+}
+
+/**
+ * Cambia el texto de un campo sin mover el cursor. Si se deja a React, al
+ * llegarle un valor distinto del que hay en pantalla lo reescribe entero y el
+ * cursor salta al final: corregir una letra en medio de un nombre lo mandaría
+ * al final en cada pulsación.
+ */
+function setFieldKeepingCaret(el: HTMLInputElement | undefined, value: string) {
+  if (!el || el.value === value) return;
+  const { selectionStart, selectionEnd } = el;
+  el.value = value;
+  if (selectionStart !== null && selectionEnd !== null) el.setSelectionRange(selectionStart, selectionEnd);
+}
+
+const SUGGEST_LIST = 'divide-y divide-line overflow-hidden rounded-lg border border-line bg-surface';
+/** Con el pulgar, 40px de alto; con ratón, compacto. */
+const SUGGEST_BTN =
+  'press flex h-8 shrink-0 items-center justify-center gap-1 rounded-md border border-line bg-surface px-2.5 text-xs font-medium text-sub transition-colors hover:border-acc/40 hover:text-txt disabled:cursor-not-allowed disabled:opacity-60 max-sm:h-10 max-sm:px-3';
+
+/** Una variable sugerida: su nombre, para qué sirve y su acción. */
+function SuggestionItem({ name, detail, children }: { name: string; detail: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <li className="flex items-center gap-3 px-3 py-2">
+      <div className="min-w-0 flex-1">
+        <p className="break-words font-mono font-semibold text-txt">{name}</p>
+        <p className="mt-0.5 break-words text-subtle">{detail}</p>
+      </div>
+      {children}
+    </li>
+  );
+}
 
 /** Acciones de una fila: un objeto estable, para que las filas memoizadas no se repinten con cada tecla. */
 interface RowActions {
-  keyChange: (id: string, raw: string) => void;
+  /** `composing`: el teclado aún está componiendo (IME, teclados de Android); ver `handleKeyChange`. */
+  keyChange: (id: string, raw: string, composing: boolean) => void;
   valueChange: (id: string, value: string) => void;
   paste: (id: string, field: 'key' | 'value', e: React.ClipboardEvent<HTMLInputElement>) => void;
   toggleReveal: (id: string) => void;
@@ -449,7 +507,8 @@ const VariableRow = memo(function VariableRow({
           autoCapitalize="characters"
           autoCorrect="off"
           autoComplete="off"
-          onChange={(e) => actions.keyChange(row.id, e.target.value)}
+          onChange={(e) => actions.keyChange(row.id, e.target.value, (e.nativeEvent as Partial<InputEvent>).isComposing === true)}
+          onCompositionEnd={(e) => actions.keyChange(row.id, e.currentTarget.value, false)}
           onPaste={(e) => actions.paste(row.id, 'key', e)}
           onKeyDown={(e) => {
             if (e.key === '=' || e.key === 'Enter') {
@@ -566,8 +625,36 @@ export default function VariablesTab({
   const [searchQuery, setSearchQuery] = useState('');
   const [dirty, setDirty] = useState(false);
   const [copiedAll, setCopiedAll] = useState(false);
+  // Plegada siempre al entrar: el contador de la cabecera ya dice si hay algo,
+  // y abierta empujaba la tabla de variables fuera de la pantalla.
+  const [suggestOpen, setSuggestOpen] = useState(false);
+  const suggestPanelId = useId();
   const keyInputRefs = useRef<Map<string, HTMLInputElement>>(new Map());
   const valueInputRefs = useRef<Map<string, HTMLInputElement>>(new Map());
+
+  /*
+   * Claves presentes en la vista abierta; en la de texto, las de sus líneas.
+   * Las sugerencias se comparan contra esto para desaparecer en cuanto se
+   * añaden, antes incluso de guardar, también desde la vista .env.
+   */
+  const presentKeys = useMemo(() => {
+    if (viewMode !== 'raw') return new Set(rows.map((r) => r.key.trim()));
+    /*
+     * En el texto, cada nombre cuenta también en mayúsculas, que es como se
+     * guardará si es nuevo: con `database_url=…` escrito a mano, la sugerencia
+     * DATABASE_URL seguía ofreciéndose y, al añadirla, su línea vacía pisaba
+     * el valor al guardar.
+     */
+    const keys = new Set<string>();
+    for (const line of rawText.split('\n')) {
+      const eq = line.indexOf('=');
+      const key = (eq >= 0 ? line.slice(0, eq) : line).trim();
+      if (!key) continue;
+      keys.add(key);
+      keys.add(key.toUpperCase());
+    }
+    return keys;
+  }, [viewMode, rows, rawText]);
 
   useEffect(() => {
     onDirtyChange?.(dirty);
@@ -649,25 +736,69 @@ export default function VariablesTab({
   });
 
   /**
+   * Nombres que se respetan tal cual al leer texto (pegado o vista .env): los
+   * guardados, los de la tabla y los que el repositorio espera con ese nombre
+   * exacto. Cualquier otro es nuevo y pasa a mayúsculas (`upperKey`).
+   */
+  const keepCaseKeys = () =>
+    new Set<string>([
+      ...Object.keys(env.data?.vars ?? {}),
+      ...rows.map((r) => r.key.trim()),
+      ...(env.data?.suggestions ?? []).map((s) => s.key),
+      ...(env.data?.missing ?? []),
+      ...(env.data?.mail?.vars ?? []).map((v) => v.name),
+      ...(envImport?.pending ?? []).map((p) => p.key),
+    ]);
+
+  /**
+   * Añade variables al final de la vista abierta. En la de texto van como
+   * líneas `CLAVE=valor`: añadidas solo a la tabla, que en ese modo no se ve,
+   * se perderían al volver a ella. Devuelve las filas creadas, para poder
+   * llevar el cursor a su valor.
+   */
+  const appendVars = (entries: { key: string; value: string }[]): Row[] => {
+    setDirty(true);
+    if (viewMode === 'raw') {
+      setRawText((prev) => [prev.trimEnd(), ...entries.map((e) => `${e.key}=${e.value}`)].filter(Boolean).join('\n'));
+      return [];
+    }
+    const fresh = entries.map((e) => makeRow(e.key, e.value));
+    setRows((prev) => [...prev, ...fresh]);
+    return fresh;
+  };
+
+  /**
    * Inserta las claves sin valor como filas vacías (o líneas `CLAVE=` en modo
    * texto) para rellenarlas. Las que ya están en la tabla no se duplican.
    */
   const addPendingRows = (keys: string[]) => {
-    const present = new Set(rows.map((r) => r.key.trim()));
-    const fresh = keys.filter((k) => !present.has(k));
+    const fresh = keys.filter((k) => !presentKeys.has(k));
     if (fresh.length === 0) {
       toast('Las variables indicadas ya están en la tabla.', 'info');
       return;
     }
-    if (viewMode === 'raw') {
-      setRawText((prev) => [prev.trimEnd(), ...fresh.map((k) => `${k}=`)].filter(Boolean).join('\n'));
-    } else {
-      const newRows = fresh.map((k) => makeRow(k, ''));
-      setRows((prev) => [...prev, ...newRows]);
-      setTimeout(() => valueInputRefs.current.get(newRows[0].id)?.focus(), 50);
-    }
-    setDirty(true);
+    const [first] = appendVars(fresh.map((key) => ({ key, value: '' })));
+    if (first) setTimeout(() => valueInputRefs.current.get(first.id)?.focus(), 50);
     toast(fresh.length === 1 ? 'Se ha añadido 1 fila. Introduce su valor y guarda los cambios.' : `Se han añadido ${fresh.length} filas. Introduce sus valores y guarda los cambios.`, 'ok');
+  };
+
+  /**
+   * Añade una sugerencia (o todas las referencias a la vez, que llevan valor). Sin
+   * valor, el cursor queda en su campo para introducirlo.
+   */
+  const addSuggested = (entries: { key: string; value: string }[]) => {
+    if (entries.length === 0) return;
+    const [first] = appendVars(entries);
+    const [entry] = entries;
+    if (entries.length === 1 && !entry.value && first) setTimeout(() => valueInputRefs.current.get(first.id)?.focus(), 50);
+    toast(
+      entries.length > 1
+        ? `Se han añadido ${entries.length} variables.`
+        : entry.value
+          ? `Se ha añadido ${entry.key}.`
+          : `Se ha añadido ${entry.key}. Introduce su valor y guarda los cambios.`,
+      'ok',
+    );
   };
 
   // Alternar vista tabla / texto plano
@@ -676,12 +807,17 @@ export default function VariablesTab({
       setRawText(rows.map((r) => `${r.key}=${r.value}`).join('\n'));
     } else {
       // Línea a línea, sin descartar una clave suelta a medio escribir.
+      const keepCase = keepCaseKeys();
       const newRows: Row[] = [];
       for (const line of rawText.split('\n')) {
         const trimmed = line.trim();
         if (!trimmed || trimmed.startsWith('#')) continue;
         const eq = trimmed.indexOf('=');
-        newRows.push(eq > 0 ? makeRow(trimmed.slice(0, eq).trim(), trimmed.slice(eq + 1)) : makeRow(trimmed, ''));
+        newRows.push(
+          eq > 0
+            ? makeRow(upperKey(trimmed.slice(0, eq).trim(), keepCase), trimmed.slice(eq + 1))
+            : makeRow(upperKey(trimmed, keepCase), ''),
+        );
       }
       setRows(newRows);
     }
@@ -695,6 +831,7 @@ export default function VariablesTab({
     if (!env.data) return;
     const vars: Record<string, string> = {};
     if (viewMode === 'raw') {
+      const keepCase = keepCaseKeys();
       for (const line of rawText.split('\n')) {
         const trimmed = line.trim();
         if (!trimmed || trimmed.startsWith('#')) continue;
@@ -703,7 +840,14 @@ export default function VariablesTab({
           toast(`Línea no válida: ${trimmed}`, 'err');
           return;
         }
-        vars[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1);
+        const key = upperKey(trimmed.slice(0, eq).trim(), keepCase);
+        // Dos líneas con el mismo nombre (también `api_key` y `API_KEY`, que se
+        // guardan igual) se quedaban con el último valor sin avisar.
+        if (Object.prototype.hasOwnProperty.call(vars, key)) {
+          toast(`La variable ${key} aparece más de una vez. Deja una sola línea con ese nombre.`, 'err');
+          return;
+        }
+        vars[key] = trimmed.slice(eq + 1);
       }
     } else {
       for (const row of rows) {
@@ -761,13 +905,15 @@ export default function VariablesTab({
     const next = rows.map((r) => ({ ...r }));
     const at = next.findIndex((r) => r.id === atId);
     const fresh: Row[] = [];
+    const keepCase = keepCaseKeys();
     for (const v of vars) {
-      const existing = next.find((r) => r.key.trim() === v.key && r.id !== atId);
+      const key = upperKey(v.key, keepCase);
+      const existing = next.find((r) => r.key.trim() === key && r.id !== atId);
       if (existing) {
         existing.value = v.value;
         updated += 1;
       } else {
-        fresh.push(makeRow(v.key, v.value));
+        fresh.push(makeRow(key, v.value));
         added += 1;
       }
     }
@@ -798,8 +944,14 @@ export default function VariablesTab({
     importVars(rowId, vars);
   };
 
-  // Edición del nombre: un «=» escrito a mano salta al valor.
-  const handleKeyChange = (id: string, rawInput: string) => {
+  /*
+   * Edición del nombre: lo escrito pasa a mayúsculas y un «=» escrito a mano
+   * salta al valor. Mientras el teclado compone (IME, la mayoría de teclados
+   * de Android) el texto no se toca: reescribirlo a mitad de una composición
+   * duplica letras en algunos teclados. Se convierte al terminarla
+   * (`onCompositionEnd` vuelve a llamar aquí sin `composing`).
+   */
+  const handleKeyChange = (id: string, rawInput: string, composing: boolean) => {
     // Texto que llegó aplanado (arrastrar y soltar, autocompletado): si trae
     // varias variables, se reparte igual que un pegado.
     if (/\s/.test(rawInput.trim()) || rawInput.includes('\n')) {
@@ -809,18 +961,25 @@ export default function VariablesTab({
         return;
       }
     }
+    // Una variable que ya tenía minúsculas conserva lo que se escriba: pasar
+    // a mayúsculas letras que no se han tocado la renombraría sin pedirlo.
+    // Al vaciar el nombre deja de ser esa variable y vuelve la norma.
+    const keepCase = rows.find((r) => r.id === id)?.keepCase ?? false;
+    const cased = (key: string) => (keepCase ? key : key.toUpperCase());
     if (rawInput.includes('=')) {
       const eq = rawInput.indexOf('=');
-      const key = rawInput.slice(0, eq).trim();
+      const key = cased(rawInput.slice(0, eq).trim());
       const value = rawInput.slice(eq + 1);
-      setRows((prev) => prev.map((r) => (r.id === id ? { ...r, key, value: value || r.value } : r)));
+      setRows((prev) => prev.map((r) => (r.id === id ? { ...r, key, value: value || r.value, keepCase: keepCase && key !== '' } : r)));
       setDirty(true);
       setTimeout(() => {
         valueInputRefs.current.get(id)?.focus();
       }, 10);
       return;
     }
-    setRows((prev) => prev.map((r) => (r.id === id ? { ...r, key: rawInput } : r)));
+    const key = composing ? rawInput : cased(rawInput);
+    setFieldKeepingCaret(keyInputRefs.current.get(id), key);
+    setRows((prev) => prev.map((r) => (r.id === id ? { ...r, key, keepCase: keepCase && key !== '' } : r)));
     setDirty(true);
   };
 
@@ -849,7 +1008,7 @@ export default function VariablesTab({
   latestHandlers.current = { handleKeyChange, handleValueChange, handlePaste, toggleRowReveal, handleDeleteRow, handleAddRow };
   const rowActions = useMemo<RowActions>(
     () => ({
-      keyChange: (id, raw) => latestHandlers.current.handleKeyChange(id, raw),
+      keyChange: (id, raw, composing) => latestHandlers.current.handleKeyChange(id, raw, composing),
       valueChange: (id, value) => latestHandlers.current.handleValueChange(id, value),
       paste: (id, field, e) => latestHandlers.current.handlePaste(id, field, e),
       toggleReveal: (id) => latestHandlers.current.toggleRowReveal(id),
@@ -946,9 +1105,6 @@ export default function VariablesTab({
     [references],
   );
 
-  // Sugerencias rápidas
-  const suggestions = SUGGESTED_VARS;
-
   // Filtrado por buscador
   const filteredRows = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -957,31 +1113,37 @@ export default function VariablesTab({
   }, [rows, searchQuery]);
 
   /*
-   * Claves que el .env del repositorio trae sin valor y que aquí siguen sin
-   * existir. Se filtran contra las filas, no contra el informe: en cuanto se
-   * añade la fila el aviso deja de insistir, aunque el informe siga igual
-   * hasta el próximo despliegue.
+   * Lo que ya está cubierto y no se vuelve a proponer: lo que hay en pantalla
+   * (también lo añadido sin guardar, para que desaparezca en vivo) y las
+   * variables compartidas del proyecto, que el servicio recibe igual.
+   */
+  const coveredKeys = useMemo(() => {
+    const keys = new Set(presentKeys);
+    for (const k of references.find((g) => g.service === 'shared')?.vars ?? EMPTY_LIST) keys.add(k);
+    return keys;
+  }, [presentKeys, references]);
+
+  /*
+   * Claves que el .env del repositorio trae sin valor y que siguen sin
+   * existir. El servidor las cruza con lo guardado y lo que Skyway cubre sola
+   * (`repoPending`); aquí, además, con lo que hay en pantalla.
    */
   const isGit = serviceType === 'git';
   const pendingFromRepo = useMemo(() => {
-    if (!isGit || !envImport?.pending?.length) return EMPTY_LIST as { key: string; file: string }[];
-    const present = new Set(rows.map((r) => r.key.trim()));
-    return envImport.pending.filter((p) => !present.has(p.key));
-  }, [isGit, envImport, rows]);
-  const pendingFiles = useMemo(() => [...new Set(pendingFromRepo.map((p) => p.file))], [pendingFromRepo]);
+    // Sin respuesta todavía, nada: el informe crudo traería justo lo repetido.
+    const pending = env.data?.repoPending ?? EMPTY_LIST;
+    if (!isGit || pending.length === 0) return EMPTY_LIST as { key: string; file: string }[];
+    return pending.filter((p) => !coveredKeys.has(p.key));
+  }, [isGit, env.data, coveredKeys]);
 
-  /*
-   * Dependencias detectadas en el repo: sugerencias y variables que faltan.
-   * Se comparan contra `rows` (no contra lo guardado) para que desaparezcan
-   * en vivo según se van añadiendo, antes incluso de guardar.
-   */
+  // Dependencias detectadas en el repo: sugerencias y variables que faltan.
   const pendingSuggestions = useMemo(
-    () => (env.data?.suggestions ?? EMPTY_LIST).filter((s) => !rows.some((r) => r.key.trim() === s.key)),
-    [env.data, rows],
+    () => (env.data?.suggestions ?? EMPTY_LIST).filter((s) => !coveredKeys.has(s.key)),
+    [env.data, coveredKeys],
   );
   const pendingMissing = useMemo(
-    () => (env.data?.missing ?? EMPTY_LIST).filter((k) => !rows.some((r) => r.key.trim() === k)),
-    [env.data, rows],
+    () => (env.data?.missing ?? EMPTY_LIST).filter((k) => !coveredKeys.has(k)),
+    [env.data, coveredKeys],
   );
   const pendingWithValue = useMemo(() => pendingSuggestions.filter((s) => s.value !== null), [pendingSuggestions]);
 
@@ -996,15 +1158,41 @@ export default function VariablesTab({
     return Array.from(groups.values());
   }, [pendingSuggestions]);
 
-  const hasPendingNeeds = pendingSuggestions.length > 0 || pendingMissing.length > 0;
+  /*
+   * Lo que el repositorio espera sin un valor que proponer: lo que el .env
+   * importado trae vacío y lo que la detección echa en falta (suelen ser las
+   * mismas claves, así que va una entrada por clave). Se añaden de una en una:
+   * un lote de filas vacías obligaba a buscar después cuáles quedaban por
+   * rellenar. Las que tienen referencia o base que crear salen aparte, con su
+   * acción.
+   */
+  const pendingEmpty = useMemo(() => {
+    const withAction = new Set(pendingSuggestions.filter((s) => s.value !== null || s.template).map((s) => s.key));
+    const out = new Map<string, string>();
+    for (const p of pendingFromRepo) if (!withAction.has(p.key)) out.set(p.key, `Vacía o con un valor de ejemplo en ${p.file}`);
+    const expected = 'Esperada por el repositorio, sin valor propuesto';
+    for (const k of pendingMissing) if (!withAction.has(k) && !out.has(k)) out.set(k, expected);
+    for (const s of pendingSuggestions) if (!withAction.has(s.key) && !out.has(s.key)) out.set(s.key, s.reason || expected);
+    return Array.from(out, ([key, detail]) => ({ key, detail }));
+  }, [pendingFromRepo, pendingMissing, pendingSuggestions]);
+
+  // Las habituales (NODE_ENV, TZ…) que falten y que el repositorio no proponga ya.
+  const commonPending = useMemo(() => {
+    const fromRepo = new Set([...pendingSuggestions.map((s) => s.key), ...pendingEmpty.map((p) => p.key)]);
+    return SUGGESTED_VARS.filter((s) => !coveredKeys.has(s.key) && !fromRepo.has(s.key));
+  }, [coveredKeys, pendingSuggestions, pendingEmpty]);
+
+  const repoSuggestCount = pendingWithValue.length + pendingGroups.reduce((n, g) => n + g.length, 0) + pendingEmpty.length;
+  const suggestCount = repoSuggestCount + commonPending.length;
+
   // Variables de correo que la web espera y todavía no existen (las escribe «Correo → Conectar»).
   // Con un skyway.json válido, el correo lo lleva su plan (panel de integraciones).
   const pendingMailVars = useMemo(
     () =>
       env.data?.manifest && !env.data.manifest.error
         ? (EMPTY_LIST as string[])
-        : (env.data?.mail?.vars ?? EMPTY_LIST).map((v) => v.name).filter((k) => !rows.some((r) => r.key.trim() === k)),
-    [env.data, rows],
+        : (env.data?.mail?.vars ?? EMPTY_LIST).map((v) => v.name).filter((k) => !coveredKeys.has(k)),
+    [env.data, coveredKeys],
   );
 
   // Crea la base de datos del grupo y, con la respuesta, conecta de golpe
@@ -1020,8 +1208,7 @@ export default function VariablesTab({
       queryClient.invalidateQueries({ queryKey: ['env', serviceId] });
       queryClient.invalidateQueries({ queryKey: ['project', projectId] });
       queryClient.invalidateQueries({ queryKey: ['projects'] });
-      setRows((prev) => [...prev, ...group.map((s) => makeRow(s.key, `\${{${data.service.name}.${s.refVar}}}`))]);
-      setDirty(true);
+      appendVars(group.map((s) => ({ key: s.key, value: `\${{${data.service.name}.${s.refVar}}}` })));
       toast(
         `Se ha creado «${data.service.name}» y se ha conectado en ${group.map((s) => s.key).join(', ')}. Guarda los cambios y vuelve a desplegar.`,
         'ok',
@@ -1149,28 +1336,6 @@ export default function VariablesTab({
           </div>
         )}
 
-        {/* ── Claves del .env del repositorio que siguen sin valor ── */}
-        {pendingFromRepo.length > 0 && (
-          <div className="rounded-xl border border-warn/35 bg-warn/[.07] p-3.5 text-xs">
-            <p className="flex items-center gap-1.5 font-semibold text-warn">
-              <AlertTriangle size={14} />
-              {pendingFromRepo.length === 1 ? 'Falta 1 valor del repositorio' : `Faltan ${pendingFromRepo.length} valores del repositorio`}
-            </p>
-            <p className="mt-1 text-sub">
-              El archivo <span className="font-mono text-txt">{pendingFiles.join(', ')}</span> del repositorio declara sin valor:{' '}
-              <span className="break-words font-mono text-txt">{pendingFromRepo.map((p) => p.key).join(', ')}</span>. Figuran vacías o
-              con un valor de ejemplo. Es necesario introducir su valor en esta pestaña.
-            </p>
-            <button
-              type="button"
-              onClick={() => addPendingRows(pendingFromRepo.map((p) => p.key))}
-              className="press mt-2.5 flex h-9 items-center gap-1.5 rounded-lg border border-line bg-surface px-3 text-xs font-semibold text-txt hover:bg-surface2 sm:h-8"
-            >
-              <Plus size={13} className="text-acc-soft" /> Añadir pendientes como filas vacías
-            </button>
-          </div>
-        )}
-
         {/* ── Aviso de migración desde Railway (si aplica) ── */}
         {railwayPending.length > 0 && (
           <div className="rounded-xl border border-warn/35 bg-warn/[.07] p-3.5 text-xs">
@@ -1208,102 +1373,149 @@ export default function VariablesTab({
           </div>
         )}
 
-        {/* ── Dependencias detectadas en el repositorio ── */}
-        {hasPendingNeeds && (
-          <div className="rounded-xl border border-info/35 bg-info/[.07] p-3.5 text-xs">
-            <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
-              <p className="flex items-center gap-1.5 font-semibold text-info">
-                <Layers size={14} />
-                {/* Sin motores detectados (solo un .env.example) no hay nada que
-                    «necesitar»: se dice lo que hay, que son variables esperadas. */}
-                {env.data?.needs && env.data.needs.engines.length > 0
-                  ? `Este repositorio parece necesitar: ${env.data.needs.engines
-                      .map((e) => `${e.label} (${e.evidence})`)
-                      .join(' · ')}`
-                  : 'Variables que el repositorio espera:'}
-              </p>
-              {pendingWithValue.length >= 2 && (
-                <button
-                  type="button"
-                  className="press rounded-md border border-line bg-surface px-2 py-0.5 font-mono text-xs text-info transition-colors hover:border-info max-sm:py-1.5"
-                  onClick={() => {
-                    setRows((prev) => [...prev, ...pendingWithValue.map((s) => makeRow(s.key, s.value as string))]);
-                    setDirty(true);
-                    toast(`${pendingWithValue.length} variables añadidas`, 'ok');
-                  }}
-                >
-                  Añadir todas
-                </button>
+        {/*
+          ── Variables sugeridas: lo que el repositorio espera y las habituales ──
+          Cada una se añade por separado: con su valor si lo tiene, o con el
+          cursor en su valor si no. Plegada ocupa una línea.
+        */}
+        {suggestCount > 0 && (
+          <section
+            className={cx('rounded-xl border text-xs', repoSuggestCount > 0 ? 'border-info/35 bg-info/[.07]' : 'border-line bg-surface')}
+          >
+            <button
+              type="button"
+              onClick={() => setSuggestOpen((o) => !o)}
+              aria-expanded={suggestOpen}
+              aria-controls={suggestPanelId}
+              className={cx(
+                'flex min-h-10 w-full min-w-0 items-center gap-2 px-3.5 py-2 text-left transition-colors hover:bg-txt/[.03]',
+                suggestOpen ? 'rounded-t-xl' : 'rounded-xl',
               )}
-            </div>
+            >
+              <Layers size={14} aria-hidden className={cx('shrink-0', repoSuggestCount > 0 ? 'text-info' : 'text-subtle')} />
+              <span className="shrink-0 font-semibold text-txt">Variables sugeridas</span>
+              <span className="tnum shrink-0 font-mono text-subtle">{suggestCount}</span>
+              {repoSuggestCount > 0 && <span className="min-w-0 truncate text-info">· {repoSuggestCount} del repositorio</span>}
+              <ChevronDown size={14} aria-hidden className={cx('ml-auto shrink-0 text-subtle transition-transform', suggestOpen && 'rotate-180')} />
+            </button>
 
-            {pendingSuggestions.length > 0 && (
-              <div className="flex flex-col gap-1.5">
-                {pendingSuggestions.map((s) => {
-                  // Con `value` null, varias sugerencias del mismo motor comparten
-                  // grupo y un único botón de creación; solo la primera lo pinta.
-                  const group =
-                    s.value === null && s.template ? pendingGroups.find((g) => g[0].template === s.template) : undefined;
-                  const isGroupHead = group ? group[0] === s : false;
-                  const groupPending = group ? createDbAndConnect.isPending && createDbAndConnect.variables === group : false;
-                  const label = s.label ?? s.template ?? 'la base de datos';
-
-                  return (
-                    <div key={s.key} className="flex flex-wrap items-center gap-2" title={s.reason}>
-                      <span className="font-mono text-xs font-semibold text-txt">{s.key}</span>
-                      {s.value !== null ? (
-                        <>
-                          <span className="font-mono text-xs text-info">{s.value}</span>
-                          <button
-                            type="button"
-                            className="press rounded-md border border-line bg-surface px-2 py-0.5 font-mono text-xs text-info transition-colors hover:border-info max-sm:py-1.5"
-                            onClick={() => {
-                              setRows((prev) => [...prev, makeRow(s.key, s.value as string)]);
-                              setDirty(true);
-                              toast(`Añadida ${s.key}`, 'ok');
-                            }}
-                          >
-                            Añadir
-                          </button>
-                        </>
-                      ) : (
-                        <>
-                          <span className="text-sub">no hay {label} en el proyecto</span>
-                          {group && isGroupHead && (
-                            <button
-                              type="button"
-                              disabled={groupPending}
-                              className="press rounded-md border border-line bg-surface px-2 py-0.5 font-mono text-xs text-info transition-colors hover:border-info disabled:cursor-not-allowed disabled:opacity-60 max-sm:py-1.5"
-                              onClick={() => createDbAndConnect.mutate(group)}
-                            >
-                              {groupPending ? 'Creando…' : `Crear ${label} y conectar`}
-                            </button>
-                          )}
-                        </>
+            {suggestOpen && (
+              <div id={suggestPanelId} className="flex flex-col gap-3 border-t border-line px-3.5 pb-3.5 pt-3">
+                {repoSuggestCount > 0 && (
+                  <div className="flex flex-col gap-1.5">
+                    <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5">
+                      <h4 className="eyebrow text-subtle">Detectadas en el repositorio</h4>
+                      {/* En bloque, solo las que llevan una referencia real: nunca un lote de filas vacías. */}
+                      {pendingWithValue.length >= 2 && (
+                        <button
+                          type="button"
+                          className={SUGGEST_BTN}
+                          onClick={() => addSuggested(pendingWithValue.map((s) => ({ key: s.key, value: s.value ?? '' })))}
+                        >
+                          <Plus size={12} aria-hidden className="text-acc-soft" /> Añadir las {pendingWithValue.length} referencias
+                        </button>
                       )}
                     </div>
-                  );
-                })}
+                    {/* Sin motores detectados (solo un .env.example) no hay nada que «necesitar». */}
+                    {env.data.needs && env.data.needs.engines.length > 0 && (
+                      <p className="text-sub">
+                        Este repositorio parece necesitar: {env.data.needs.engines.map((e) => `${e.label} (${e.evidence})`).join(' · ')}.
+                      </p>
+                    )}
+                    <ul className={SUGGEST_LIST}>
+                      {pendingWithValue.map((s) => (
+                        <SuggestionItem
+                          key={s.key}
+                          name={s.key}
+                          detail={
+                            <>
+                              <span className="font-mono text-info">{s.value}</span>
+                              {s.reason && ` · ${s.reason}`}
+                            </>
+                          }
+                        >
+                          <button
+                            type="button"
+                            className={SUGGEST_BTN}
+                            aria-label={`Añadir ${s.key}`}
+                            onClick={() => addSuggested([{ key: s.key, value: s.value ?? '' }])}
+                          >
+                            <Plus size={12} aria-hidden className="text-acc-soft" /> Añadir
+                          </button>
+                        </SuggestionItem>
+                      ))}
+                      {/* Las que piden una base nueva van por motor: MinIO son tres claves y un solo botón. */}
+                      {pendingGroups.map((group) => {
+                        const label = group[0].label ?? group[0].template ?? 'la base de datos';
+                        const keys = group.map((s) => s.key).join(', ');
+                        const creating = createDbAndConnect.isPending && createDbAndConnect.variables?.[0]?.template === group[0].template;
+                        return (
+                          <SuggestionItem key={`crear:${group[0].template}`} name={keys} detail={`No hay ${label} en el proyecto${group[0].reason ? ` · ${group[0].reason}` : ''}`}>
+                            <button
+                              type="button"
+                              className={SUGGEST_BTN}
+                              disabled={creating}
+                              title={`Crear ${label} y conectar ${keys}`}
+                              onClick={() => createDbAndConnect.mutate(group)}
+                            >
+                              {creating ? (
+                                'Creando…'
+                              ) : (
+                                <>
+                                  <span className="sm:hidden">Crear y conectar</span>
+                                  <span className="max-sm:hidden">Crear {label} y conectar</span>
+                                </>
+                              )}
+                            </button>
+                          </SuggestionItem>
+                        );
+                      })}
+                      {pendingEmpty.map((p) => (
+                        <SuggestionItem key={p.key} name={p.key} detail={p.detail}>
+                          <button
+                            type="button"
+                            className={SUGGEST_BTN}
+                            aria-label={`Añadir ${p.key}`}
+                            onClick={() => addSuggested([{ key: p.key, value: '' }])}
+                          >
+                            <Plus size={12} aria-hidden className="text-acc-soft" /> Añadir
+                          </button>
+                        </SuggestionItem>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {commonPending.length > 0 && (
+                  <div className="flex flex-col gap-1.5">
+                    <h4 className="eyebrow text-subtle">Habituales</h4>
+                    <ul className={SUGGEST_LIST}>
+                      {commonPending.map((s) => (
+                        <SuggestionItem
+                          key={s.key}
+                          name={s.key}
+                          detail={
+                            <>
+                              {s.hint} · <span className="font-mono text-sub">{s.value}</span>
+                            </>
+                          }
+                        >
+                          <button
+                            type="button"
+                            className={SUGGEST_BTN}
+                            aria-label={`Añadir ${s.key}`}
+                            onClick={() => addSuggested([{ key: s.key, value: s.value }])}
+                          >
+                            <Plus size={12} aria-hidden className="text-acc-soft" /> Añadir
+                          </button>
+                        </SuggestionItem>
+                      ))}
+                    </ul>
+                  </div>
+                )}
               </div>
             )}
-
-            {pendingMissing.length > 0 && (
-              <p className={cx('text-sub', pendingSuggestions.length > 0 && 'mt-2.5')}>
-                Otras variables que el repositorio espera y no están definidas:{' '}
-                <span className="font-mono text-txt">{pendingMissing.join(', ')}</span>{' '}
-                <button
-                  type="button"
-                  className="press rounded-md border border-line bg-surface px-2 py-0.5 font-mono text-xs text-info transition-colors hover:border-info max-sm:py-1.5"
-                  onClick={() => {
-                    setRows((prev) => [...prev, ...pendingMissing.map((k) => makeRow(k, ''))]);
-                    setDirty(true);
-                  }}
-                >
-                  Añadir vacías
-                </button>
-              </p>
-            )}
-          </div>
+          </section>
         )}
 
         {viewMode === 'raw' ? (
@@ -1311,7 +1523,7 @@ export default function VariablesTab({
           <div className="flex flex-col gap-2">
             <p className="text-xs text-subtle">
               Una variable por línea, en formato <code className="font-mono text-txt">CLAVE=valor</code>. Se puede pegar el
-              contenido completo de un archivo .env.
+              contenido completo de un archivo .env. Los nombres nuevos se guardan en mayúsculas.
             </p>
             <textarea
               className="input min-h-[320px] w-full rounded-xl border border-line bg-term p-3.5 font-mono leading-relaxed text-txt/95 outline-none focus:border-acc sm:text-xs"
@@ -1439,29 +1651,6 @@ export default function VariablesTab({
                     </button>
                   );
                 })}
-            </div>
-          )}
-
-          {suggestions.some((s) => !rows.some((r) => r.key === s.key)) && (
-            <div className="flex flex-wrap items-center gap-1.5 text-xs text-subtle">
-              <span className="font-medium text-sub">Variables frecuentes:</span>
-              {suggestions
-                .filter((s) => !rows.some((r) => r.key === s.key))
-                .map((s) => (
-                  <button
-                    key={s.key}
-                    type="button"
-                    className="press rounded-md border border-line bg-surface2/60 px-2 py-0.5 font-mono text-xs text-sub transition-colors hover:border-acc/40 hover:text-txt max-sm:py-1.5"
-                    title={s.hint}
-                    aria-label={s.hint}
-                    onClick={() => {
-                      setRows((prev) => [...prev, makeRow(s.key, s.value)]);
-                      setDirty(true);
-                    }}
-                  >
-                    + {s.key}
-                  </button>
-                ))}
             </div>
           )}
 
