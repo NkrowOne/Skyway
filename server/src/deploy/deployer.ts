@@ -89,7 +89,7 @@ import {
   graciaParada,
   llamadoPorOtros,
 } from './estrategia';
-import { effectiveDbVersion, getTemplate, volumePathFor } from '../templates';
+import { dbImageFor, effectiveDbVersion, getTemplate, hasPgvector, libcChangeError, volumePathFor } from '../templates';
 import { reconcileOnDeploy } from '../integrations';
 import { adviseEnv, detectNeeds } from '../needs';
 import { availableReferences, resolveServiceEnv, systemVars } from '../variables';
@@ -702,7 +702,7 @@ async function prepareDatabaseImage(service: ServiceRow, log: (l: string) => voi
   const cfg = service.config as DatabaseConfig;
   const template = getTemplate(cfg.template);
   if (!template) throw new Error(`Plantilla desconocida: ${cfg.template}`);
-  const image = `${template.image}:${effectiveDbVersion(template, cfg.version)}`;
+  const image = dbImageFor(template, cfg);
   await pullImage(image, log, job);
   return image;
 }
@@ -777,7 +777,8 @@ async function assertPostgresVolumeCompatible(
   volume: string,
   version: string,
   log: (l: string) => void,
-  job?: ActiveJob,
+  job: ActiveJob | undefined,
+  imagen: { image: string; previousImage: string | null; pgvector: boolean },
 ): Promise<void> {
   const parsed = parseInt(version, 10);
   const target = Number.isInteger(parsed) ? parsed : 18; // latest/alpine → 18+
@@ -816,18 +817,29 @@ async function assertPostgresVolumeCompatible(
   }
   if (rootMajor === null && nestedMajor === null && newLayoutMajors.length === 0) return;
 
+  // Con datos, pasar de una imagen alpine (musl) a una Debian (glibc), o al
+  // revés, cambia el orden del texto: los índices quedarían inservibles sin
+  // ningún error. Pasa al activar o quitar pgvector (su imagen es Debian) o al
+  // cambiar «16-alpine» por «16». Solo se sabe con qué imagen se escribieron
+  // los datos si hubo un despliegue correcto; sin él, no se bloquea.
+  const cambioLibc = libcChangeError(imagen.previousImage, imagen.image);
+  if (cambioLibc) throw new Error(`${cambioLibc} Vuelve a la configuración anterior en Ajustes para seguir funcionando.`);
+
   const migra =
     'Para cambiar de versión mayor: crea una copia de seguridad con la versión actual de los datos, cambia la versión en Ajustes, elimina el servicio marcando «borrar también el volumen», vuelve a crearlo y restaura la copia. Para empezar de cero es suficiente con eliminar el servicio con su volumen.';
+  // La versión que hay que poner en Ajustes para volver a abrir los datos: con
+  // pgvector solo se guarda la versión mayor.
+  const versionDe = (major: number | string) => (imagen.pgvector ? `${major}` : `${major}-alpine`);
 
   if (rootMajor !== null) {
     if (target >= 18) {
       throw new Error(
-        `El volumen ${volume} contiene los datos de PostgreSQL ${rootMajor} con el formato antiguo (anterior a 18) y la imagen solicitada es ${version}: Postgres 18+ no puede abrirlos directamente. Mantén la versión «${rootMajor}-alpine» en Ajustes para seguir funcionando, o migra los datos. ${migra}`,
+        `El volumen ${volume} contiene los datos de PostgreSQL ${rootMajor} con el formato antiguo (anterior a 18) y la imagen solicitada es ${version}: Postgres 18+ no puede abrirlos directamente. Mantén la versión «${versionDe(rootMajor)}» en Ajustes para seguir funcionando, o migra los datos. ${migra}`,
       );
     }
     if (rootMajor !== target) {
       throw new Error(
-        `El volumen ${volume} contiene los datos de PostgreSQL ${rootMajor} y la imagen solicitada es ${version}: una versión mayor no puede abrir los datos de otra. Vuelve a la versión «${rootMajor}-alpine» o migra los datos. ${migra}`,
+        `El volumen ${volume} contiene los datos de PostgreSQL ${rootMajor} y la imagen solicitada es ${version}: una versión mayor no puede abrir los datos de otra. Vuelve a la versión «${versionDe(rootMajor)}» o migra los datos. ${migra}`,
       );
     }
     return; // datos y versión coinciden (layout <18): arranque normal
@@ -835,7 +847,7 @@ async function assertPostgresVolumeCompatible(
 
   if (nestedMajor !== null) {
     throw new Error(
-      `El volumen ${volume} contiene los datos de PostgreSQL ${nestedMajor} en el subdirectorio data/ (los escribió un Postgres <18 montado en la ruta de 18+, un estado que esta versión de Skyway ya no produce). Con el servicio detenido, muévelos a la raíz del volumen: docker run --rm -v ${volume}:/v busybox sh -c 'mv /v/data/* /v/ && rmdir /v/data' y utiliza la versión «${nestedMajor}-alpine»; o elimina el servicio con su volumen para empezar de cero.`,
+      `El volumen ${volume} contiene los datos de PostgreSQL ${nestedMajor} en el subdirectorio data/ (los escribió un Postgres <18 montado en la ruta de 18+, un estado que esta versión de Skyway ya no produce). Con el servicio detenido, muévelos a la raíz del volumen: docker run --rm -v ${volume}:/v busybox sh -c 'mv /v/data/* /v/ && rmdir /v/data' y utiliza la versión «${versionDe(nestedMajor)}»; o elimina el servicio con su volumen para empezar de cero.`,
     );
   }
 
@@ -843,7 +855,7 @@ async function assertPostgresVolumeCompatible(
   if (target < 18 || !newLayoutMajors.includes(target)) {
     const found = [...new Set(newLayoutMajors)].join(', ');
     throw new Error(
-      `El volumen ${volume} ya está inicializado con el formato de Postgres 18+ (datos de la versión ${found}) y la imagen solicitada es ${version}. Utiliza la versión «${found}-alpine» (o superior con pg_upgrade manual), o migra los datos. ${migra}`,
+      `El volumen ${volume} ya está inicializado con el formato de Postgres 18+ (datos de la versión ${found}) y la imagen solicitada es ${version}. Utiliza la versión «${versionDe(found)}» (o superior con pg_upgrade manual), o migra los datos. ${migra}`,
     );
   }
 }
@@ -1406,7 +1418,11 @@ async function deployContainer(
     cpus = cfg.cpus ?? null;
     memoryMb = cfg.memoryMb ?? null;
     if (template.key === 'postgres') {
-      await assertPostgresVolumeCompatible(volumes[0].name, version, log, job);
+      await assertPostgresVolumeCompatible(volumes[0].name, version, log, job, {
+        image,
+        previousImage: lastSuccessfulImage(service.id),
+        pgvector: hasPgvector(cfg),
+      });
     }
   } else if (service.type === 'image') {
     const cfg = service.config as ImageConfig;

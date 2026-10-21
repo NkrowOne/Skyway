@@ -19,6 +19,7 @@ import {
   getProject,
   getService,
   getSetting,
+  lastSuccessfulImage,
   latestDeployment,
   listServices,
   patchEnv,
@@ -72,11 +73,11 @@ import {
 } from '../docker/containers';
 import { dockerSnapshot, invalidateDockerSnapshot, runtimeIn, Snapshot } from '../docker/sampler';
 import { triggerDeploy } from '../deploy/deployer';
-import { getTemplate, templateList } from '../templates';
+import { PG_EXTENSIONS, dbImageFor, getTemplate, libcChangeError, normalizeDbConfig, templateList } from '../templates';
 import { applyPlan, applyPlanFromRepo, ApplyResult, PlanChangedError, planWithMail } from '../integrations';
 import { adviseEnv, repoPendingOf } from '../needs';
 import { availableReferences, resolveServiceEnv } from '../variables';
-import { DatabaseConfig, GitConfig, ImageConfig, ProjectRow, ServiceConfig, ServiceRow } from '../types';
+import { DatabaseConfig, GitConfig, ImageConfig, PgExtension, ProjectRow, ServiceConfig, ServiceRow } from '../types';
 import { randomToken, VISIBLE_NAME_ERROR, VISIBLE_NAME_RE } from '../util';
 import { confirmsDeletion, purgeService, PurgeBlockedError, purgeSummary, warningsForAudit } from '../purge';
 
@@ -208,11 +209,21 @@ const createGitSchema = z.object({
     .optional(),
 });
 
+/** Extensiones de la imagen de una base (hoy, `vector` = pgvector en PostgreSQL). Lista cerrada. */
+const extensionsSchema = z
+  .array(
+    z.enum(PG_EXTENSIONS as [PgExtension, ...PgExtension[]], {
+      errorMap: () => ({ message: `Extensión no admitida. Valores admitidos: ${PG_EXTENSIONS.join(', ')}.` }),
+    }),
+  )
+  .max(PG_EXTENSIONS.length * 2);
+
 const createDbSchema = z.object({
   type: z.literal('database'),
   name: z.string().trim().min(1).max(60).regex(VISIBLE_NAME_RE, VISIBLE_NAME_ERROR).optional(),
   template: z.string(),
   version: z.string().trim().optional(),
+  extensions: extensionsSchema.optional(),
 });
 
 const createImageSchema = z.object({
@@ -248,6 +259,7 @@ const patchSchema = z.object({
       memoryMb: z.coerce.number().int().min(32).max(1024 * 512).nullable().optional(),
       diskMb: z.coerce.number().int().min(64).max(1024 * 1024).nullable().optional(),
       version: z.string().trim().optional(),
+      extensions: extensionsSchema.optional(),
       image: z.string().trim().min(1).optional(),
       healthcheckPath: z.string().trim().max(200).nullable().optional(),
       buildArgs: z.record(z.string()).optional(),
@@ -477,11 +489,14 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
       const body = createDbSchema.parse(req.body);
       const template = getTemplate(body.template);
       if (!template) return reply.code(400).send({ error: `Plantilla desconocida: ${body.template}` });
+      const db = normalizeDbConfig(template, body.version, body.extensions);
+      if ('error' in db) return reply.code(400).send({ error: db.error });
       const name = body.name || template.label;
       const slug = uniqueServiceSlug(projectId, name);
       const cfg: DatabaseConfig = {
         template: template.key,
-        version: body.version || template.defaultVersion,
+        version: db.version,
+        ...(db.extensions ? { extensions: db.extensions } : {}),
       };
       service = createService(projectId, name, slug, 'database', cfg);
       setEnv(service.id, template.makeEnv(slug));
@@ -675,6 +690,8 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
       for (const [key, value] of Object.entries(body.config)) {
         if (value === undefined) continue;
         if (key === 'dominiosSinPareja') continue;
+        // Las extensiones cambian la imagen junto con la versión: se resuelven tras el bucle.
+        if (key === 'extensions') continue;
         // El conector y el auto-deploy solo tienen sentido en servicios de repositorio.
         if (key === 'connectorId' && found.service.type !== 'git') continue;
         if (key === 'githubInstallationId' && found.service.type !== 'git') continue;
@@ -775,6 +792,26 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
           continue;
         }
         newCfg[key] = normalized;
+      }
+    }
+
+    // Versión y extensiones de una base, juntas: con pgvector la versión se
+    // guarda como su número mayor, y el cambio de imagen se rechaza si los
+    // datos se escribieron con otra biblioteca C (alpine frente a Debian).
+    if (found.service.type === 'database' && (body.config?.extensions !== undefined || body.config?.version !== undefined)) {
+      const template = getTemplate(oldCfg.template);
+      if (template) {
+        const db = normalizeDbConfig(template, newCfg.version, body.config.extensions ?? oldCfg.extensions);
+        if ('error' in db) return reply.code(400).send({ error: db.error });
+        if (db.extensions) newCfg.version = db.version;
+        newCfg.extensions = db.extensions;
+        const antes = dbImageFor(template, oldCfg);
+        const despues = dbImageFor(template, newCfg);
+        if (antes !== despues) {
+          needsRedeploy = true;
+          const bloqueo = template.key === 'postgres' ? libcChangeError(lastSuccessfulImage(found.service.id), despues) : null;
+          if (bloqueo) return reply.code(409).send({ error: bloqueo });
+        }
       }
     }
 

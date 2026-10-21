@@ -4,6 +4,7 @@ import { ChevronRight, ExternalLink, Loader2 } from 'lucide-react';
 import { api } from '../api';
 import { useDebounced } from '../hooks';
 import {
+  DbExtension,
   DbTemplate,
   Deployment,
   DnsAutoResult,
@@ -333,9 +334,15 @@ export default function NewServiceModal({
     setBranch(r.defaultBranch);
   };
 
-  const submitDb = (tpl: DbTemplate) => {
-    create.mutate({ type: 'database', template: tpl.key });
+  const submitDb = (tpl: DbTemplate, extension?: DbExtension) => {
+    create.mutate({ type: 'database', template: tpl.key, ...(extension ? { extensions: [extension.key] } : {}) });
   };
+
+  // Cada plantilla y, detrás, sus variantes con extensiones (PostgreSQL con pgvector).
+  const dbChoices = (templates.data?.templates ?? []).flatMap((tpl) => [
+    { key: tpl.key, tpl, extension: undefined as DbExtension | undefined },
+    ...(tpl.extensions ?? []).map((extension) => ({ key: `${tpl.key}+${extension.key}`, tpl, extension })),
+  ]);
 
   return (
     <Modal open={open} onClose={close} title="Nuevo servicio" wide dirty={hasInput}>
@@ -921,17 +928,17 @@ export default function NewServiceModal({
       {step === 'database' && (
         <div>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            {templates.data?.templates.map((tpl) => (
+            {dbChoices.map(({ key, tpl, extension }) => (
               <button
-                key={tpl.key}
+                key={key}
                 disabled={create.isPending}
                 onClick={() => {
-                  setTemplate(tpl.key);
-                  submitDb(tpl);
+                  setTemplate(key);
+                  submitDb(tpl, extension);
                 }}
                 className={cx(
                   'card flex items-center gap-3 p-4 text-left transition-all hover:border-info/60 disabled:opacity-60',
-                  template === tpl.key && create.isPending && 'border-info/70',
+                  template === key && create.isPending && 'border-info/70',
                 )}
               >
                 <span
@@ -941,10 +948,10 @@ export default function NewServiceModal({
                   <ModuleLogo kind={TEMPLATE_KIND[tpl.key] ?? 'generic'} size={20} />
                 </span>
                 <div className="min-w-0">
-                  <h3 className="text-sm font-medium">{tpl.label}</h3>
-                  <p className="truncate text-xs text-sub">{tpl.description}</p>
+                  <h3 className="text-sm font-medium">{extension?.label ?? tpl.label}</h3>
+                  <p className="truncate text-xs text-sub">{extension?.description ?? tpl.description}</p>
                   <p className="mt-0.5 truncate font-mono text-xs text-subtle">
-                    {tpl.image}:{tpl.defaultVersion}
+                    {extension ? `${extension.image}:${extension.defaultTag}` : `${tpl.image}:${tpl.defaultVersion}`}
                   </p>
                 </div>
               </button>

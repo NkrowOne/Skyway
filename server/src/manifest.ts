@@ -14,6 +14,8 @@
  */
 import { z } from 'zod';
 import { LOCAL_PART_RE, MAIL_ROLES, MailMode, MailRole, ROLES_BY_MODE } from './mailenv';
+import { PG_EXTENSIONS } from './templates';
+import type { PgExtension } from './types';
 
 export const MANIFEST_FILE = 'skyway.json';
 /** Un manifiesto ocupa unos cientos de bytes; uno de más de 64 KB no es lo que parece. */
@@ -107,7 +109,21 @@ const manifestSchema = z
           })
           .strict()
           .optional(),
-        postgres: z.object({}).strict().optional(),
+        postgres: z
+          .object({
+            // Solo extensiones que Skyway sabe dar con su imagen: una lista abierta
+            // dejaría pedir cualquier cosa que luego no estaría en la base.
+            extensions: z
+              .array(
+                z.enum(PG_EXTENSIONS as [PgExtension, ...PgExtension[]], {
+                  errorMap: () => ({ message: `Extensión no admitida: usa ${PG_EXTENSIONS.map((e) => `«${e}»`).join(', ')}` }),
+                }),
+              )
+              .max(PG_EXTENSIONS.length * 2)
+              .optional(),
+          })
+          .strict()
+          .optional(),
         redis: z.object({}).strict().optional(),
       })
       .strict()
@@ -169,6 +185,12 @@ export function manifestEngines(m: SkywayManifest): ('postgres' | 'redis')[] {
     if (m.integrations?.[engine] || byVar) out.push(engine);
   }
   return out;
+}
+
+/** Extensiones de PostgreSQL que pide el manifiesto (sin repetir, en el orden conocido). */
+export function manifestPgExtensions(m: SkywayManifest): PgExtension[] {
+  const wanted = m.integrations?.postgres?.extensions ?? [];
+  return PG_EXTENSIONS.filter((e) => wanted.includes(e));
 }
 
 /** Ruta de un error de zod en texto: `env.SESSION_SECRET.generate.bytes`. */

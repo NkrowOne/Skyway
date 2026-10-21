@@ -1,3 +1,4 @@
+import type { DatabaseConfig, PgExtension } from './types';
 import { randomPassword } from './util';
 
 /**
@@ -30,6 +31,8 @@ export interface DbTemplate {
   port: number;
   volumePath: string;
   conn: DbConn;
+  /** Extensiones que se pueden pedir al crear la base (`DatabaseConfig.extensions`). */
+  extensions?: DbExtension[];
   /** Comando opcional (forma shell) que puede usar variables de entorno. */
   cmd?: string[];
   /**
@@ -40,6 +43,36 @@ export interface DbTemplate {
    */
   makeEnv: (slug: string, existing?: Record<string, string>) => Record<string, string>;
 }
+
+/** Extensión que cambia la imagen del motor (hoy, pgvector en Postgres). */
+export interface DbExtension {
+  key: PgExtension;
+  label: string;
+  description: string;
+  image: string;
+  /** Etiqueta de la imagen para la versión por defecto del motor. */
+  defaultTag: string;
+  /** Forma de la etiqueta: `{major}` es la versión mayor guardada en `version`. */
+  tagTemplate: string;
+}
+
+/**
+ * pgvector: la imagen oficial del proyecto (`pgvector/pgvector`), que parte de
+ * la oficial de Postgres en Debian. No hay variante alpine. La etiqueta fija
+ * la distribución (`pg16-trixie` y no `pg16`): la que no la lleva cambia de
+ * Debian cuando lo decide el proyecto, y una glibc nueva ordena el texto de
+ * otra forma e invalida los índices de un volumen ya inicializado (es lo que
+ * hace también la imagen de Postgres de Railway, que trae pgvector).
+ */
+export const PGVECTOR = {
+  image: 'pgvector/pgvector',
+  distro: 'trixie',
+  minMajor: 13,
+  maxMajor: 18,
+} as const;
+
+/** Extensiones admitidas, en el orden en que se enseñan. */
+export const PG_EXTENSIONS: readonly PgExtension[] = ['vector'];
 
 /** Codifica credenciales dentro de una URL de conexión (las generadas son
  * alfanuméricas y quedan igual; las personalizadas pueden llevar reservados). */
@@ -54,6 +87,16 @@ export const DB_TEMPLATES: Record<string, DbTemplate> = {
     defaultVersion: '16-alpine',
     port: 5432,
     volumePath: '/var/lib/postgresql/data',
+    extensions: [
+      {
+        key: 'vector',
+        label: 'PostgreSQL con pgvector',
+        description: 'Búsqueda vectorial (embeddings) con la extensión vector',
+        image: PGVECTOR.image,
+        defaultTag: `pg16-${PGVECTOR.distro}`,
+        tagTemplate: `pg{major}-${PGVECTOR.distro}`,
+      },
+    ],
     conn: {
       main: 'DATABASE_URL',
       host: 'PGHOST',
@@ -207,6 +250,101 @@ export function volumePathFor(template: DbTemplate, version: string | undefined)
   if (template.key !== 'postgres') return template.volumePath;
   const major = parseInt(effectiveDbVersion(template, version), 10);
   return Number.isInteger(major) && major < 18 ? template.volumePath : '/var/lib/postgresql';
+}
+
+/** Versión mayor de una etiqueta de Postgres («16-alpine» → 16), o null si no la indica (latest, alpine). */
+export function pgMajor(version: string | undefined): number | null {
+  const major = parseInt((version || '').trim(), 10);
+  return Number.isInteger(major) && major > 0 ? major : null;
+}
+
+/** Extensiones que pide la config de una base (solo las conocidas y solo en Postgres). */
+export function dbExtensions(cfg: Pick<DatabaseConfig, 'template' | 'extensions'>): PgExtension[] {
+  if (cfg.template !== 'postgres' || !Array.isArray(cfg.extensions)) return [];
+  return PG_EXTENSIONS.filter((e) => cfg.extensions!.includes(e));
+}
+
+/** ¿Lleva esta base la imagen de pgvector? */
+export function hasPgvector(cfg: Pick<DatabaseConfig, 'template' | 'extensions'>): boolean {
+  return dbExtensions(cfg).includes('vector');
+}
+
+/**
+ * Normaliza versión y extensiones de una base antes de guardarla. Con
+ * pgvector la versión se guarda como su número mayor («16»): la imagen solo
+ * se publica por versión mayor, y «16-alpine» diría una imagen que no es la
+ * que corre. Devuelve el error para el usuario si la combinación no existe.
+ */
+export function normalizeDbConfig(
+  template: DbTemplate,
+  version: string | undefined,
+  extensions: readonly string[] | undefined,
+): { version: string; extensions?: PgExtension[] } | { error: string } {
+  const wanted = [...new Set(extensions ?? [])];
+  const allowed = (template.extensions ?? []).map((e) => e.key as string);
+  const unknown = wanted.filter((e) => !allowed.includes(e));
+  if (unknown.length > 0) {
+    return {
+      error:
+        allowed.length > 0
+          ? `Extensión no admitida en ${template.label}: ${unknown.join(', ')}. Valores admitidos: ${allowed.join(', ')}.`
+          : `${template.label} no admite extensiones.`,
+    };
+  }
+  const effective = effectiveDbVersion(template, version);
+  if (!wanted.includes('vector')) return { version: effective };
+  const major = pgMajor(effective);
+  if (major === null || major < PGVECTOR.minMajor || major > PGVECTOR.maxMajor) {
+    return {
+      error: `pgvector está disponible para PostgreSQL ${PGVECTOR.minMajor} a ${PGVECTOR.maxMajor}: indica la versión mayor, por ejemplo «16».`,
+    };
+  }
+  return { version: String(major), extensions: PG_EXTENSIONS.filter((e) => wanted.includes(e)) };
+}
+
+/**
+ * Imagen con la que corre una base. TODO lo que arranca el motor o sus
+ * herramientas (despliegue, copia de datos) la saca de aquí: si divergieran,
+ * pg_dump podría ser de otra versión o faltar la extensión en el destino.
+ */
+export function dbImageFor(template: DbTemplate, cfg: Pick<DatabaseConfig, 'template' | 'version' | 'extensions'>): string {
+  const version = effectiveDbVersion(template, cfg.version);
+  if (template.key === 'postgres' && hasPgvector(cfg)) {
+    // Sin número (no lo guarda `normalizeDbConfig`, pero una config antigua
+    // podría): 18, la misma que supone `volumePathFor` para elegir la ruta.
+    return `${PGVECTOR.image}:pg${pgMajor(version) ?? 18}-${PGVECTOR.distro}`;
+  }
+  return `${template.image}:${version}`;
+}
+
+/**
+ * Biblioteca C de una imagen de Postgres: la que decide cómo se ordena el
+ * texto (collation). Las alpine usan musl y el resto (Debian, pgvector)
+ * glibc. Unos datos inicializados con una y abiertos con la otra arrancan,
+ * pero los índices de las columnas de texto quedan ordenados con otra regla y
+ * las búsquedas por índice dejan de encontrar filas, sin ningún error.
+ */
+export function postgresLibc(image: string): 'musl' | 'glibc' {
+  const tag = image.slice(image.lastIndexOf('/') + 1).split(':')[1] ?? '';
+  return /alpine/i.test(tag) ? 'musl' : 'glibc';
+}
+
+/**
+ * Por qué no se puede pasar una base con datos de `previous` (la imagen de su
+ * último despliegue correcto) a `next`, o null si se puede. Lo comparten
+ * Ajustes (que lo rechaza al guardar) y el despliegue (que lo comprueba con el
+ * volumen): un cambio de musl a glibc, o al revés, deja los índices de texto
+ * ordenados con otra regla. Copiar los datos con un volcado sí es seguro,
+ * porque la restauración reconstruye los índices.
+ */
+export function libcChangeError(previous: string | null, next: string): string | null {
+  if (!previous || postgresLibc(previous) === postgresLibc(next)) return null;
+  return (
+    `Los datos de esta base se escribieron con ${previous} y la nueva configuración usa ${next}: ` +
+    'una imagen usa musl (alpine) y la otra glibc (Debian), que ordenan el texto de forma distinta, y los índices de las columnas de texto dejarían de ser válidos. ' +
+    'Para cambiar de imagen, crea una base nueva con la configuración que necesitas y copia los datos con «Copiar datos» ' +
+    '(la restauración reconstruye los índices), o elimina esta base con su volumen y vuelve a crearla para empezar de cero.'
+  );
 }
 
 export function getTemplate(key: string): DbTemplate | undefined {

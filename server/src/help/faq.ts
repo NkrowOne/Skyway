@@ -259,7 +259,7 @@ export const FAQ: FaqEntry[] = [
     question: 'Mi repositorio tiene un .env.example. ¿Puedo importar sus variables?',
     answer:
       'Sí, de dos formas:\n\n' +
-      '- **Automática**: en cada despliegue, Skyway lee `.env.example`, `.env.sample`, `.env.template`… (y un `.env` si está en el repositorio) y crea las variables con valor útil que aún no existan. Las que vienen vacías o con un valor de ejemplo (`changeme`, `<tu-clave>`) quedan **pendientes** y el panel lo indica en la pestaña Variables para que completes su valor. Se desactiva en Ajustes («Importar las variables del .env del repositorio al desplegar»).\n' +
+      '- **Automática**: en cada despliegue, Skyway lee `.env.example`, `.env.sample`, `.env.template`… (y un `.env` si está en el repositorio) y crea las variables con valor útil que aún no existan. Las que vienen vacías o con un valor de ejemplo (`changeme`, `<tu-clave>`, `tu_token_aqui`) quedan **pendientes** y el panel lo indica en la pestaña Variables para que completes su valor. Se desactiva en Ajustes («Importar las variables del .env del repositorio al desplegar»).\n' +
       '- **Manual**: en **Variables → Importar del repositorio** se muestra una vista previa (qué se importa, qué queda pendiente y qué se ignora y por qué) antes de aplicar.\n\n' +
       'Nunca se importan `PORT` ni las `RAILWAY_*`, ni valores que apuntan a `localhost` (no existe dentro del contenedor: utiliza el nombre del servicio).',
     keywords: ['importar', '.env', 'env.example', 'ejemplo', 'plantilla', 'repositorio', 'pendientes', 'importar del repositorio', 'automatico', 'faltan variables'],

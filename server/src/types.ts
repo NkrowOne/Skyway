@@ -33,7 +33,7 @@ export interface VolumeMount {
  */
 export interface DetectedNeeds {
   /** Motores (claves de DB_TEMPLATES) con la pista que los delata («package.json: pg»). */
-  engines: { template: string; evidence: string }[];
+  engines: { template: string; evidence: string; extensions?: PgExtension[] }[];
   /** Nombres de variable del fichero de ejemplo de entorno, en su orden. */
   expectedVars: string[];
   /** Fichero del que salieron las variables esperadas (`.env.example`…), si hubo. */
@@ -174,9 +174,18 @@ export interface GitConfig {
   integrationsPending?: string[];
 }
 
+/** Extensiones de PostgreSQL que Skyway sabe dar con su imagen (ver `templates.ts`). */
+export type PgExtension = 'vector';
+
 export interface DatabaseConfig {
   template: string;
   version: string;
+  /**
+   * Extensiones que la imagen tiene que traer (solo Postgres). Con `vector`
+   * se usa la imagen de pgvector (Debian) en vez de la oficial alpine, y
+   * `version` guarda solo la versión mayor («16»). Ausente: ninguna.
+   */
+  extensions?: PgExtension[];
   /** Pila de aplicaciones de la que salió este servicio (clave de STACKS). */
   stack?: string;
   domains?: string[];

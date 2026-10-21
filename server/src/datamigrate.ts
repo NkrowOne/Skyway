@@ -18,7 +18,7 @@ import { bus } from './events';
 import { spawnLogged } from './deploy/builder';
 import { getRuntime, containerName, imageExists } from './docker/containers';
 import { projectNetworkName } from './docker/networks';
-import { effectiveDbVersion, getTemplate } from './templates';
+import { dbImageFor, effectiveDbVersion, getTemplate } from './templates';
 import { DatabaseConfig, ProjectRow, ServiceRow } from './types';
 import { id, lineSplitter, now } from './util';
 
@@ -85,7 +85,23 @@ export function migrationSupported(template: string): boolean {
   return (MIGRATABLE_TEMPLATES as readonly string[]).includes(template);
 }
 
-interface Plan {
+/**
+ * Antes de volcar nada, que el destino tenga las extensiones que usa el
+ * origen: el volcado lleva `CREATE EXTENSION vector` y columnas `vector(N)`, y
+ * en una base sin pgvector la restauración falla a mitad, con la base medio
+ * copiada. Los nombres se comparan en el shell (`grep -F`), sin meterlos en
+ * ninguna consulta. Sale con código 3 y el motivo en el registro.
+ */
+export const PG_EXTENSIONS_CHECK =
+  'SRC_EXT=$(psql -X -A -t -d "$SRC" -c "SELECT extname FROM pg_extension WHERE extname <> \'plpgsql\' ORDER BY 1") && ' +
+  'DST_EXT=$(psql -X -A -t -d "$DST" -c "SELECT name FROM pg_available_extensions") && ' +
+  'FALTAN="" && for e in $SRC_EXT; do printf \'%s\\n\' "$DST_EXT" | grep -qxF -- "$e" || FALTAN="$FALTAN $e"; done && ' +
+  'if [ -n "$FALTAN" ]; then ' +
+  'echo "La base de origen usa extensiones que la base de destino no tiene:$FALTAN." >&2; ' +
+  'case " $FALTAN " in *" vector "*) echo "Para vector (pgvector), la base de destino tiene que ser PostgreSQL con pgvector: créala con esa opción (Nuevo servicio, PostgreSQL con pgvector) y vuelve a copiar los datos." >&2;; esac; ' +
+  'exit 3; fi';
+
+export interface Plan {
   /** Imagen con las herramientas de volcado (la del propio motor). */
   image: string;
   /** Variables que ve el contenedor: aquí van las credenciales, nunca en el comando. */
@@ -110,7 +126,7 @@ function parseUrl(raw: string): URL {
  * que Skyway generó al crear el servicio, y el origen con lo que pegue el
  * usuario: ambos van por entorno.
  */
-function planMigration(service: ServiceRow, project: ProjectRow, sourceUrl: string): Plan {
+export function planMigration(service: ServiceRow, project: ProjectRow, sourceUrl: string): Plan {
   const cfg = service.config as DatabaseConfig;
   const template = getTemplate(cfg.template);
   if (!template) throw new Error(`Plantilla desconocida: ${cfg.template}`);
@@ -123,7 +139,9 @@ function planMigration(service: ServiceRow, project: ProjectRow, sourceUrl: stri
     const password = local.POSTGRES_PASSWORD || '';
     const database = local.POSTGRES_DB || 'skyway';
     return {
-      image: `postgres:${version}`,
+      // La imagen del propio destino (con pgvector, la de pgvector): su
+      // pg_dump es de la misma versión mayor que el servidor de destino.
+      image: dbImageFor(template, cfg),
       env: {
         SRC: sourceUrl.trim(),
         DST: `postgresql://${encodeURIComponent(user)}:${encodeURIComponent(password)}@${service.slug}:5432/${encodeURIComponent(database)}`,
@@ -134,7 +152,7 @@ function planMigration(service: ServiceRow, project: ProjectRow, sourceUrl: stri
       // a medio copiar y con cara de haber ido bien.
       // --no-owner/--no-acl: los roles del origen no existen aquí y sin esto el
       // restore se llena de errores de permisos que no significan nada.
-      script:
+      script: `${PG_EXTENSIONS_CHECK} && ` +
         'pg_dump --no-owner --no-acl --verbose -f /tmp/skyway-dump.sql "$SRC" && ' +
         'psql --set ON_ERROR_STOP=on -f /tmp/skyway-dump.sql "$DST"',
     };
@@ -310,9 +328,12 @@ async function run(job: RunningJob, service: ServiceRow, project: ProjectRow, pl
  */
 export async function probeSource(service: ServiceRow, project: ProjectRow, sourceUrl: string): Promise<string | null> {
   const plan = planMigration(service, project, sourceUrl);
+  const cfg = service.config as DatabaseConfig;
   const probe =
-    plan.image.startsWith('postgres')
-      ? 'pg_isready -d "$SRC" -t 8'
+    cfg.template === 'postgres'
+      ? // Además de que responda, que el destino tenga sus extensiones: así el
+        // problema se ve al comprobar, no a mitad de la copia.
+        `pg_isready -d "$SRC" -t 8 && ${PG_EXTENSIONS_CHECK}`
       : plan.image.startsWith('mysql')
         ? 'mysql -h "$SRC_HOST" -P "$SRC_PORT" -u "$SRC_USER" -p"$SRC_PASS" -e "SELECT 1" "$SRC_DB"'
         : // mongosh solo viene en las imágenes de Mongo 6+; en las anteriores

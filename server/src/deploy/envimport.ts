@@ -175,7 +175,14 @@ export function isPlaceholder(value: string): boolean {
   if (/^(\.{3,}|…)$/.test(low)) return true;
   if (low === 'todo') return true;
   if (/change[-_]?me/.test(low)) return true;
-  if (/(^|[^a-z])(your|tu)[-_]/.test(low)) return true;
+  if (/(^|[^a-z])(your|t[uú])[-_]/.test(low)) return true;
+  // Los rellenos en español: `token_aqui`, `pon_aqui_tu_clave`, `AQUÍ`,
+  // `rellenar`, `cambiame`. Con límite de palabra, para no confundir `aquitania`
+  // o `coupon_code` con un hueco.
+  if (/(^|[^a-z])aqu[ií]($|[^a-z])/.test(low)) return true;
+  if (/(^|[^a-z])pon[-_]/.test(low)) return true;
+  if (/(^|[^a-z])rellen(a|ar)($|[^a-z])/.test(low)) return true;
+  if (/(^|[^a-z])c[aá]mbia[-_]?me($|[^a-z])/.test(low)) return true;
   if (/replace/.test(low)) return true;
   if (/example|ejemplo/.test(low)) return true;
   if (/insert/.test(low)) return true;

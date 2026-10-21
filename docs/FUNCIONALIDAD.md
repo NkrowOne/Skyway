@@ -313,7 +313,11 @@ con código 1, que es lo que permite a Docker levantarlo limpio.
      esté vacío). Antes de arrancar Postgres se inspecciona el volumen
      (best-effort, con busybox): si contiene datos de otra versión mayor u otro
      layout, el despliegue falla con el remedio concreto en vez de dejar el
-     contenedor en bucle de reinicio. Además, en cada despliegue se completan
+     contenedor en bucle de reinicio. También falla si el volumen tiene datos y
+     la imagen de su último despliegue correcto usa otra biblioteca C (alpine es
+     musl; Debian y pgvector, glibc): ordenan el texto de otra forma y los
+     índices dejarían de ser válidos sin ningún error. La imagen la decide
+     `dbImageFor` (con `extensions: ['vector']`, `pgvector/pgvector:pg<mayor>-trixie`). Además, en cada despliegue se completan
      las variables de conexión de la plantilla que falten (DATABASE_URL, host,
      credenciales…) sin tocar las existentes, de modo que la URL interna existe
      siempre aunque el servicio venga de una versión antigua o se borraran a
@@ -988,6 +992,7 @@ aplican **en caliente**.
 | `buildArgs` | ✓ | — | — | `--build-arg` |
 | `image` | — | ✓ | — | imagen pública |
 | `template`, `version` | — | — | ✓ | postgres/redis/mysql/mongo/minio |
+| `extensions` | — | — | ✓ (solo postgres) | `['vector']` = pgvector: imagen `pgvector/pgvector:pg<mayor>-trixie` (Debian) en vez de `postgres:<versión>` (alpine); `version` se guarda como la mayor (`"16"`, 13–18; otra da 400). Valores fuera de la lista cerrada, 400. Solo se puede activar o quitar sin datos: con un despliegue correcto previo de la otra biblioteca C (musl/glibc) el PATCH da 409 con el remedio (base nueva con pgvector y «Copiar datos», §5.6) |
 | `port` (interno) | ✓ (def. 3000) | opcional (null = **worker**) | fijo por plantilla | Traefik enruta a este puerto |
 | `domains` | ✓ | ✓ | — | Traefik + TLS; cada dominio registrable o con www nuevo llega con su pareja con o sin www (§5.5) |
 | `dominiosSinPareja` | ✓ | ✓ | — | dominios cuya pareja con o sin www se ha descartado; solo los de `domains` a los que les falta (§5.5). No pide volver a desplegar |
@@ -1464,15 +1469,26 @@ sobre una base gestionada del proyecto. Es el último paso de una migración y
 antes obligaba a entrar por SSH al servidor.
 
 - Motores: **PostgreSQL, MySQL y MongoDB**. Redis (caché) y MinIO quedan fuera.
-- Se ejecuta en un contenedor efímero de la imagen del propio motor, dentro de la
+- Se ejecuta en un contenedor efímero de la imagen del destino (`dbImageFor`: con
+  pgvector, la de pgvector, y así su `pg_dump` es de la misma versión mayor), dentro de la
   red del proyecto. La URL de origen y las credenciales de destino viajan como
   **variables de entorno**, nunca interpoladas en el shell.
 - Volcado a fichero y después restauración (no tubería): `sh` no siempre admite
   `pipefail`, y con tubería un volcado que muere a medias devolvería el éxito del
   restore dejando la base a medio copiar.
+- PostgreSQL: antes del volcado (y en «Comprobar»), compara las extensiones del
+  origen (`pg_extension`) con las disponibles en el destino
+  (`pg_available_extensions`); si falta alguna, sale con código 3 y lo explica en
+  el registro (para `vector`, que el destino tiene que ser PostgreSQL con
+  pgvector), sin tocar el destino. Los nombres se comparan en el shell, nunca
+  dentro de una consulta.
 - Una copia por servicio, con comprobación previa del origen, log en vivo por
   SSE, cancelación y tope de una hora.
 - El destino **se sobrescribe**: la interfaz lo advierte.
+- La importación de Railway crea la base gestionada **con pgvector** si la imagen
+  de origen lo trae: `pgvector/*` y la Postgres de Railway
+  (`ghcr.io/railwayapp-templates/postgres-ssl`, que instala pgvector en todas sus
+  versiones), con la versión mayor de su etiqueta (`pg17`, `16`, `18.1`).
 
 ---
 
@@ -1482,7 +1498,8 @@ Formato completo, reglas y ejemplos en **[MANIFIESTO.md](MANIFIESTO.md)**.
 
 Una web puede declarar en `skyway.json` (raíz del repositorio o de su `rootDir`;
 versión 1, zod estricto, máximo 64 KB, sin comandos ni rutas) las bases que
-necesita (`postgres`, `redis`), el correo (`mode`, `mailbox`) y sus variables:
+necesita (`postgres`, con `extensions: ["vector"]` opcional para pgvector, y
+`redis`), el correo (`mode`, `mailbox`) y sus variables:
 `{from: 'postgres.url'|'redis.url'|'mail.<papel>'|'self.public_url'}`,
 `{generate: {bytes}}` o `{value}` (texto no secreto, sin `${{…}}`). Nunca `PORT`
 ni `SKYWAY_*`. Sin manifiesto, el plan sale de la detección (§5.5).
@@ -1492,6 +1509,11 @@ variable, de dónde sale, si es privilegiada y su estado (`apply`, `done`,
 `manual` —puesta a mano, no se toca— o `blocked`, con el motivo); por cada
 recurso, si se crea o se reutiliza (bases del **mismo proyecto**; buzón en el
 dominio del cliente de correo del proyecto con la **propiedad comprobada**).
+Con pgvector pedido (manifiesto o detección de `pgvector`, §5.5) se prefiere una
+base del proyecto con pgvector, se crea con él si no hay ninguna y, si la que se
+reutilizaría (o a la que ya apunta la variable) no lo tiene, la variable queda
+`blocked` con el motivo en vez de conectarse; el recurso lleva `extensions` y
+entra en la huella solo cuando no está vacío.
 Aplicarlo (`applyPlan`):
 
 - **Sin preguntar**: secretos generados (hex, nunca se regeneran; sí sustituyen
@@ -1592,7 +1614,7 @@ con lo ya aprobado». Nunca se escriben valores en el registro ni en la auditor�
   directorio raíz del servicio y en la raíz del repo. Cada clave se valida
   (nombre, reservadas como `PORT`/`RAILWAY_*`, ya definida en el servicio o en las
   compartidas, tratada en una pasada anterior) y su valor se clasifica: útil →
-  se **importa**; vacío o de ejemplo (`changeme`, `<…>`, `your-…`) → queda
+  se **importa**; vacío o de ejemplo (`changeme`, `<…>`, `your-…`, `tu_token_aqui`, `pon_aqui`, `rellenar`) → queda
   **pendiente** de rellenar; apunta a `localhost` → se ignora (dentro del
   contenedor no existe). Nunca pisa una variable existente, escribe solo claves
   en el log y deja un aviso en la campana. Lo importado se apunta en
@@ -2524,14 +2546,14 @@ devuelve, y solo se usa para listar repos y clonar. Todo queda auditado
 ### 7.4 Servicios
 | Método | Ruta | Nivel | Descripción |
 | --- | --- | --- | --- |
-| GET | `/templates` | auth | plantillas de BBDD disponibles, con sus variables de conexión (`conn`) |
+| GET | `/templates` | auth | plantillas de BBDD disponibles, con sus variables de conexión (`conn`) y, en postgres, `extensions` (`[{key: 'vector', label, image, defaultTag, tagTemplate}]`) |
 | GET | `/stacks` | auth | catálogo de pilas de aplicaciones (§5.1) |
 | POST | `/projects/:projectId/stacks` | +access | crea una pila entera: `{stack, prefix?, domain?}` → `{stack, prefix, publicUrl, services[], dns?}`; atómica (409 si choca un nombre); `domain` como en crear servicio (409 si ya lo usa otro servicio o está reservado), con su pareja con o sin www (§5.5) y la pila configurada con el principal (`publicUrl`); `services[].config` sin `webhookSecret`. `dns`: DNS automático del dominio (§7.13, solo admin con token) |
 | POST | `/railway-templates/preview` | auth | vista previa de una plantilla pública de Railway: `{template, prefix?}` → `{plan}` (no crea nada); 20 por minuto y usuario, después 429 |
 | POST | `/projects/:projectId/railway-templates` | +access | instala la plantilla en el proyecto: `{template, prefix?, domain?}` (§5.2); mismas garantías que las pilas, también `dns?` |
-| POST | `/projects/:projectId/services` | +access | crea servicio (git/database/image); cada dominio debe ser un nombre de host válido (RFC 1123, se guarda en minúsculas y en el orden del dominio principal, §5.5), aquí y en el PATCH; se admiten acentos y «ñ» (se guardan en ASCII, *punycode*: `panadería.es` → `xn--panadera-i2a.es`, como en Mailway) y la URL pegada (se quitan esquema, ruta, puerto y punto final); cada dominio registrable o con www se guarda con su pareja con o sin www salvo los de `dominiosSinPareja` (opcional, máx. 200; la pareja que no se puede asignar se omite sin error, §5.5), y **no puede estar asignado a otro servicio** ni ser el del panel (`SKYWAY_DOMAIN`); fuera del proyecto de Mailway y salvo para el admin, tampoco uno de Mailway (su URL pública, panel, webmail, servidor de correo, los de las rutas de Traefik de sus contenedores, los que fueron suyos y el administrador no ha liberado, un dominio que publica en Traefik o un nombre de marca blanca de cualquier cliente, también esperando DNS) → 409 (`domainguard.ts`); en `git`, `env` opcional: variables con las que nace, antes del primer despliegue (§5.5), y `plan: {skip?, expect?, confirmMailboxAccess?}` opcional: aplica el plan de integraciones del repositorio antes del primer despliegue (§5.7; `skip` ⊂ `postgres`, `redis`, `mysql`, `mongo`, `minio`, `mail`, `empty`, validado antes de crear nada; `expect` es la huella del plan de `github/needs`: sin ella, o si el repositorio ya pide otra cosa, lo privilegiado queda pendiente) y la respuesta añade `plan: {result, plan, error}`. Para un administrador con el token de Cloudflare configurado, la respuesta añade `dns` con el resultado del DNS automático de cada dominio (§7.13). El nombre (aquí y en el PATCH, como el del proyecto) no admite saltos de línea ni caracteres de control → 400 |
+| POST | `/projects/:projectId/services` | +access | crea servicio (git/database/image); cada dominio debe ser un nombre de host válido (RFC 1123, se guarda en minúsculas y en el orden del dominio principal, §5.5), aquí y en el PATCH; se admiten acentos y «ñ» (se guardan en ASCII, *punycode*: `panadería.es` → `xn--panadera-i2a.es`, como en Mailway) y la URL pegada (se quitan esquema, ruta, puerto y punto final); cada dominio registrable o con www se guarda con su pareja con o sin www salvo los de `dominiosSinPareja` (opcional, máx. 200; la pareja que no se puede asignar se omite sin error, §5.5), y **no puede estar asignado a otro servicio** ni ser el del panel (`SKYWAY_DOMAIN`); fuera del proyecto de Mailway y salvo para el admin, tampoco uno de Mailway (su URL pública, panel, webmail, servidor de correo, los de las rutas de Traefik de sus contenedores, los que fueron suyos y el administrador no ha liberado, un dominio que publica en Traefik o un nombre de marca blanca de cualquier cliente, también esperando DNS) → 409 (`domainguard.ts`); en `database`, `{template, version?, name?, extensions?}` con `extensions: ["vector"]` para PostgreSQL con pgvector (`{"type":"database","template":"postgres","extensions":["vector"]}` → `version: "16"`; otra extensión o una versión sin número o fuera de 13–18, 400); en `git`, `env` opcional: variables con las que nace, antes del primer despliegue (§5.5), y `plan: {skip?, expect?, confirmMailboxAccess?}` opcional: aplica el plan de integraciones del repositorio antes del primer despliegue (§5.7; `skip` ⊂ `postgres`, `redis`, `mysql`, `mongo`, `minio`, `mail`, `empty`, validado antes de crear nada; `expect` es la huella del plan de `github/needs`: sin ella, o si el repositorio ya pide otra cosa, lo privilegiado queda pendiente) y la respuesta añade `plan: {result, plan, error}`. Para un administrador con el token de Cloudflare configurado, la respuesta añade `dns` con el resultado del DNS automático de cada dominio (§7.13). El nombre (aquí y en el PATCH, como el del proyecto) no admite saltos de línea ni caracteres de control → 400 |
 | GET | `/services/:id` | +access | servicio + runtime + último deploy; conserva `webhookSecret`, los valores de `buildArgs` salen tapados (`•••`). Añade `pendingChanges`, `autoDeploy` (servicios git con auto-deploy: `{pollSeconds, checkedAt, okAt, error, failingSince, lastSeenSha}`), `webhook` (`{url, coveredByApp}`: URL del webhook manual con el dominio del panel y si ya lo cubre la GitHub App) y `deploy` (`ServiceDeployInfo`: `{strategy: 'overlap'\|'recreate', reason: 'elegida'\|'base_de_datos'\|'estado'\|'sin_trafico'\|'con_trafico', automatic, calledByOthers, stopGraceSeconds, stopGraceSource: 'servicio'\|'railway'\|'defecto'}`: estrategia efectiva y su motivo, si otro servicio lo llama por la red interna y la gracia de parada efectiva con su origen, calculada con el entorno resuelto; §2) |
-| PATCH | `/services/:id` | +access | edita `name`/`config` (recursos en caliente, en todas las réplicas); cada dominio **nuevo** registrable o con www llega con su pareja con o sin www salvo que esté en `config.dominiosSinPareja` (§5.5; la lista de renuncias se guarda limpia y, enviada sin `domains`, solo se filtra contra los actuales); los dominios **nuevos** pasan la misma comprobación que al crear (409), los que ya tenía el servicio se conservan; `domainsBase` opcional (lista de los dominios de los que parte quien edita): si no coincide con los actuales, unos `config.domains` iguales a la base se ignoran (se conservan los actuales) y unos distintos dan 409 («han cambiado mientras los editabas»); solo los nuevos pasan por el DNS automático, y solo con `domainsBase` (`dns`, §7.13, solo admin); la lista se guarda en el orden del dominio principal (§5.5), y un cambio solo de orden no cuenta como dominio nuevo (ni pide volver a desplegar si, ordenada, la lista queda igual); responde con `buildArgs` tapados, y un valor `•••` recibido conserva el build arg que ya había. `config` admite además `deployStrategy` (`'auto'`\|`'overlap'`\|`'recreate'`; `'auto'` lo deja sin fijar; se ignora en bases de datos), `stopGraceSeconds` (entero 0–600, también como cifras en texto; `null` o `""` lo dejan sin fijar; otro tipo da 400; en una base de datos, de 10 a 600: un valor menor da 400) y `stopCommand` (texto de hasta 1000 caracteres o `null`; vacío o `null` lo quita; se ignora en bases de datos; guardar uno nuevo exige el módulo «Terminal de comandos» y un workspace no suspendido, 403 si no, salvo a la administración, y queda en la auditoría como `service_stop_command` con los primeros 120 caracteres): ninguno pide volver a desplegar (la estrategia vale desde el siguiente despliegue y las paradas leen siempre la configuración actual). Al guardar `domains` o `port`, los demás servicios del proyecto cuyo entorno resuelto cambia (los que lo referencian con `${{<servicio>.PUBLIC_URL}}`, `INTERNAL_URL`…) quedan con cambios sin desplegar (`bumpConfigRev`) |
+| PATCH | `/services/:id` | +access | edita `name`/`config` (recursos en caliente, en todas las réplicas); cada dominio **nuevo** registrable o con www llega con su pareja con o sin www salvo que esté en `config.dominiosSinPareja` (§5.5; la lista de renuncias se guarda limpia y, enviada sin `domains`, solo se filtra contra los actuales); los dominios **nuevos** pasan la misma comprobación que al crear (409), los que ya tenía el servicio se conservan; `domainsBase` opcional (lista de los dominios de los que parte quien edita): si no coincide con los actuales, unos `config.domains` iguales a la base se ignoran (se conservan los actuales) y unos distintos dan 409 («han cambiado mientras los editabas»); solo los nuevos pasan por el DNS automático, y solo con `domainsBase` (`dns`, §7.13, solo admin); la lista se guarda en el orden del dominio principal (§5.5), y un cambio solo de orden no cuenta como dominio nuevo (ni pide volver a desplegar si, ordenada, la lista queda igual); responde con `buildArgs` tapados, y un valor `•••` recibido conserva el build arg que ya había. `config` admite además `deployStrategy` (`'auto'`\|`'overlap'`\|`'recreate'`; `'auto'` lo deja sin fijar; se ignora en bases de datos), `stopGraceSeconds` (entero 0–600, también como cifras en texto; `null` o `""` lo dejan sin fijar; otro tipo da 400; en una base de datos, de 10 a 600: un valor menor da 400) y `extensions` (solo bases PostgreSQL, como al crear; `[]` lo quita; con pgvector normaliza `version` a la mayor; 409 si el cambio de imagen pasa de musl a glibc o al revés y la base tiene un despliegue correcto con la otra, §5) y `stopCommand` (texto de hasta 1000 caracteres o `null`; vacío o `null` lo quita; se ignora en bases de datos; guardar uno nuevo exige el módulo «Terminal de comandos» y un workspace no suspendido, 403 si no, salvo a la administración, y queda en la auditoría como `service_stop_command` con los primeros 120 caracteres): ninguno pide volver a desplegar (la estrategia vale desde el siguiente despliegue y las paradas leen siempre la configuración actual). Al guardar `domains` o `port`, los demás servicios del proyecto cuyo entorno resuelto cambia (los que lo referencian con `${{<servicio>.PUBLIC_URL}}`, `INTERNAL_URL`…) quedan con cambios sin desplegar (`bumpConfigRev`) |
 | DELETE | `/services/:id?confirm=<nombre>` | +access | elimina el servicio con **todos sus datos** (§3.1), salvo los volúmenes que comparta con otro servicio del proyecto; `confirm` (nombre o slug), 503 y los dos 409 como en proyectos → `{ok, warnings, removed: {volumes[], images, backups}}` |
 | POST | `/services/:id/deploy` | +access | dispara despliegue manual (`{force: true}` recompila sin reutilizar imagen; `{commit: <SHA de 40>}` reconstruye ese commit, solo git) |
 | POST | `/services/:id/{start,stop,restart}` | +access | acciones sobre el contenedor. Si el servicio no tiene un despliegue en cola o en marcha, antes retiran (o devuelven a su nombre) los restos de intercambios `--next`/`--prev` con parada limpia (un error ahí se registra y no impide la acción). `stop` detiene todas las réplicas en paralelo con parada limpia (comando al parar, SIGTERM y la gracia, después SIGKILL; §2), archiva su registro después de pararlas y responde además `forced: string[]`, las copias que no terminaron con SIGTERM a tiempo y se detuvieron con SIGKILL (el panel lo avisa). `restart` detiene a la vez todas las copias con la misma parada limpia y vuelve a arrancar cada contenedor (el mismo: conserva su identidad, §2), y también responde `forced`. Las dos responden además `initOnRedeploy: boolean`: alguna copia forzada se creó sin el init que llevan las nuevas (§2), y el panel pide volver a desplegar una vez en lugar de cambiar la aplicación. Tras «Reiniciar», el panel avisa «Servicio reiniciado» (el estado que se ve no cambia). Las dos responden cuando termina la parada: con un comando al parar y una gracia largos puede tardar hasta el doble de la gracia. Si un proxy corta antes la conexión (el de Cloudflare espera 100 s), la parada sigue en el servidor hasta el final; el estado se ve al recargar |

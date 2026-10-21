@@ -106,6 +106,8 @@ export interface EnvSuggestion {
   refVar: string | null;
   /** Por qué se sugiere: «.env.example: REDIS_URL», «package.json: pg», «schema.prisma: provider postgresql»… */
   reason: string;
+  /** Extensiones que necesita la base (`vector` = pgvector): se piden al crearla. */
+  extensions?: 'vector'[];
 }
 
 /** Lo que la detección de dependencias propone para un servicio (GET /services/:id/env y /projects/:id/github/needs). */
@@ -151,6 +153,8 @@ export interface PlanResource {
   canApprove: boolean;
   /** Lo que hay que confirmar expresamente para aprobarlo (reutilizar un buzón que ya existe), o null. */
   confirmation: string | null;
+  /** Extensiones que necesita la base (`vector` = pgvector); vacío en el resto. */
+  extensions?: 'vector'[];
 }
 
 export interface IntegrationPlan {
@@ -857,6 +861,8 @@ export interface AskResponse {
 export interface DatabaseConfig {
   template: string;
   version: string;
+  /** Extensiones de la imagen (solo PostgreSQL): `vector` = pgvector, con la imagen Debian de pgvector. */
+  extensions?: 'vector'[];
   hostPort?: number | null;
   cpus?: number | null;
   memoryMb?: number | null;
@@ -1094,6 +1100,19 @@ export interface DbTemplate {
     database?: string;
     connect: string[];
   };
+  /** Variantes con extensiones (hoy, PostgreSQL con pgvector): se piden con `extensions` al crear la base. */
+  extensions?: DbExtension[];
+}
+
+/** Extensión de una plantilla de base de datos: cambia la imagen del motor. */
+export interface DbExtension {
+  key: 'vector';
+  label: string;
+  description: string;
+  image: string;
+  defaultTag: string;
+  /** Forma de la etiqueta; `{major}` es la versión mayor guardada en `version`. */
+  tagTemplate: string;
 }
 
 /** Servicio de una pila de aplicaciones, tal y como lo describe el catálogo. */

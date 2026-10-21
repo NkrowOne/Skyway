@@ -68,13 +68,13 @@ import {
 import { MailMode, MailRole, mailValue } from './mailenv';
 import { MailwayDomain, MailwayError, MailwayInfo, MailwayMailbox, MailwaySummary, createMailbox, getInfo, mailwayConfigured } from './mailway';
 import { dominioPrincipal } from './dominioprincipal';
-import { manifestEngines, manifestMailMode, manifestWantsMail, reservedManifestVar } from './manifest';
+import { manifestEngines, manifestMailMode, manifestPgExtensions, manifestWantsMail, reservedManifestVar } from './manifest';
 import { managedUnchanged, envStateOf, EnvState, writeDecision } from './managedenv';
 import { markManualAction } from './monitor';
 import { adviseNeeds, detectNeedsFromGithub } from './needs';
 import { effectiveQuota, isWorkspaceActive, moduleAllowedForProject, workspaceOfProject, workspacePlan } from './quota';
-import { getTemplate } from './templates';
-import { DatabaseConfig, DetectedNeeds, GitConfig, MailwayLinkRow, ProjectRow, ServiceRow, UserRow } from './types';
+import { dbExtensions, getTemplate, normalizeDbConfig } from './templates';
+import { DatabaseConfig, DetectedNeeds, GitConfig, MailwayLinkRow, PgExtension, ProjectRow, ServiceRow, UserRow } from './types';
 import { projectReferences } from './variables';
 
 export type PlanStatus = 'apply' | 'done' | 'manual' | 'blocked';
@@ -108,6 +108,8 @@ export interface PlanResource {
   evidence: string | null;
   /** Quien consulta el plan puede aprobar este recurso (bases: acceso al proyecto; correo: gestionarlo). */
   canApprove: boolean;
+  /** Extensiones que necesita la base (`vector` = pgvector); vacío en el resto. */
+  extensions: PgExtension[];
   /**
    * Lo que hay que confirmar expresamente para aprobarlo, o null. Hoy, solo
    * reutilizar en SMTP un buzón que ya existe: su contraseña de aplicación da
@@ -293,20 +295,48 @@ interface DbWant {
   engine: string;
   refVar: string;
   evidence: string;
+  /** Extensiones que la web necesita en esa base (hoy, `vector`). */
+  extensions: PgExtension[];
 }
 
-/** Base de datos del proyecto con ese motor (la primera), si la hay. Solo de ESTE proyecto. */
-function projectDatabase(projectId: string, engine: string): ServiceRow | null {
-  return listServices(projectId).find((s) => s.type === 'database' && (s.config as DatabaseConfig).template === engine) ?? null;
+/** Extensiones de `wanted` que le faltan a una base. */
+function missingExtensions(db: ServiceRow, wanted: readonly PgExtension[]): PgExtension[] {
+  const has = dbExtensions(db.config as DatabaseConfig);
+  return wanted.filter((e) => !has.includes(e));
 }
 
-/** ¿Es el valor una referencia a la variable `refVar` de una base de ese motor del proyecto? */
-function pointsToProjectDb(projectId: string, value: string, engine: string, refVar: string): boolean {
+/**
+ * Base de datos del proyecto con ese motor, si la hay. Solo de ESTE proyecto.
+ * Si la web pide extensiones, la primera que las tenga; si ninguna, la
+ * primera (y el plan dice que le faltan, en vez de conectarla sin avisar).
+ */
+function projectDatabase(projectId: string, engine: string, extensions: readonly PgExtension[] = []): ServiceRow | null {
+  const dbs = listServices(projectId).filter((s) => s.type === 'database' && (s.config as DatabaseConfig).template === engine);
+  return dbs.find((db) => missingExtensions(db, extensions).length === 0) ?? dbs[0] ?? null;
+}
+
+/** Base de ese motor del proyecto a la que apunta el valor (una referencia a su `refVar`), o null. */
+function pointsToProjectDb(projectId: string, value: string, engine: string, refVar: string): ServiceRow | null {
   const m = value.trim().match(/^\$\{\{\s*([A-Za-z0-9 _.-]+?)\.([A-Za-z0-9_]+)\s*\}\}$/);
-  if (!m || m[2] !== refVar) return false;
+  if (!m || m[2] !== refVar) return null;
   const name = m[1].trim().toLowerCase();
-  return listServices(projectId).some(
-    (s) => s.type === 'database' && (s.config as DatabaseConfig).template === engine && (s.name.toLowerCase() === name || s.slug === name),
+  return (
+    listServices(projectId).find(
+      (s) => s.type === 'database' && (s.config as DatabaseConfig).template === engine && (s.name.toLowerCase() === name || s.slug === name),
+    ) ?? null
+  );
+}
+
+/** Nombre de una extensión para el usuario. */
+const EXTENSION_LABEL: Record<PgExtension, string> = { vector: 'pgvector' };
+
+/** Por qué no se conecta una base a la que le faltan extensiones que pide la web. */
+function sinExtensiones(db: ServiceRow, faltan: PgExtension[]): string {
+  const nombres = faltan.map((e) => EXTENSION_LABEL[e]).join(', ');
+  return (
+    `La base «${db.name}» del proyecto no tiene ${nombres} y este servicio lo necesita. ` +
+    `Crea en el proyecto una base PostgreSQL con ${nombres} y vuelve a revisar el plan (se conectará esa), ` +
+    `o activa ${nombres} en los Ajustes de «${db.name}» si todavía no tiene datos.`
   );
 }
 
@@ -391,7 +421,13 @@ export function buildPlan(opts: {
           harmless(name, 'self.public_url', dominioPrincipal(target.domains) ? selfRef : null, selfRef, SIN_DOMINIO);
         } else if (entry.from === 'postgres.url' || entry.from === 'redis.url') {
           const engine = entry.from.split('.')[0];
-          dbWants.push({ name, engine, refVar: getTemplate(engine)!.conn.main, evidence: `${needs.manifestFile}: ${name}` });
+          dbWants.push({
+            name,
+            engine,
+            refVar: getTemplate(engine)!.conn.main,
+            evidence: `${needs.manifestFile}: ${name}`,
+            extensions: engine === 'postgres' ? manifestPgExtensions(manifest) : [],
+          });
         }
         // Las de correo se resuelven abajo, todas juntas.
       } else if ('generate' in entry) {
@@ -421,7 +457,13 @@ export function buildPlan(opts: {
     for (const engine of manifestEngines(manifest)) {
       if (!dbWants.some((w) => w.engine === engine)) {
         const tpl = getTemplate(engine)!;
-        dbWants.push({ name: tpl.conn.connect[0], engine, refVar: tpl.conn.connect[0], evidence: `${needs.manifestFile}: integrations.${engine}` });
+        dbWants.push({
+          name: tpl.conn.connect[0],
+          engine,
+          refVar: tpl.conn.connect[0],
+          evidence: `${needs.manifestFile}: integrations.${engine}`,
+          extensions: engine === 'postgres' ? manifestPgExtensions(manifest) : [],
+        });
       }
     }
     if (manifestWantsMail(manifest)) {
@@ -444,7 +486,13 @@ export function buildPlan(opts: {
     );
     for (const s of advice.suggestions) {
       if (s.template && s.refVar) {
-        dbWants.push({ name: s.key, engine: s.template, refVar: s.refVar, evidence: s.reason });
+        dbWants.push({
+          name: s.key,
+          engine: s.template,
+          refVar: s.refVar,
+          evidence: s.reason,
+          extensions: needs.engines.find((e) => e.template === s.template)?.extensions ?? [],
+        });
       } else if (s.value) {
         harmless(s.key, 'self.public_url', s.value, s.value);
       }
@@ -461,7 +509,15 @@ export function buildPlan(opts: {
     const tpl = getTemplate(engine);
     if (!tpl) continue;
     const wants = dbWants.filter((w) => w.engine === engine);
-    const existing = projectDatabase(project.id, engine);
+    // Solo las que la plantilla sabe dar (hoy, pgvector en Postgres).
+    const known = (tpl.extensions ?? []).map((e) => e.key);
+    const extensions = [...new Set(wants.flatMap((w) => w.extensions))].filter((e) => known.includes(e));
+    const existing = projectDatabase(project.id, engine, extensions);
+    // A la base que se reutilizaría le faltan extensiones: no se conecta sin decirlo.
+    const faltan = existing ? missingExtensions(existing, extensions) : [];
+    const extBlock = existing && faltan.length > 0 ? sinExtensiones(existing, faltan) : null;
+    const variante = extensions.length > 0 ? tpl.extensions!.find((e) => e.key === extensions[0])! : null;
+    // El nombre de la base nueva es el de la plantilla, con o sin extensiones: como al crearla a mano.
     const providerName = existing?.name ?? tpl.label;
     const block = existing ? null : user ? dbCreateBlock(project, user, pendingCreates) : null;
     if (!existing && !block) pendingCreates++;
@@ -471,14 +527,20 @@ export function buildPlan(opts: {
       const current = state.env[w.name];
       let status: PlanStatus;
       let reason: string | null = null;
-      if (current !== undefined && current !== '' && pointsToProjectDb(project.id, current, engine, w.refVar)) {
+      const conectada = current !== undefined && current !== '' ? pointsToProjectDb(project.id, current, engine, w.refVar) : null;
+      const faltanEnConectada = conectada ? missingExtensions(conectada, extensions) : [];
+      if (conectada && faltanEnConectada.length > 0) {
+        // Ya conectada, pero a una base sin la extensión: la web fallará al usarla.
+        status = 'blocked';
+        reason = sinExtensiones(conectada, faltanEnConectada);
+      } else if (conectada) {
         status = 'done';
       } else if (writeDecision(state, w.name, existing ? value : null) === 'manual') {
         status = 'manual';
         reason = MANUAL;
-      } else if (block) {
+      } else if (block || extBlock) {
         status = 'blocked';
-        reason = block;
+        reason = block ?? extBlock;
       } else {
         status = 'apply';
         anyApply = true;
@@ -486,21 +548,22 @@ export function buildPlan(opts: {
       addVar({ name: w.name, from: `${engine}.${w.refVar}`, resource: engine, privileged: true, status, detail: value, reason });
     }
     // Bloqueado solo si queda algo por hacer: con todo conectado, da igual que ya no quepa otra base.
-    const anyBlocked = plan.vars.some((v) => v.resource === engine && v.status === 'blocked');
+    const blockedVar = plan.vars.find((v) => v.resource === engine && v.status === 'blocked');
     plan.resources.push({
       key: engine,
-      label: tpl.label,
+      label: variante?.label ?? tpl.label,
       action: existing ? 'reuse' : 'create',
       target: providerName,
       mode: null,
-      status: anyBlocked ? 'blocked' : anyApply ? 'apply' : 'done',
-      reason: anyBlocked ? block : null,
+      status: blockedVar ? 'blocked' : anyApply ? 'apply' : 'done',
+      reason: blockedVar ? blockedVar.reason : null,
       evidence: wants[0].evidence,
       // La misma regla que crear la base a mano (POST …/services) o escribir la
       // referencia en Variables: acceso al proyecto, que ya exigen las rutas, y
       // el módulo y la cuota, que ya bloquean el recurso arriba.
       canApprove: !!user,
       confirmation: null,
+      extensions,
     });
   }
 
@@ -605,6 +668,7 @@ export function buildPlan(opts: {
         compartida: names.secretRequested && !holdsCredential,
         actualizaUsuario: actualizarUsuario,
       }),
+      extensions: [],
     });
     // Sin sitio para la credencial, o con la conexión a medias, no hay nada que aprobar: se dice en el recurso.
     if (noSecret || partial) {
@@ -661,7 +725,9 @@ function confirmacionCorreo(
 function planFingerprint(plan: IntegrationPlan): string {
   const resources = plan.resources
     .filter((r) => r.status === 'apply')
-    .map((r) => [r.key, r.action, r.target, r.mode, r.confirmation !== null])
+    // Las extensiones solo cuando las hay: así la huella de un plan sin ellas
+    // no cambia respecto a la de versiones anteriores de Skyway.
+    .map((r) => [r.key, r.action, r.target, r.mode, r.confirmation !== null, ...(r.extensions.length > 0 ? [r.extensions] : [])])
     .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
   const vars = plan.vars
     .filter((v) => v.privileged && v.status === 'apply')
@@ -717,10 +783,12 @@ function generatedSecret(bytes: number): string {
 }
 
 /** Crea una base de datos en el proyecto como «Nuevo servicio → Base de datos», con su primer despliegue. */
-function createDatabaseService(projectId: string, engine: string): ServiceRow {
+function createDatabaseService(projectId: string, engine: string, extensions: PgExtension[] = []): ServiceRow {
   const tpl = getTemplate(engine)!;
+  const norm = normalizeDbConfig(tpl, undefined, extensions);
+  if ('error' in norm) throw new Error(norm.error);
   const slug = uniqueServiceSlug(projectId, tpl.label);
-  const cfg: DatabaseConfig = { template: tpl.key, version: tpl.defaultVersion };
+  const cfg: DatabaseConfig = { template: tpl.key, version: norm.version, ...(norm.extensions ? { extensions: norm.extensions } : {}) };
   const db = createService(projectId, tpl.label, slug, 'database', cfg);
   setEnv(db.id, tpl.makeEnv(slug));
   markManualAction(db.id);
@@ -832,7 +900,7 @@ async function applyPlanLocked(opts: ApplyOptions): Promise<{ result: ApplyResul
         result.blocked.push(...vars.map((v) => ({ name: v.name, reason: block })));
         continue;
       }
-      const db = createDatabaseService(project.id, res.key);
+      const db = createDatabaseService(project.id, res.key, res.extensions);
       providerName = db.name;
       result.created.push(db.name);
     }

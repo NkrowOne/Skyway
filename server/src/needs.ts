@@ -7,7 +7,7 @@ import { ghFetch } from './github/client';
 import { MailMode, mailRoleOf, mailVarsOf, suggestedMailMode } from './mailenv';
 import { MANIFEST_FILE, MANIFEST_MAX_BYTES, parseManifest } from './manifest';
 import { getTemplate } from './templates';
-import { DetectedNeeds, GitConfig, ProveedorWebhook, ServiceRow } from './types';
+import { DetectedNeeds, GitConfig, PgExtension, ProveedorWebhook, ServiceRow } from './types';
 import { isReservedKey } from './deploy/envimport';
 import { ReferenceGroup, systemVars } from './variables';
 
@@ -140,6 +140,18 @@ const COMPOSE_IMAGE: Record<string, Engine> = {
   mongo: 'mongo',
   minio: 'minio',
 };
+
+/*
+ * Librerías e imágenes de pgvector: dicen Postgres y, además, que la base
+ * necesita la extensión `vector` (la imagen alpine de Skyway no la trae).
+ */
+const NPM_PGVECTOR = new Set(['pgvector']);
+const PYPI_PGVECTOR = new Set(['pgvector']);
+const GEM_PGVECTOR = new Set(['pgvector']);
+const COMPOSER_PGVECTOR = new Set(['pgvector/pgvector']);
+const GO_PGVECTOR = /github\.com\/pgvector\/pgvector-go/;
+/** Último segmento del nombre de la imagen: `pgvector/pgvector:pg16`, `ankane/pgvector`. */
+const COMPOSE_IMAGE_PGVECTOR = new Set(['pgvector']);
 
 /*
  * Librerías con las que una web envía correo. Que una web use Resend o
@@ -364,6 +376,13 @@ export function detectNeeds(repoDir: string, rootDir?: string): DetectedNeeds | 
   const found = (engine: Engine, evidence: string) => {
     if (!engines.has(engine)) engines.set(engine, evidence);
   };
+  // pgvector cuenta como Postgres y además pide la extensión `vector`.
+  let vectorEvidence: string | null = null;
+  const vectorFound = (evidence: string, source: string) => {
+    found('postgres', evidence);
+    if (vectorEvidence === null) vectorEvidence = evidence;
+    sources.add(source);
+  };
   const rel = (full: string) => path.relative(repoDir, full) || path.basename(full);
 
   let expectedVars: string[] = [];
@@ -435,6 +454,7 @@ export function detectNeeds(repoDir: string, rootDir?: string): DetectedNeeds | 
             sources.add(pkg.rel);
           }
         }
+        for (const name of NPM_PGVECTOR) if (deps[name] !== undefined) vectorFound(`${pkg.rel}: ${name}`, pkg.rel);
         // Solo las de producción: un nodemailer de desarrollo (pruebas) no es correo de la web.
         for (const name of Object.keys(parsed.dependencies ?? {})) {
           if (NPM_MAIL.has(name)) mailFound(`${pkg.rel}: ${name}`, pkg.rel);
@@ -457,6 +477,7 @@ export function detectNeeds(repoDir: string, rootDir?: string): DetectedNeeds | 
           found(engine, `${req.rel}: ${n}`);
           sources.add(req.rel);
         }
+        if (n && PYPI_PGVECTOR.has(n)) vectorFound(`${req.rel}: ${n}`, req.rel);
         if (n && PYPI_MAIL.has(n)) mailFound(`${req.rel}: ${n}`, req.rel);
         const bot = n && Object.hasOwn(PYPI_BOTS, n) ? PYPI_BOTS[n] : undefined;
         if (bot) botFound(bot, `${req.rel}: ${n}`, req.rel);
@@ -476,6 +497,7 @@ export function detectNeeds(repoDir: string, rootDir?: string): DetectedNeeds | 
           found(engine, `${pyproject.rel}: ${n}`);
           sources.add(pyproject.rel);
         }
+        if (PYPI_PGVECTOR.has(n)) vectorFound(`${pyproject.rel}: ${n}`, pyproject.rel);
         if (PYPI_MAIL.has(n)) mailFound(`${pyproject.rel}: ${n}`, pyproject.rel);
         const bot = Object.hasOwn(PYPI_BOTS, n) ? PYPI_BOTS[n] : undefined;
         if (bot) botFound(bot, `${pyproject.rel}: ${n}`, pyproject.rel);
@@ -490,6 +512,8 @@ export function detectNeeds(repoDir: string, rootDir?: string): DetectedNeeds | 
           sources.add(gomod.rel);
         }
       }
+      const goVector = gomod.text.match(GO_PGVECTOR);
+      if (goVector) vectorFound(`${gomod.rel}: ${goVector[0]}`, gomod.rel);
       for (const re of GO_MAIL) {
         const hit = gomod.text.match(re);
         if (hit) mailFound(`${gomod.rel}: ${hit[0]}`, gomod.rel);
@@ -508,6 +532,7 @@ export function detectNeeds(repoDir: string, rootDir?: string): DetectedNeeds | 
           found(engine, `${gemfile.rel}: ${m[1]}`);
           sources.add(gemfile.rel);
         }
+        if (GEM_PGVECTOR.has(m[1])) vectorFound(`${gemfile.rel}: ${m[1]}`, gemfile.rel);
         if (GEM_MAIL.has(m[1])) mailFound(`${gemfile.rel}: ${m[1]}`, gemfile.rel);
         const bot = Object.hasOwn(GEM_BOTS, m[1]) ? GEM_BOTS[m[1]] : undefined;
         if (bot) botFound(bot, `${gemfile.rel}: ${m[1]}`, gemfile.rel);
@@ -525,6 +550,7 @@ export function detectNeeds(repoDir: string, rootDir?: string): DetectedNeeds | 
           }
         }
         for (const name of Object.keys(parsed.require ?? {})) {
+          if (COMPOSER_PGVECTOR.has(name)) vectorFound(`${composer.rel}: ${name}`, composer.rel);
           if (COMPOSER_MAIL.has(name)) mailFound(`${composer.rel}: ${name}`, composer.rel);
           const bot = Object.hasOwn(COMPOSER_BOTS, name) ? COMPOSER_BOTS[name] : undefined;
           if (bot) botFound(bot, `${composer.rel}: ${name}`, composer.rel);
@@ -562,6 +588,7 @@ export function detectNeeds(repoDir: string, rootDir?: string): DetectedNeeds | 
           found(engine, `${compose.rel}: imagen ${m[1]}`);
           sources.add(compose.rel);
         }
+        if (COMPOSE_IMAGE_PGVECTOR.has(m[1].toLowerCase())) vectorFound(`${compose.rel}: imagen ${m[1]}`, compose.rel);
       }
     }
   }
@@ -593,7 +620,15 @@ export function detectNeeds(repoDir: string, rootDir?: string): DetectedNeeds | 
 
   if (engines.size === 0 && expectedVars.length === 0 && !mail && manifestFile === null && bots.length === 0) return null;
   return {
-    engines: [...engines.entries()].map(([template, evidence]) => ({ template, evidence })),
+    engines: [...engines.entries()].map(([template, evidence]) =>
+      template === 'postgres' && vectorEvidence !== null
+        ? {
+            template,
+            evidence: evidence === vectorEvidence ? evidence : `${evidence} · ${vectorEvidence}`,
+            extensions: ['vector' as const],
+          }
+        : { template, evidence },
+    ),
     expectedVars,
     envFile,
     sources: [...sources],
@@ -670,6 +705,8 @@ export interface EnvSuggestion {
   /** Variable del destino que se referencia; con `value` null, la que tendrá la base recién creada. */
   refVar: string | null;
   reason: string;
+  /** Extensiones que la base necesita (`vector` = pgvector): se piden al crearla. Ausente si ninguna. */
+  extensions?: PgExtension[];
 }
 
 export interface EnvAdvice {
@@ -764,7 +801,13 @@ export function adviseNeeds(needs: DetectedNeeds | null | undefined, target: Adv
   const { defined } = target;
   const detected = new Set(needs.engines.map((e) => e.template));
   const sqlEngine: Engine = detected.has('mysql') && !detected.has('postgres') ? 'mysql' : 'postgres';
-  const labelOf = (engine: string) => getTemplate(engine)?.label ?? engine;
+  const extensionsOf = (engine: string) => needs.engines.find((e) => e.template === engine)?.extensions ?? [];
+  // Con pgvector, la variante de la plantilla («PostgreSQL con pgvector»).
+  const labelOf = (engine: string) => {
+    const tpl = getTemplate(engine);
+    const ext = extensionsOf(engine)[0];
+    return (ext && tpl?.extensions?.find((e) => e.key === ext)?.label) || tpl?.label || engine;
+  };
   const evidenceOf = (engine: string) => needs.engines.find((e) => e.template === engine)?.evidence ?? '';
   const providerOf = (engine: string, refVar: string) =>
     references.find((g) => g.template === engine && g.vars.includes(refVar)) ?? null;
@@ -788,6 +831,7 @@ export function adviseNeeds(needs: DetectedNeeds | null | undefined, target: Adv
       service: provider?.service ?? null,
       refVar,
       reason,
+      ...(extensionsOf(engine).length > 0 ? { extensions: extensionsOf(engine) } : {}),
     });
     covered.add(engine);
     return true;

@@ -1203,6 +1203,8 @@ export default function VariablesTab({
       api.post<{ service: { id: string; name: string } }>(`/projects/${projectId}/services`, {
         type: 'database',
         template: group[0].template,
+        // Con pgvector detectado en el repositorio, la base nace con la extensión.
+        ...(group[0].extensions?.length ? { extensions: group[0].extensions } : {}),
       }),
     onSuccess: (data, group) => {
       queryClient.invalidateQueries({ queryKey: ['env', serviceId] });

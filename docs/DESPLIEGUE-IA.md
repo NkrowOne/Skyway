@@ -234,7 +234,7 @@ y en `rootDir`.
 | --- | --- |
 | Clave ya definida (servicio o compartida) | se respeta; nunca se sobrescribe |
 | `PORT` o `RAILWAY_*` | se ignora (reservada) |
-| Valor vacío o de ejemplo (`changeme`, `<…>`, `your-…`, `xxx`, `TODO`, contiene `example`, `replace`, `insert`…) | queda **pendiente**, con aviso en el panel |
+| Valor vacío o de ejemplo (`changeme`, `<…>`, `your-…`, `tu-…`/`tu_…`, `xxx`, `TODO`, contiene `example`, `replace`, `insert`, `aquí`/`…_aqui`, `pon_…`, `rellenar`, `cambiame`…) | queda **pendiente**, con aviso en el panel |
 | Valor con `localhost`, `127.0.0.1` o `0.0.0.0` | se ignora |
 | Valor útil | se importa |
 
@@ -251,6 +251,7 @@ nombre: `"name":"postgres"` → host `postgres`.
 | Plantilla | Imagen (versión def.) | Puerto | Variable para conectar | Otras variables |
 | --- | --- | --- | --- | --- |
 | `postgres` | `postgres` (`16-alpine`) | 5432 | `DATABASE_URL` | `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, `PGDATABASE`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` |
+| `postgres` + `"extensions":["vector"]` | `pgvector/pgvector` (`pg16-trixie`, Debian) | 5432 | `DATABASE_URL` | Las mismas. `version` es la mayor (`"16"`, 13–18) |
 | `redis` | `redis` (`7-alpine`) | 6379 | `REDIS_URL` | `REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWORD` |
 | `mysql` | `mysql` (`8`) | 3306 | `MYSQL_URL` | `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_DATABASE`, `MYSQL_ROOT_PASSWORD` |
 | `mongo` | `mongo` (`7`) | 27017 | `MONGO_URL` (sin nombre de base) | `MONGO_HOST`, `MONGO_PORT`, `MONGO_INITDB_ROOT_USERNAME`, `MONGO_INITDB_ROOT_PASSWORD` |
@@ -265,6 +266,15 @@ En la aplicación, referencia con el nombre que espera el código:
 `rootDir` y en la raíz). `GET /api/services/:id/env` devuelve `suggestions` (referencia propuesta, o
 `value: null` si la base no existe), `missing` (esperadas sin propuesta) y `repoPending` (pendientes
 del `.env`). Nada se escribe solo. `DATABASE_URL` sin otra pista se asume PostgreSQL.
+
+**pgvector.** Para `CREATE EXTENSION vector` y columnas `vector(N)`, crea la base con
+`{"type":"database","template":"postgres","extensions":["vector"]}` (opcional `"version":"17"`). La
+extensión la crea la aplicación con su `CREATE EXTENSION`. Se elige al crear o en Ajustes, pero
+**solo sin datos**: activarla o quitarla cambia de alpine (musl) a Debian (glibc), que ordenan el texto
+de otra forma, y con un despliegue correcto previo el PATCH responde 409 (el despliegue también lo
+comprueba con el volumen). Con datos: crea una base nueva con pgvector y copia los datos con «Copiar
+datos» (§5.6 de FUNCIONALIDAD.md). La detección propone pgvector si el repositorio usa `pgvector`
+(npm, PyPI, gem, Composer), `pgvector-go` o la imagen `pgvector/pgvector` en el compose.
 
 Cambiar la versión mayor de PostgreSQL con datos no funciona: usa copia de seguridad y restauración.
 Volver a desplegar una base la detiene unos segundos.
@@ -290,7 +300,9 @@ completo: [MANIFIESTO.md](MANIFIESTO.md).
 - En la raíz del repositorio o de `rootDir` (este manda). Máximo 64 KB y 100 variables.
 - Esquema estricto: una clave desconocida (por ejemplo `$schema`) invalida el manifiesto entero, y
   uno no válido no aplica nada.
-- `integrations`: solo `postgres`, `redis` y `mail`.
+- `integrations`: solo `postgres`, `redis` y `mail`. `postgres.extensions`: `["vector"]` (pgvector),
+  único valor admitido; el plan crea la base con pgvector y no conecta en silencio una del proyecto
+  que no lo tenga (queda `blocked` con el motivo).
 - `from`: `postgres.url`, `redis.url`, `self.public_url` o `mail.<papel>` (papeles en
   MANIFIESTO.md). `generate.bytes`: 16–64 (def. 32), hexadecimal, nunca se regenera. `value`: texto
   no secreto, hasta 1000 caracteres, sin `${{…}}`.
@@ -340,7 +352,8 @@ curl -s "${AUTH[@]}" "$BASE/api/github/installations/GHI_ID/repos/lookup?repo=ow
 FP=$(curl -s "${AUTH[@]}" \
   "$BASE/api/projects/$PROJ/github/needs?repo=owner/repo&branch=main&source=app:GHI_ID" | jq -r .plan.fingerprint)
 
-# 4. Base de datos (antes que la aplicación que la referencia)
+# 4. Base de datos (antes que la aplicación que la referencia).
+#    Con pgvector: añade "extensions":["vector"] (§6)
 curl -s "${AUTH[@]}" "${JSON[@]}" -d '{"type":"database","template":"postgres","name":"postgres"}' \
   "$BASE/api/projects/$PROJ/services" | jq -r .service.id
 

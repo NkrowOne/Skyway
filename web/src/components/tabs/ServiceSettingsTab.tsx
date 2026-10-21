@@ -5,6 +5,7 @@ import { api } from '../../api';
 import {
   AutoDeployStatus,
   CloudflareProxyResult,
+  DbExtension,
   DbTemplate,
   DnsAutoResult,
   Me,
@@ -92,6 +93,8 @@ interface FormState {
   buildCmd: string;
   port: string;
   version: string;
+  /** Base PostgreSQL con pgvector (`extensions: ['vector']`). */
+  pgvector: boolean;
   image: string;
   domains: string[];
   /** Dominios cuya pareja con o sin www se ha descartado (`dominiosSinPareja`). */
@@ -128,6 +131,7 @@ function formFromService(service: Service): FormState {
     buildCmd: (cfg as any).buildCmd ?? '',
     port: isImage ? (cfg.port ? String(cfg.port) : '') : String(cfg.port ?? 3000),
     version: cfg.version ?? '',
+    pgvector: (cfg.extensions ?? []).includes('vector'),
     image: cfg.image ?? '',
     domains: cfg.domains ?? [],
     sinPareja: cfg.dominiosSinPareja ?? [],
@@ -146,6 +150,16 @@ function formFromService(service: Service): FormState {
     stopGraceSeconds: typeof cfg.stopGraceSeconds === 'number' ? String(cfg.stopGraceSeconds) : '',
     stopCommand: cfg.stopCommand ?? '',
   };
+}
+
+/**
+ * Imagen que usará la base con lo que dice el formulario: la misma regla que
+ * `dbImageFor` en el servidor (con pgvector, `pgvector/pgvector:pg<mayor>-<distro>`).
+ */
+function imagenBase(template: string, version: string, pgvector: boolean, ext: DbExtension | undefined): string {
+  if (!pgvector || !ext) return template;
+  const major = parseInt(version, 10);
+  return `${ext.image}:${ext.tagTemplate.replace('{major}', Number.isInteger(major) ? String(major) : '18')}`;
 }
 
 /** Texto de cada estrategia, igual que en el registro del despliegue. */
@@ -272,6 +286,7 @@ export default function ServiceSettingsTab({
   const internalPort = isDb
     ? dbTemplates.data?.templates.find((t) => t.key === cfg.template)?.port
     : cfg.port;
+  const pgvectorExt = isDb ? dbTemplates.data?.templates.find((t) => t.key === cfg.template)?.extensions?.find((e) => e.key === 'vector') : undefined;
   const internalAddress = internalPort ? `${service.slug}:${internalPort}` : service.slug;
   // Sin puerto no hay URL que ofrecer, pero el host sí se puede referenciar.
   const internalReference = `\${{${service.slug}.${internalPort ? 'INTERNAL_URL' : 'INTERNAL_HOST'}}}`;
@@ -323,7 +338,10 @@ export default function ServiceSettingsTab({
           dominiosSinPareja: form.sinPareja,
         });
       } else {
-        Object.assign(config, { version: form.version.trim() || cfg.version });
+        Object.assign(config, {
+          version: form.version.trim() || cfg.version,
+          ...(cfg.template === 'postgres' ? { extensions: form.pgvector ? ['vector'] : [] } : {}),
+        });
       }
       return api.patch<{ service: Service; needsRedeploy: boolean; dns?: DnsAutoResult[] }>(`/services/${service.id}`, {
         name: form.name,
@@ -566,9 +584,30 @@ export default function ServiceSettingsTab({
                 </Field>
               </>
             ) : (
-              <Field label="Versión de la imagen" hint={`Imagen: ${cfg.template}`}>
-                <input className="input font-mono text-xs" value={form.version} onChange={(e) => set('version', e.target.value)} />
-              </Field>
+              <>
+                <Field label="Versión de la imagen" hint={`Imagen: ${imagenBase(cfg.template, form.version, form.pgvector, pgvectorExt)}`}>
+                  <input className="input font-mono text-xs" value={form.version} onChange={(e) => set('version', e.target.value)} />
+                </Field>
+                {pgvectorExt && (
+                  <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-line bg-surface px-3 py-2.5">
+                    <input
+                      type="checkbox"
+                      checked={form.pgvector}
+                      onChange={(e) => set('pgvector', e.target.checked)}
+                      className="mt-0.5 h-[15px] w-[15px] shrink-0 accent-acc max-sm:h-4 max-sm:w-4"
+                    />
+                    <span className="text-sm">
+                      <span className="font-medium">pgvector (extensión vector)</span>
+                      <span className="mt-1 block text-xs leading-relaxed text-subtle">
+                        Usa la imagen {pgvectorExt.image} (Debian) en lugar de la oficial alpine; la versión se guarda como su número mayor,
+                        por ejemplo «16». Solo se puede cambiar en una base sin datos: alpine y Debian ordenan el texto de forma distinta y
+                        los índices dejarían de ser válidos. Para una base con datos, crea una base nueva con pgvector y copia los datos con
+                        «Copiar datos».
+                      </span>
+                    </span>
+                  </label>
+                )}
+              </>
             )}
           </div>
         </SectionCard>

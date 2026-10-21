@@ -169,11 +169,38 @@ describe('isPlaceholder', () => {
     'my_secret_here',
     'sk-xxxxxxxx',
     '********',
+    // Rellenos en español de los .env.example.
+    'tu_token_aqui',
+    'tu_api_key_aqui',
+    'TU-CLAVE',
+    'tú_token',
+    'token_aqui',
+    'pon_aqui_tu_token',
+    'PON-TU-CLAVE',
+    'aquí',
+    'Clave aquí',
+    'rellenar',
+    'rellena_esto',
+    'cambiame',
+    'cámbiame',
   ])('%j es un placeholder', (v) => {
     expect(isPlaceholder(v)).toBe(true);
   });
 
-  it.each(['production', 'postgres://u:p@db.internal:5432/app', '${{Postgres.DATABASE_URL}}', '${{ shared.API_KEY }}', 'sk-live-abc123', 'status_ok'])(
+  it.each([
+    'production',
+    'postgres://u:p@db.internal:5432/app',
+    '${{Postgres.DATABASE_URL}}',
+    '${{ shared.API_KEY }}',
+    'sk-live-abc123',
+    'status_ok',
+    // Palabras que contienen los marcadores sin serlo.
+    'aquitania',
+    'coupon_code',
+    'Bienvenido a tu cuenta',
+    'rellenador',
+    'MTA1NjQ.discord.token',
+  ])(
     '%j no es un placeholder',
     (v) => {
       expect(isPlaceholder(v)).toBe(false);

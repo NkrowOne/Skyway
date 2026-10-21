@@ -14,8 +14,8 @@ import {
 } from '../db';
 import { triggerDeploy } from '../deploy/deployer';
 import { completarParejasWww, dominioPrincipal } from '../dominioprincipal';
-import { getTemplate } from '../templates';
-import { DatabaseConfig, GitConfig, ImageConfig, ProjectRow, VolumeMount } from '../types';
+import { dbImageFor, getTemplate, normalizeDbConfig } from '../templates';
+import { DatabaseConfig, GitConfig, ImageConfig, PgExtension, ProjectRow, VolumeMount } from '../types';
 import { slugify, randomToken } from '../util';
 import { getRailwayProject, getRailwayVariables, RailwayServiceRaw } from './client';
 
@@ -26,6 +26,8 @@ export interface PlannedService {
   kind: 'git' | 'database' | 'image' | 'skipped';
   template?: string;
   version?: string;
+  /** Extensiones de la base gestionada (`vector` si la imagen de origen trae pgvector). */
+  extensions?: PgExtension[];
   image?: string;
   repoUrl?: string;
   branch?: string;
@@ -88,11 +90,40 @@ function splitImage(image: string): { name: string; tag: string | null } {
   return { name: image, tag: null };
 }
 
+/**
+ * Imágenes de Postgres que traen pgvector: las de pgvector (`pgvector/pgvector`,
+ * `ankane/pgvector`…) y la de Postgres de Railway (`railwayapp-templates/
+ * postgres-ssl`), que instala `postgresql-N-pgvector` en todas sus versiones.
+ * Sustituirlas por la plantilla alpine dejaría sin la extensión a una app que
+ * hace `CREATE EXTENSION vector`, y la copia de datos fallaría.
+ */
+export function imageHasPgvector(image: string): boolean {
+  const { name } = splitImage(image.toLowerCase());
+  return /pgvector/.test(name) || /(^|\/)railwayapp-templates\/postgres-ssl$/.test(name);
+}
+
+/** Versión mayor de Postgres en la etiqueta: `16`, `16.4`, `pg16`, `0.8.0-pg17-bookworm`. */
+function pgMajorOfTag(tag: string | null): number | null {
+  if (!tag) return null;
+  const m = /(?:^|-)pg(\d+)/.exec(tag) ?? /^(\d+)/.exec(tag);
+  const major = m ? parseInt(m[1], 10) : NaN;
+  return Number.isInteger(major) && major >= 13 ? major : null;
+}
+
 /** Mapea una imagen de Railway a una plantilla de base de datos de Skyway. */
-function matchTemplate(image: string): { template: string; version: string; exact: boolean } | null {
+export function matchTemplate(image: string): { template: string; version: string; exact: boolean; extensions?: PgExtension[] } | null {
   const { name, tag } = splitImage(image.toLowerCase());
   const norm = name.replace(/^docker\.io\//, '').replace(/^library\//, '');
   const exactOfficial = ['postgres', 'redis', 'mysql', 'mongo'].includes(norm) || norm === 'minio/minio';
+
+  // Con pgvector, la versión es la mayor de la etiqueta (la imagen de
+  // pgvector solo se publica por versión mayor); sin ella, la por defecto.
+  if (!/postgis/.test(norm) && imageHasPgvector(image)) {
+    const tpl = getTemplate('postgres')!;
+    const major = pgMajorOfTag(tag);
+    const db = normalizeDbConfig(tpl, major ? String(major) : undefined, ['vector']);
+    if (!('error' in db)) return { template: 'postgres', version: db.version, exact: false, extensions: db.extensions };
+  }
 
   const pick = (template: string) => {
     const tpl = getTemplate(template)!;
@@ -252,7 +283,13 @@ async function planService(
       base.kind = 'database';
       base.template = template.template;
       base.version = template.version;
-      if (!template.exact) {
+      if (template.extensions?.length) {
+        base.extensions = template.extensions;
+        const tpl = getTemplate(template.template)!;
+        notes.push(
+          `Imagen original "${raw.image}": incluye pgvector, así que la base se crea con pgvector (${dbImageFor(tpl, { template: tpl.key, version: template.version, extensions: template.extensions })}).`,
+        );
+      } else if (!template.exact) {
         notes.push(`Imagen original "${raw.image}": se usará la plantilla oficial ${template.template}:${template.version}.`);
       }
       notes.push('Se generan credenciales nuevas; los datos se copian después desde el informe de importación.');
@@ -746,11 +783,17 @@ export async function runRailwayImport(
 
     if (planned.kind === 'database') {
       const template = getTemplate(planned.template!)!;
-      const cfg: DatabaseConfig = { template: template.key, version: planned.version || template.defaultVersion };
+      const db = normalizeDbConfig(template, planned.version || template.defaultVersion, planned.extensions);
+      // El plan sale de `matchTemplate`, que ya normaliza: un error aquí solo
+      // puede venir de un plan editado a mano, y entonces vale la plantilla sin extensiones.
+      const cfg: DatabaseConfig =
+        'error' in db
+          ? { template: template.key, version: planned.version || template.defaultVersion }
+          : { template: template.key, version: db.version, ...(db.extensions ? { extensions: db.extensions } : {}) };
       const service = createService(project.id, planned.railwayName, svcSlug, 'database', cfg);
       setEnv(service.id, template.makeEnv(svcSlug));
       toDeploy.push(service.id);
-      report.dataCopy.push(buildDataCopyEntry(project, svcSlug, planned, template.key, cfg.version));
+      report.dataCopy.push(buildDataCopyEntry(project, svcSlug, planned, template.key, cfg.version, dbImageFor(template, cfg)));
       report.created.push({ name: planned.railwayName, kind: `base de datos (${template.label})`, notes: planned.notes });
     } else if (planned.kind === 'image') {
       const cfg: ImageConfig = {
@@ -832,6 +875,8 @@ function buildDataCopyEntry(
   planned: PlannedService,
   templateKey: string,
   version: string,
+  /** Imagen del destino: su pg_dump es de la misma versión y, con pgvector, trae la extensión. */
+  image: string,
 ): DataCopyEntry {
   const vars = planned._vars ?? {};
   // Credenciales locales recién generadas del servicio:
@@ -871,11 +916,11 @@ function buildDataCopyEntry(
     : 'La URL de origen contiene caracteres especiales: exporta e importa los datos manualmente con las herramientas del motor.';
 
   if (templateKey === 'postgres') {
-    if (!shellSafe(publicUrl, version, localEnv.POSTGRES_PASSWORD)) {
+    if (!shellSafe(publicUrl, image, localEnv.POSTGRES_PASSWORD)) {
       entry.note = manual;
       return entry;
     }
-    entry.command = `docker run --rm --network ${network} postgres:${version} sh -c 'pg_dump --no-owner --no-acl "${publicUrl}" | psql "postgresql://skyway:${localEnv.POSTGRES_PASSWORD}@${svcSlug}:5432/skyway"'`;
+    entry.command = `docker run --rm --network ${network} ${image} sh -c 'pg_dump --no-owner --no-acl "${publicUrl}" | psql "postgresql://skyway:${localEnv.POSTGRES_PASSWORD}@${svcSlug}:5432/skyway"'`;
     entry.note = 'Pulsa «Copiar datos ahora» para realizarlo desde el panel, o ejecuta el comando en el servidor. Copia esquema y datos.';
   } else if (templateKey === 'mysql') {
     const u = tryParseUrl(publicUrl);

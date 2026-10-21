@@ -43,6 +43,7 @@ repositorio, igual que el `.env.example`.
 | --- | --- |
 | `version` | Obligatorio. Siempre `1`. |
 | `integrations.postgres`, `integrations.redis` | La web necesita esa base de datos. Sin variables que la nombren, se escribe la de siempre (`DATABASE_URL`, `REDIS_URL`). |
+| `integrations.postgres.extensions` | Extensiones que la base tiene que traer. Solo `["vector"]` (pgvector): la base se crea con la imagen `pgvector/pgvector:pg16-trixie`. Cualquier otro valor invalida el manifiesto. La extensión la crea la web con su `CREATE EXTENSION vector`. |
 | `integrations.mail.mode` | `smtp` (por defecto) o `api` (la API de envío de Mailway). Si se omite y alguna variable pide `mail.api_*`, se usa la API. |
 | `integrations.mail.mailbox` | Buzón remitente, solo la parte anterior a la arroba (`no-reply` por defecto). Mismas reglas que Mailway: minúsculas, números, puntos, guiones y guiones bajos, sin `+`. |
 | `env.<NOMBRE>` | Una variable del servicio, con exactamente uno de estos tres campos: `from`, `generate` o `value`. |
@@ -84,7 +85,14 @@ el manifiesto por la API de GitHub (con la credencial que va a clonar) y
 construye el plan **sin efectos**:
 
 - **Bases de datos**: la del proyecto con ese motor, si la hay, o una nueva.
-  Solo se buscan entre los servicios del **mismo proyecto**.
+  Solo se buscan entre los servicios del **mismo proyecto**. Con
+  `extensions: ["vector"]` se prefiere una base del proyecto que tenga
+  pgvector y, si no hay ninguna, se crea con pgvector. Si la única base del
+  proyecto no lo tiene (o la variable ya apunta a una sin él), el plan **no la
+  conecta**: la deja *Pendiente* con el motivo. Se resuelve creando en el
+  proyecto una base PostgreSQL con pgvector y volviendo a revisar el plan, o
+  activando pgvector en los Ajustes de esa base si todavía no tiene datos (con
+  datos de la imagen alpine no se permite: ver DESPLIEGUE-IA.md §6).
 - **Correo**: el buzón remitente en el dominio del cliente de correo del
   proyecto (el que casa con el dominio del servicio o, si no, el primero) y su
   credencial. Solo si el módulo «Correo» está activo, el correo está activado
@@ -117,8 +125,9 @@ apruebe. Además se respetan los módulos de la cuenta («Bases de datos»,
 ### La aprobación va ligada a lo revisado
 
 El plan lleva una **huella** (`fingerprint`) de lo que requiere aprobación: qué
-recursos (crear o reutilizar, cuál, en qué modo) y qué variables con qué
-origen. Aprobar envía la huella del plan que se ha visto (`expect`):
+recursos (crear o reutilizar, cuál, en qué modo, con qué extensiones) y qué
+variables con qué origen. Las extensiones solo entran si las hay: un plan sin
+ellas tiene la misma huella que antes. Aprobar envía la huella del plan que se ha visto (`expect`):
 
 - Sin huella, lo que requiere aprobación queda pendiente; lo inofensivo se
   aplica.
