@@ -3178,7 +3178,7 @@ correcciones que son parche (`seguridad-npm`). Cada ecosistema tiene su día
 parches abiertos a la vez. Las versiones menores y mayores llegan en PR sueltos
 que revisa una persona; un salto mayor de las imágenes (Node 24, Traefik 4) ni
 siquiera se propone. Las imágenes llevan versión exacta
-(`node:22.23.3-alpine` en las tres etapas del `Dockerfile`, `traefik:v3.7.14`
+(`node:22.23.4-alpine` en las tres etapas del `Dockerfile`, `traefik:v3.7.14`
 en `docker-compose.yml`): una etiqueta flotante nunca se renovaría, porque
 `docker compose up` solo descarga las imágenes que faltan, y si lo hiciera
 sería sin pasar por la CI.
