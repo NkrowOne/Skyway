@@ -6,7 +6,7 @@
 # solo descarga las imágenes que faltan. Las tres etapas, con la misma.
 
 # ---------- build: compila la web y el servidor ----------
-FROM node:22.23.3-alpine AS build
+FROM node:22.23.4-alpine AS build
 RUN apk add --no-cache python3 make g++
 WORKDIR /app
 COPY package.json package-lock.json ./
@@ -18,7 +18,7 @@ COPY web web
 RUN npm run build
 
 # ---------- prod-deps: solo dependencias de producción del servidor ----------
-FROM node:22.23.3-alpine AS prod-deps
+FROM node:22.23.4-alpine AS prod-deps
 RUN apk add --no-cache python3 make g++
 WORKDIR /app
 COPY package.json package-lock.json ./
@@ -26,7 +26,7 @@ COPY server/package.json server/
 RUN npm ci -w server --omit=dev --no-audit --no-fund
 
 # ---------- runtime ----------
-FROM node:22.23.3-alpine
+FROM node:22.23.4-alpine
 # docker-cli para builds/pulls contra el socket del host (buildx: el CLI
 # moderno construye con BuildKit y sin ese plugin `docker build` falla en
 # seco); git para clonar repos.
