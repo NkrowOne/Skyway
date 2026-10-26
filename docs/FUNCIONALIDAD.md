@@ -18,7 +18,8 @@
 ```
 server/src/
   index.ts              arranque: initDb, red edge, monitor, scheduler, auto-deploy, listen
-  app.ts                ensamblado Fastify: cabeceras de seguridad, rutas, SPA
+  app.ts                ensamblado Fastify: cabeceras de seguridad, tope de elementos del cuerpo, rutas, SPA
+  topecuerpo.ts         tope de elementos del cuerpo de las peticiones (`superaTopeElementos`, aviso de zod 3)
   config.ts             configuración por entorno (puertos, dirs, trustProxy)
   db.ts                 esquema y acceso SQLite (better-sqlite3, WAL)
   types.ts              tipos compartidos (filas, configs de servicio…)
@@ -933,6 +934,14 @@ huérfanos).
   `form-action` admite además `https://github.com`, porque crear la GitHub App
   exige que el navegador envíe el manifiesto por POST a github.com (no hay forma
   servidor-a-servidor). No afecta a scripts, estilos ni peticiones.
+- **Tamaño del cuerpo** (`app.ts`): JSON de hasta 1 MB (8 MB en el proxy del
+  gateway de IA y 100 MB binarios en la subida de archivos) y, como máximo,
+  20 000 elementos (elementos de lista más claves de objeto, en todo el
+  cuerpo; `superaTopeElementos` en `topecuerpo.ts`). Pasado el tope responde
+  400 `demasiados_elementos` antes de que corra ningún handler ni esquema:
+  zod 3 recorre una lista entera aunque pase de `.max()` (aviso
+  GHSA-mrhx-c7xc-m3w5). Quedan fuera el proxy del gateway (`/gw/…`) y los
+  webhooks (`/api/webhooks/…`), que no validan el cuerpo con zod.
 - **Saltos a GitHub**: el estado anti-CSRF de crear e instalar la App viaja
   **firmado** (HS256 con el secreto de sesión, 30 min) en vez de guardado, y al
   volver se comprueba además que la sesión sea la del mismo usuario. Las rutas de

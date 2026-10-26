@@ -93,7 +93,9 @@ Si arreglas un fallo con una prueba que lo reproduce, mejor.
   por algo crítico (un fallo de seguridad grave que solo arregla la versión
   nueva); Dependabot no las propone. Las que más pesan, con su motivo en
   `.github/dependabot.yml`: TypeScript 6/7, React 19, Tailwind 4, zod 4,
-  ESLint 10 y vite 8 con `@vitejs/plugin-react` 5/6.
+  ESLint 10 y vite 8 con `@vitejs/plugin-react` 5/6. El aviso de zod 3
+  GHSA-mrhx-c7xc-m3w5 lo cubre el tope de elementos del cuerpo de `app.ts`
+  (`superaTopeElementos`, en `topecuerpo.ts`).
 
 ## Seguridad (imprescindible)
 

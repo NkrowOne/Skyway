@@ -43,8 +43,27 @@ import { helpRoutes } from './routes/help';
 import { mailwayRoutes } from './routes/mailway';
 import { cloudflareRoutes } from './routes/cloudflare';
 import { domainMigrationRoutes } from './routes/domainmigrations';
+import { superaTopeElementos } from './topecuerpo';
 
 const METODOS_SEGUROS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+/**
+ * Rutas cuyo cuerpo no pasa por el tope de elementos (ver `topecuerpo.ts`).
+ * Se comparan con el patrón de la ruta (`req.routeOptions.url`), no con la URL
+ * que envía el cliente: una petición a otra ruta no puede acogerse a la
+ * excepción retocando su URL o su query. Ninguna valida el cuerpo con zod,
+ * que es lo que el tope protege; si una ruta nueva bajo estos prefijos lo
+ * hiciera, tendría que acotarse ella misma.
+ *
+ * - `/gw/`: el proxy del gateway de IA reenvía el cuerpo al proveedor tal cual
+ *   (historiales de chat, esquemas JSON de herramientas, partes multimodales),
+ *   con su propio límite de 8 MB y la clave comprobada antes de leerlo. Una
+ *   conversación larga con herramientas puede pasar del tope siendo legítima.
+ * - `/api/webhooks/`: GitHub y Stripe, firmados con HMAC y leídos campo a
+ *   campo. Un push de GitHub enumera los archivos de cada commit (hasta 3000
+ *   por commit), y uno grande supera el tope dentro de 1 MB.
+ */
+const RUTAS_SIN_TOPE_ELEMENTOS = ['/gw/', '/api/webhooks/'];
 
 /**
  * Defensa anti-CSRF para las peticiones que mutan estado autenticadas con la
@@ -174,6 +193,19 @@ export function buildApp(): FastifyInstance {
     const headers = req.raw.headers;
     if (headers['content-type'] !== undefined && headers['content-length'] === undefined && headers['transfer-encoding'] === undefined) {
       delete headers['content-type'];
+    }
+  });
+
+  // Tope de elementos del cuerpo (aviso GHSA-mrhx-c7xc-m3w5 de zod 3, ver
+  // `topecuerpo.ts`). En preValidation el cuerpo ya está analizado y aún no ha
+  // corrido ningún handler ni esquema; registrado en la raíz y antes que las
+  // rutas, lo heredan también los plugins encapsulados. La subida de archivos
+  // recibe un Buffer, que no se recorre.
+  app.addHook('preValidation', async (req, reply) => {
+    const ruta = req.routeOptions.url ?? '';
+    if (RUTAS_SIN_TOPE_ELEMENTOS.some((prefijo) => ruta.startsWith(prefijo))) return;
+    if (superaTopeElementos(req.body)) {
+      return reply.code(400).send({ error: 'La petición incluye demasiados elementos.', code: 'demasiados_elementos' });
     }
   });
 
