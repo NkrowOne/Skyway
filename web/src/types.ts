@@ -458,6 +458,8 @@ export interface BillingProfile {
   bic: string;
   bankName: string;
   footer: string;
+  /** Página pública (https) a la que vuelve el cliente al pagar o cancelar con Stripe; vacía = el panel. */
+  paymentReturnUrl: string;
 }
 
 export interface InvoicesResponse {

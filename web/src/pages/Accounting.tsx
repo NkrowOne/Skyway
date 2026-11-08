@@ -738,6 +738,7 @@ function CompanyProfile() {
         currency: d.currency, vatRate: d.vatRate, invoicePrefix: d.invoicePrefix, paymentTermsDays: d.paymentTermsDays,
         defaultIrpfRate: d.defaultIrpfRate, sifMode: d.sifMode,
         iban: d.iban, bic: d.bic, bankName: d.bankName, footer: d.footer, stripePublishableKey: d.stripePublishableKey,
+        paymentReturnUrl: d.paymentReturnUrl,
         smtpHost: d.smtpHost, smtpPort: d.smtpPort, smtpSecure: d.smtpSecure, smtpUser: d.smtpUser,
         smtpFrom: d.smtpFrom, smtpFromName: d.smtpFromName,
       };
@@ -819,6 +820,12 @@ function CompanyProfile() {
               <input className="input font-mono" type="password" value={draft.stripeWebhookSecret} onChange={(e) => set({ stripeWebhookSecret: e.target.value })} placeholder={stripe.hasWebhookSecret ? '•••••••• configurado' : 'whsec_…'} />
             </Field>
             <Field label="Clave publicable (pk_…)"><input className="input font-mono" value={draft.stripePublishableKey} onChange={(e) => set({ stripePublishableKey: e.target.value })} placeholder="pk_live_…" /></Field>
+            <Field
+              label="Página de vuelta tras pagar"
+              hint="Página pública a la que vuelve el cliente al pagar o cancelar con Stripe, por ejemplo una página de la web de la empresa. Si se deja vacía, vuelve al panel, que pide iniciar sesión."
+            >
+              <input className="input font-mono" type="url" inputMode="url" value={draft.paymentReturnUrl} onChange={(e) => set({ paymentReturnUrl: e.target.value })} placeholder="https://www.empresa.com/pago" />
+            </Field>
           </div>
         </section>
 

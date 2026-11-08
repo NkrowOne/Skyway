@@ -16,6 +16,22 @@ import {
 import { MailError, verifySmtp } from '../mailer';
 import { BillingProfile, InvoiceRow } from '../types';
 
+/**
+ * La página de vuelta la abre el navegador del cliente al salir de Stripe. Solo
+ * https: un `javascript:` o un `data:` ejecutarían código en su navegador y un
+ * `http://` viaja sin cifrar. Sin usuario ni contraseña en la URL, porque los
+ * vería cualquier cliente en la barra de direcciones.
+ */
+function esPaginaDeVueltaValida(v: string): boolean {
+  if (v === '') return true;
+  try {
+    const url = new URL(v);
+    return url.protocol === 'https:' && !!url.hostname && !url.username && !url.password;
+  } catch {
+    return false;
+  }
+}
+
 const profileSchema = z.object({
   companyName: z.string().trim().max(120).optional(),
   taxId: z.string().trim().max(60).optional(),
@@ -39,6 +55,14 @@ const profileSchema = z.object({
   bic: z.string().trim().max(20).optional(),
   bankName: z.string().trim().max(120).optional(),
   footer: z.string().trim().max(600).optional(),
+  // Página pública a la que vuelve el cliente tras pagar o cancelar en Stripe;
+  // '' la quita y el cliente vuelve al panel, como antes de existir el ajuste.
+  paymentReturnUrl: z
+    .string()
+    .trim()
+    .max(1000, 'La página de vuelta tras pagar admite como máximo 1000 caracteres.')
+    .refine(esPaginaDeVueltaValida, { message: 'La página de vuelta tras pagar debe ser una URL https:// válida, sin usuario ni contraseña, o quedar vacía.' })
+    .optional(),
   // Claves de Stripe (opcionales): se guardan si se envían; nunca se devuelven.
   stripeSecretKey: z.string().trim().optional(),
   stripeWebhookSecret: z.string().trim().optional(),
@@ -133,6 +157,7 @@ export async function accountingRoutes(app: FastifyInstance): Promise<void> {
       bic: body.bic ?? current.bic,
       bankName: body.bankName ?? current.bankName,
       footer: body.footer ?? current.footer,
+      paymentReturnUrl: body.paymentReturnUrl ?? current.paymentReturnUrl,
     };
     setBillingProfile(next);
     // Claves de Stripe: se actualizan solo si se envían; '' las borra.

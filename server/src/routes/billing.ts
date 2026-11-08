@@ -1123,6 +1123,20 @@ export function generateCycleDraft(ws: WorkspaceRow, cycle = currentCycle(ws)): 
   });
 }
 
+/**
+ * URL de vuelta de Stripe Checkout en la página pública del perfil: añade
+ * `estado` y `factura` sin perder los parámetros que ya traiga (si repite uno de
+ * los dos, prevalece el de Skyway). `searchParams` reescribe la consulta entera y
+ * codifica las llaves, pero Stripe solo sustituye `{CHECKOUT_SESSION_ID}` escrito
+ * con llaves literales: se le devuelve esa forma.
+ */
+function urlDeVueltaStripe(pagina: string, estado: 'pagado' | 'cancelado', factura: string): string {
+  const url = new URL(pagina);
+  url.searchParams.set('estado', estado);
+  url.searchParams.set('factura', factura);
+  return url.href.replace(/%7BCHECKOUT_SESSION_ID%7D/g, '{CHECKOUT_SESSION_ID}');
+}
+
 /** Facturas cuyo enlace de Stripe se está creando ahora mismo (guarda contra el doble clic). */
 const stripeLinkEnCurso = new Set<string>();
 
@@ -1522,6 +1536,10 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
         throw err;
       }
       const number = issued.number ?? issued.id;
+      // Quien paga no tiene por qué tener cuenta en el panel: con una página de
+      // vuelta en el perfil, Stripe le devuelve a ella y no a la pantalla de
+      // inicio de sesión. Sin ella se vuelve al panel, como siempre.
+      const paginaDeVuelta = getBillingProfile().paymentReturnUrl;
 
       try {
         const session = await createStripeCheckout(secret, {
@@ -1529,8 +1547,8 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
           currency: issued.currency,
           invoiceNumber: number,
           invoiceId: issued.id,
-          successUrl: `${origin}/workspaces/${issued.workspace_id}?paid=1`,
-          cancelUrl: `${origin}/workspaces/${issued.workspace_id}`,
+          successUrl: paginaDeVuelta ? urlDeVueltaStripe(paginaDeVuelta, 'pagado', number) : `${origin}/workspaces/${issued.workspace_id}?paid=1`,
+          cancelUrl: paginaDeVuelta ? urlDeVueltaStripe(paginaDeVuelta, 'cancelado', number) : `${origin}/workspaces/${issued.workspace_id}`,
           customerEmail: ws?.billing_email ?? null,
         });
         // Si el webhook la ha cobrado mientras se creaba la sesión, no se pisa el

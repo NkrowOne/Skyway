@@ -2291,7 +2291,7 @@ Niveles: **manage** = admin o propietario del workspace del recurso; **admin** =
 | PATCH | `/invoices/:id` | admin | edita el borrador o transiciona el estado. **El contenido fiscal solo es editable en borrador**; una factura emitida es inmutable (409). Al emitir (`issued`/`paid`) congela emisor y destinatario, asigna nº de serie del ejercicio y bloquea (`locked`). Transiciones válidas: `draft→issued→paid`, `→void`; nunca vuelve a borrador. Anular una factura con rectificativa viva → 409 (sería un doble abono) |
 | DELETE | `/invoices/:id` | admin | **solo borradores**; una factura emitida se conserva (409): debe anularse o rectificarse, nunca borrarse |
 | POST | `/invoices/:id/rectify` | admin | crea una **factura rectificativa** (borrador, serie REC) que corrige una emitida (`{reason, lines?, operationDate?}`); sin `lines` es anulación total, con `lines` correctas factura la diferencia; enlaza por `rectifies_invoice_id` |
-| POST | `/invoices/:id/stripe-link` | admin | emite la factura (alta antes del cobro) y crea/reutiliza el enlace de pago Stripe; 400 si el total es ≤ 0 (antes de emitir), 409 si ya se está generando; el enlace guardado se renueva si Stripe lo da por caducado (`reused: true` solo si sigue abierto) |
+| POST | `/invoices/:id/stripe-link` | admin | emite la factura (alta antes del cobro) y crea/reutiliza el enlace de pago Stripe; 400 si el total es ≤ 0 (antes de emitir), 409 si ya se está generando; el enlace guardado se renueva si Stripe lo da por caducado (`reused: true` solo si sigue abierto). Con `paymentReturnUrl` en el perfil, Stripe devuelve al cliente a esa página con `estado=pagado` o `estado=cancelado` y `factura=<número>` (§7.2.1, contabilidad); sin ella, al panel (`/workspaces/:id?paid=1`), que pide iniciar sesión |
 
 **Motor de factura conforme (RD 1619/2012).** El total se recomputa siempre en
 servidor: la cuota de IVA se agrupa por tipo y se redondea **una vez por base de
@@ -2324,11 +2324,22 @@ booleanos, igual que el token de GitHub).
 | Método | Ruta | Nivel | Descripción |
 | --- | --- | --- | --- |
 | GET | `/billing/profile` | admin | perfil fiscal del emisor (IVA/IRPF por defecto, modo Verifactu) + estado de Stripe (claves como booleanos) |
-| PUT | `/billing/profile` | admin | actualiza el perfil fiscal (incl. `defaultIrpfRate`, `sifMode`); las claves de Stripe se guardan solo si se envían (`''` las borra) |
+| PUT | `/billing/profile` | admin | actualiza el perfil fiscal (incl. `defaultIrpfRate`, `sifMode`, `paymentReturnUrl`); las claves de Stripe se guardan solo si se envían (`''` las borra). `paymentReturnUrl` admite una URL `https://` sin usuario ni contraseña o `''`; otra cosa → 400 |
 | GET·PUT | `/billing/automation` | admin | automatización: `autoGenerate` (generar el borrador del ciclo), `autoIssue` (emitirlo automáticamente; opt-in, off por defecto) y umbrales de morosidad (`dunningGraceDays` ≤ `dunningCancelDays`) |
 | GET | `/accounting/summary?months=` | admin | totales (facturado/cobrado/pendiente/borrador/anulado), serie mensual de ingresos y desglose por cliente |
 | GET | `/accounting/invoices?status=` | admin | todas las facturas de todos los clientes (nº, tipo, NIF, base, IVA, IRPF) |
 | GET | `/accounting/export.csv` | admin | libro registro de facturas emitidas en CSV (nº, tipo, NIF receptor, base, IVA, IRPF, total; guardas anti-inyección de fórmulas) |
+
+**Página de vuelta tras pagar (`paymentReturnUrl`).** Es la página pública a la
+que Stripe devuelve al cliente al pagar o al cancelar, por ejemplo una página de
+la web de la empresa. Se configura en Contabilidad → «Stripe (pago con
+tarjeta)». Al crear el enlace de pago se añaden a su consulta
+`estado=pagado` (o `estado=cancelado`) y `factura=<número>`, codificado; los
+parámetros que ya traiga se conservan y `{CHECKOUT_SESSION_ID}` se mantiene
+para que Stripe lo sustituya. Vacía, el cliente vuelve al panel, que pide
+iniciar sesión. Un enlace ya creado conserva las URL de vuelta con las que se
+creó hasta que caduca. `estado` solo informa: el cobro lo confirma el webhook
+de Stripe (`/webhooks/stripe`).
 
 ### 7.2.2 Catálogo multimodular, suscripciones y uso
 Facturación de servicios (web, IA, hosting, BBDD, dominios, soporte, a medida)

@@ -251,6 +251,12 @@ nunca. Arreglarlo exige decidir si `origin='manual'` cuenta como factura del
 ciclo (hoy es la vía para desatascar un ciclo bloqueado) o si el panel deja de
 usar el ciclo como periodo por defecto.
 
+### Séptima tanda: vuelta del cliente tras pagar con Stripe
+
+| # | Hallazgo | Corrección |
+| --- | --- | --- |
+| 75 | **Tras pagar o cancelar en Stripe, el cliente volvía al panel de administración** (`/workspaces/:id`), que le pedía iniciar sesión aunque no tuviera cuenta. Además, la URL de vuelta salía de la cabecera Host del administrador que creaba el enlace. | Ajuste `paymentReturnUrl` en el perfil de facturación: solo `https://`, sin usuario ni contraseña (`http://` o `javascript:` → 400). Con él, Stripe devuelve a esa página pública con `estado=pagado` o `estado=cancelado` y `factura=<número>`, codificado, y se conservan los parámetros que ya traiga. Vacío, se mantiene la vuelta al panel. `estado` solo informa: el cobro lo sigue confirmando el webhook. Pruebas en `server/test/billing-stripe.test.ts`. |
+
 ### Sigue pendiente
 
 1. **Cada cubo horario se factura como hora completa**, aunque el servicio solo

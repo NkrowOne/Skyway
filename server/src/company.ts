@@ -23,6 +23,7 @@ export const DEFAULT_PROFILE: BillingProfile = {
   bic: '',
   bankName: '',
   footer: '',
+  paymentReturnUrl: '',
 };
 
 export function getBillingProfile(): BillingProfile {

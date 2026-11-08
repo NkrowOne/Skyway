@@ -783,6 +783,12 @@ export interface BillingProfile {
   bankName: string;
   /** Pie de página de la factura (condiciones, agradecimiento…). */
   footer: string;
+  /**
+   * Página pública (https) a la que Stripe devuelve al cliente al pagar o al
+   * cancelar, con `estado` y `factura` en la consulta. Vacía = vuelve al panel,
+   * que pide iniciar sesión.
+   */
+  paymentReturnUrl: string;
 }
 
 // ---------- facturación multimodular: catálogo, suscripciones y uso ----------
