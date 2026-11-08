@@ -1,5 +1,6 @@
-import { getEnv, getProjectVars, getSetting, listServices } from './db';
+import { getEnv, getProjectVars, listServices } from './db';
 import { dominioPrincipal } from './dominioprincipal';
+import { raicesGeneradas } from './dominioraiz';
 import { tlsEnabled } from './tls';
 import { getTemplate } from './templates';
 import { DatabaseConfig, GitConfig, ImageConfig, ServiceRow } from './types';
@@ -49,8 +50,11 @@ export function systemVars(
   const domains = overrides.domains ?? (((service.config as GitConfig | ImageConfig).domains ?? []) as string[]);
   // El principal según la regla (www primero, el subdominio generado al final)
   // y no el primero guardado: un servicio guardado con el orden antiguo
-  // publica la dirección correcta en cuanto se vuelve a desplegar.
-  const principal = dominioPrincipal(domains, getSetting('rootDomain'));
+  // publica la dirección correcta en cuanto se vuelve a desplegar. Con los
+  // dominios raíz anteriores: si no, cambiar el dominio raíz en Ajustes
+  // convertía el subdominio de siempre en dominio propio, y podía quedarse con
+  // la PUBLIC_URL de un servicio que tiene otro dominio propio.
+  const principal = dominioPrincipal(domains, raicesGeneradas());
   if (principal) {
     out.PUBLIC_DOMAIN = principal;
     // El esquema lo decide quien enruta: sin correo de Let's Encrypt, Traefik

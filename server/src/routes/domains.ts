@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { currentUser, requireAuth } from '../auth';
 import { verificarEnCloudflare } from '../cloudflaredns';
 import { getSetting } from '../db';
+import { raicesAnteriores } from '../dominioraiz';
 import { refreshTraefikAcme, tlsBlocked, tlsEnabled } from '../tls';
 import { checkDomain, getServerIp, getServerIpv6 } from '../domains';
 import { rateLimit } from '../ratelimit';
@@ -32,6 +33,9 @@ export async function domainRoutes(app: FastifyInstance): Promise<void> {
     await refreshTraefikAcme();
     return {
       rootDomain: getSetting('rootDomain'),
+      // Sus subdominios siguen contando como generados: el editor y las
+      // tarjetas aplican la misma regla del dominio principal que el servidor.
+      rootDomainAnteriores: raicesAnteriores(),
       tls: tlsEnabled(),
       // El ajuste está puesto, pero Traefik no tiene un correo válido para
       // Let's Encrypt: el editor lo dice en vez de prometer TLS (ver tls.ts).

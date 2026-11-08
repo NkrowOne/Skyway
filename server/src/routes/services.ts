@@ -8,6 +8,7 @@ import { cambiarProxyCloudflare, dnsAutomaticoAdmin, dnsSinBase, planReemplazo, 
 import { dbConsoleEngine } from '../dbconsole';
 import { domainClaimError, dominiosConPareja } from '../domainguard';
 import { limpiarSinPareja, ordenarDominios } from '../dominioprincipal';
+import { raicesGeneradas } from '../dominioraiz';
 import { markManualAction } from '../monitor';
 import {
   bumpConfigRev,
@@ -18,7 +19,6 @@ import {
   getGithubInstallation,
   getProject,
   getService,
-  getSetting,
   latestDeployment,
   listServices,
   patchEnv,
@@ -756,14 +756,17 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
         // Cloudflare; el panel indica que falta y la añade con un clic.
         let anterior: unknown = oldCfg[key];
         if (key === 'domains' && Array.isArray(value)) {
-          const raiz = getSetting('rootDomain');
+          // Las mismas raíces con las que `dominiosConPareja` ordena la lista
+          // nueva: con otras, cambiar el dominio raíz haría que guardar sin
+          // tocar nada pareciera un cambio que obliga a volver a desplegar.
+          const raices = raicesGeneradas();
           const actuales = (oldCfg.domains ?? []) as string[];
           normalized = dominiosConPareja(value as string[], {
             claim: { projectId: found.project.id, serviceId: found.service.id, isAdmin, current: actuales },
             sinPareja: sinParejaPedida,
             nuevos: (value as string[]).filter((d) => !actuales.includes(d)),
           }).domains;
-          anterior = ordenarDominios(actuales, raiz);
+          anterior = ordenarDominios(actuales, raices);
         }
 
         if ((REDEPLOY_FIELDS as readonly string[]).includes(key)) {
@@ -779,7 +782,7 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
     }
 
     if (body.config?.domains !== undefined || body.config?.dominiosSinPareja !== undefined) {
-      const sinPareja = limpiarSinPareja(sinParejaPedida, (newCfg.domains ?? []) as string[], getSetting('rootDomain'));
+      const sinPareja = limpiarSinPareja(sinParejaPedida, (newCfg.domains ?? []) as string[], raicesGeneradas());
       newCfg.dominiosSinPareja = sinPareja.length > 0 ? sinPareja : undefined;
     }
 

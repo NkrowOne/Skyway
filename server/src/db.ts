@@ -2475,6 +2475,11 @@ export function serviceIdsForDomain(domain: string): string[] {
     .map((r) => r.id);
 }
 
+/** Los dominios de cada servicio que tiene alguno, en minúsculas (solo la columna de configuración). */
+export function listServiceDomains(): { id: string; domains: string[] }[] {
+  return serviceDomainRows();
+}
+
 function serviceDomainRows(): { id: string; domains: string[] }[] {
   const out: { id: string; domains: string[] }[] = [];
   for (const row of stmt('SELECT id, config FROM services').all() as { id: string; config: string }[]) {

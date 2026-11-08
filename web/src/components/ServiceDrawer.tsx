@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, ChevronLeft, ExternalLink, Hammer, MoveHorizontal, Play, RefreshCw, Rocket, ScrollText, Square, Terminal, X } from 'lucide-react';
 import { api } from '../api';
 import { dominioPrincipal } from '../dominios';
-import { useLatch, useLocalStorage, useMediaQuery, useRootDomain } from '../hooks';
+import { useDominiosRaiz, useLatch, useLocalStorage, useMediaQuery } from '../hooks';
 import { MetricPoint } from '../pages/Project';
 import { useServiceLiveReplicas, useServiceLiveState } from '../livemetrics';
 import { AutoDeployStatus, Deployment, DbOverview, Project, Runtime, Service, ServiceDeployInfo, ServiceWebhookInfo } from '../types';
@@ -156,7 +156,7 @@ export default function ServiceDrawer({
   });
   // Para el dominio principal de la cabecera (ver más abajo). Antes de los
   // `return` tempranos: es un hook.
-  const rootDomain = useRootDomain((detail.data?.service.config.domains?.length ?? 0) > 1);
+  const raices = useDominiosRaiz((detail.data?.service.config.domains?.length ?? 0) > 1);
 
   // Un despliegue nuevo (lanzado desde aquí o desde fuera: auto-deploy, «Desplegar
   // todos») lleva ya los cambios guardados: a partir de ahí manda el servidor.
@@ -356,7 +356,7 @@ export default function ServiceDrawer({
     { key: 'settings', label: 'Ajustes' },
   ];
   // El principal (el de PUBLIC_URL), no el primero guardado.
-  const domain = service.type !== 'database' ? dominioPrincipal(service.config.domains, rootDomain) ?? undefined : undefined;
+  const domain = service.type !== 'database' ? dominioPrincipal(service.config.domains, raices) ?? undefined : undefined;
   const subtitle =
     service.type === 'git'
       ? `${service.config.repoUrl.replace(/^https?:\/\/(www\.)?/, '')} · ${service.config.branch}`

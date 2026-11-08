@@ -310,8 +310,8 @@ completo: [MANIFIESTO.md](MANIFIESTO.md).
   `tls`). Con TLS, HTTP redirige a HTTPS.
 - `ejemplo.com` se guarda con `www.ejemplo.com` y al revés; para evitarlo, `dominiosSinPareja`.
 - Dominio principal (`PUBLIC_URL`): primero un dominio propio con `www.`; después los propios en
-  orden; el subdominio generado (`<slug>.<dominio raíz>`) al final. El subdominio generado no se
-  añade solo.
+  orden; el subdominio generado (`<slug>.<dominio raíz>`, también el de un dominio raíz anterior)
+  al final. El subdominio generado no se añade solo.
 - Un dominio solo puede estar en un servicio del servidor (409 si no).
 - En el código, usa `PUBLIC_URL` o `${{<servicio>.PUBLIC_URL}}`, nunca el dominio escrito a mano.
   Cambiar dominios exige volver a desplegar.

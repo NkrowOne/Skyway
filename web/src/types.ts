@@ -1429,6 +1429,8 @@ export interface CloudflareProxyResult {
 /** Lo que el servidor cuenta del dominio raíz y el TLS a cualquier usuario (`GET /domains/config`). */
 export interface DomainsConfig {
   rootDomain: string | null;
+  /** Dominios raíz anteriores: sus subdominios siguen contando como generados (regla del dominio principal). */
+  rootDomainAnteriores: string[];
   tls: boolean;
   /** El ajuste está puesto, pero Traefik no tiene un correo válido para Let's Encrypt (ver server/src/tls.ts). */
   tlsBlocked?: boolean;

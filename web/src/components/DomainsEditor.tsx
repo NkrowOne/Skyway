@@ -13,6 +13,7 @@ import {
   parejasWwwPendientes,
   parejaWww,
   ParejaWww,
+  raicesDeConfig,
 } from '../dominios';
 import { CloudflareConfigView, DnsAutoResult, DomainCheck, DomainsConfig, Me, PlanReemplazoDns } from '../types';
 import { cx, Tone } from '../utils';
@@ -852,6 +853,9 @@ export default function DomainsEditor({
   // guardado (sin él, la revisión respondería que falta configurarlo).
   const cloudflareListo = isAdmin && !!cloudflare.data?.configured;
   const rootDomain = config.data?.rootDomain || null;
+  // El actual y los anteriores: un subdominio generado con un dominio raíz
+  // anterior sigue al final de la lista y sin pareja, como en el servidor.
+  const raices = raicesDeConfig(config.data);
   const tls = !!config.data?.tls;
   const ip = serverIp.data?.ip ?? null;
   const generated = rootDomain ? `${slug}.${rootDomain}` : null;
@@ -861,8 +865,8 @@ export default function DomainsEditor({
    * dominio con www primero, el subdominio generado al final. Un servicio
    * guardado con el orden antiguo se ve ya como quedará al guardar.
    */
-  const ordenados = ordenarDominios(domains, rootDomain);
-  const sinParejaFalta = new Map(parejasWwwPendientes(ordenados, rootDomain).map((p) => [p.domain, p]));
+  const ordenados = ordenarDominios(domains, raices);
+  const sinParejaFalta = new Map(parejasWwwPendientes(ordenados, raices).map((p) => [p.domain, p]));
   const ofrecerGenerado = !!generated && !ordenados.includes(generated);
 
   /*
@@ -876,12 +880,12 @@ export default function DomainsEditor({
   /*
    * El certificado gratuito de Cloudflare solo cubre la zona y un nivel de
    * subdominio: con el proxy, un nombre más profundo daría un error de
-   * certificado. El subdominio generado tampoco: lo resuelve un comodín, sin
-   * registro propio que cambiar. Sin la lista de zonas no se sabe: se ofrece
-   * y el servidor responde.
+   * certificado. El subdominio generado tampoco (ni el de un dominio raíz
+   * anterior): lo resuelve un comodín, sin registro propio que cambiar. Sin la
+   * lista de zonas no se sabe: se ofrece y el servidor responde.
    */
   const motivoSinProxy = (d: string): string | null => {
-    if (d === generated || (rootDomain && d.endsWith(`.${rootDomain}`))) return '';
+    if (d === generated || raices.some((r) => d.endsWith(`.${r}`))) return '';
     const zona = zonas?.names.filter((z) => d === z || d.endsWith(`.${z}`)).sort((a, b) => b.length - a.length)[0];
     if (!zona || d === zona || !d.slice(0, -(zona.length + 1)).includes('.')) return null;
     return `El certificado gratuito de Cloudflare solo cubre ${zona} y un nivel de subdominio: este nombre va sin proxy.`;
@@ -889,13 +893,13 @@ export default function DomainsEditor({
 
   /** Toda edición pasa por aquí: la lista en el orden del principal y las renuncias limpias. */
   const cambiar = (siguientes: string[], renuncias: string[]) => {
-    const lista = ordenarDominios(siguientes, rootDomain);
-    onChange(lista, limpiarSinPareja(renuncias, lista, rootDomain));
+    const lista = ordenarDominios(siguientes, raices);
+    onChange(lista, limpiarSinPareja(renuncias, lista, raices));
   };
 
   // La pareja del dominio que se está escribiendo, si se va a ofrecer añadirla.
   const escrito = normalizarEntradaDominio(custom);
-  const parejaEscrita = escrito && !domains.includes(escrito) ? parejaWww(escrito, rootDomain) : null;
+  const parejaEscrita = escrito && !domains.includes(escrito) ? parejaWww(escrito, raices) : null;
   const ofrecerPareja = parejaEscrita && !domains.includes(parejaEscrita.falta) ? parejaEscrita : null;
 
   /*
@@ -924,7 +928,7 @@ export default function DomainsEditor({
       toast('Este dominio ya está añadido', 'err');
       return;
     }
-    const pareja = parejaWww(domain, rootDomain);
+    const pareja = parejaWww(domain, raices);
     const faltaPareja = !!pareja && !domains.includes(pareja.falta);
     if (faltaPareja && conPareja) {
       cambiar([...domains, domain, pareja.falta], sinPareja);
@@ -937,7 +941,7 @@ export default function DomainsEditor({
   };
 
   const quitar = (d: string) => {
-    const pareja = parejaWww(d, rootDomain);
+    const pareja = parejaWww(d, raices);
     if (pareja && domains.includes(pareja.falta)) {
       setQuitando({ domain: d, queda: pareja.falta });
       return;
