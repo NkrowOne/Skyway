@@ -108,7 +108,7 @@ export async function securityFindings(): Promise<{ findings: SecurityFinding[];
       severity: 'warning',
       title: 'Certificado comodín activado sin el token de Cloudflare en Traefik',
       detail: `El certificado comodín del dominio raíz está activado en Ajustes, pero Traefik no tiene el resolutor «${RESOLUTOR_COMODIN}» o el token de Cloudflare: no puede emitirlo ni renovarlo. Mientras tanto, Skyway no publica el router que lo pide y los servicios que se despliegan piden un certificado por nombre. Si el comodín ya estaba emitido, Traefik lo sirve hasta que caduque y, mientras exista, no pide certificados por nombre para los subdominios que cubre.`,
-      fix: 'Define CF_DNS_API_TOKEN en el .env del servidor y ejecuta docker compose up -d traefik, o desactiva «Certificado comodín para el dominio raíz» en Ajustes → Dominios y TLS. Para volver a un certificado por nombre, sigue los pasos de «Certificado comodín del dominio raíz» en el README.',
+      fix: 'Guarda el token de Cloudflare en Ajustes → Dominios y TLS (o define CF_DNS_API_TOKEN en el .env del servidor y ejecuta docker compose up -d traefik), o desactiva «Certificado comodín para el dominio raíz» en esa misma sección. Para volver a un certificado por nombre, sigue los pasos de «Certificado comodín del dominio raíz» en el README.',
     });
   }
 

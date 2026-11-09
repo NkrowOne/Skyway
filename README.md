@@ -70,17 +70,17 @@ Crea la GitHub App (Ajustes → GitHub) cuando el panel ya tenga su dominio defi
 Por defecto, cada dominio de un servicio pide su propio certificado a Let's Encrypt (reto HTTP-01). Let's Encrypt admite **50 certificados nuevos por dominio registrado cada 7 días**: llevar decenas de servicios a un dominio raíz nuevo agota ese límite, y cada servicio nuevo espera a su certificado. Con el certificado comodín, Traefik pide **uno solo** para el dominio raíz y `*.dominio-raíz` (reto DNS-01, con la API de Cloudflare) y los subdominios generados (`<servicio>.<dominio raíz>`) se sirven con él. Los dominios propios, `www.<dominio raíz>` y los nombres de más de un nivel siguen con su propio certificado. Hace falta que la zona del dominio raíz esté en Cloudflare.
 
 1. Crea en Cloudflare (Mi perfil → Tokens de API) un token con los permisos **Zone · DNS · Edit** y **Zone · Zone · Read**, limitado en «Zone Resources» a la zona del dominio raíz. Es un secreto nuevo, distinto del token de Ajustes → Cloudflare: solo lo usa Traefik. No uses la clave global de la cuenta.
-2. Ponlo en el `.env` del servidor como `CF_DNS_API_TOKEN=…` (el `.env` no se sube al repositorio; `chmod 600 .env`) y recrea Traefik:
+2. Guárdalo en **Ajustes → Dominios y TLS → Token de Cloudflare del certificado comodín**. Skyway lo prueba en Cloudflare (que ve la zona del dominio raíz) y lo guarda en un volumen que solo lee Traefik (`traefik-secrets`), no en la base de datos del panel ni en sus copias; después solo se ve su pista. Si sustituyes o eliminas uno que Traefik ya utiliza, Traefik se reinicia: las webs pueden no responder durante unos segundos.
 
-   ```bash
-   docker compose up -d traefik
-   ```
+   También se puede poner en el `.env` del servidor como `CF_DNS_API_TOKEN=…` (el `.env` no se sube al repositorio; `chmod 600 .env`), y recrear Traefik con `docker compose up -d traefik`. Si están los dos, manda el del `.env`.
 
-3. En **Ajustes → Dominios y TLS**, con el dominio raíz y HTTPS configurados, marca **Certificado comodín para el dominio raíz**. La casilla solo aparece si Traefik tiene el resolutor `lecomodin` (lo incluye el `docker-compose.yml`); sin el token, aparece desactivada con el aviso.
+3. En **Ajustes → Dominios y TLS**, con el dominio raíz y HTTPS configurados, marca **Certificado comodín para el dominio raíz**. La casilla y el campo del token solo aparecen si Traefik tiene el resolutor `lecomodin` (lo incluye el `docker-compose.yml`); sin el token, la casilla aparece desactivada con el aviso.
+
+Si tu servidor tiene un `docker-compose.yml` anterior, actualiza Skyway una vez (`skyway update`, o la actualización automática de cada noche) para que Traefik tenga el resolutor y el volumen del token. Después ya no hace falta entrar en el servidor.
 
 Skyway publica entonces el router que pide el certificado y los servicios que se despliegan a partir de ese momento usan el comodín; los ya desplegados conservan sus certificados hasta el siguiente despliegue. Sin token, todo sigue como siempre.
 
-Para volver a un certificado por nombre, desmarca la casilla y, si además quitas el token, borra el certificado comodín de `acme.json`: mientras exista, Traefik no pide certificados por nombre para los subdominios que cubre (aunque haya caducado). Detén Traefik (`docker compose stop traefik`), quita la entrada `lecomodin` del fichero `acme.json` del volumen `traefik-letsencrypt`, arranca Traefik (`docker compose up -d traefik`) y vuelve a desplegar los servicios con subdominio generado.
+Para volver a un certificado por nombre, desmarca la casilla y, si además eliminas el token, borra el certificado comodín de `acme.json`: mientras exista, Traefik no pide certificados por nombre para los subdominios que cubre (aunque haya caducado). Detén Traefik (`docker compose stop traefik`), quita la entrada `lecomodin` del fichero `acme.json` del volumen `traefik-letsencrypt`, arranca Traefik (`docker compose up -d traefik`) y vuelve a desplegar los servicios con subdominio generado.
 
 > El contenedor de Skyway monta `/var/run/docker.sock` para orquestar los contenedores de tus aplicaciones directamente sobre el Docker del host. Eso implica que quien tenga acceso a Skyway controla el Docker del servidor: usa una contraseña fuerte y entra por el dominio con TLS, un túnel SSH o una VPN; no publiques el puerto 4000.
 

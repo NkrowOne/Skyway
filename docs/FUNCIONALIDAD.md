@@ -74,9 +74,12 @@ server/src/
                         hosts y direcciones, huella del plan y bloque de URL de WordPress
   redirecciones.ts      prepublicación y redirecciones del cambio de dominio en el proveedor HTTP de
                         Traefik (prioridad 1) y comprobación local del certificado (`comprobarTlsLocal`)
-  comodin.ts            certificado comodín del dominio raíz: detecta el resolutor `lecomodin` y el token
-                        de Cloudflare en Traefik (docker inspect o `SKYWAY_TRAEFIK_WILDCARD`), estado
-                        efectivo (`dominioComodin`) y router del proveedor HTTP que pide `raíz` + `*.raíz`
+  comodin.ts            certificado comodín del dominio raíz: detecta el resolutor `lecomodin` y de dónde toma
+                        Traefik el token de Cloudflare (docker inspect o `SKYWAY_TRAEFIK_WILDCARD`), estado
+                        efectivo (`dominioComodin`), router del proveedor HTTP que pide `raíz` + `*.raíz` y el
+                        fichero del token del panel en el volumen `traefik-secrets`
+  tokencomodin.ts       token de ese certificado guardado desde Ajustes: lo prueba en Cloudflare, lo escribe
+                        para Traefik (nunca en `settings`), lo borra y reinicia Traefik cuando hace falta
   pricing.ts            cálculo de precios por tramos (graduated/volume) del catálogo
   aigateway.ts          gateway de IA: config (clave de Gemini del operador, modelos), medición de tokens,
                         streaming SSE, API compatible con OpenAI y coste/margen por modelo
@@ -219,8 +222,8 @@ web/src/
     certificados nuevos por dominio registrado cada 7 días; pasar decenas de
     servicios a un dominio raíz nuevo agotaba ese límite y cada servicio nuevo
     esperaba a su certificado. Con el resolutor `lecomodin` (DNS-01 de
-    Cloudflare con `CF_DNS_API_TOKEN` en el entorno de Traefik, ver
-    `docker-compose.yml`) y la casilla de Ajustes → Dominios y TLS, el
+    Cloudflare, ver `docker-compose.yml`), su token y la casilla de Ajustes →
+    Dominios y TLS, el
     proveedor HTTP publica el router `skyway-comodin-<huella de raíz y
     *.raíz>` (`tls.certResolver: lecomodin`, `tls.domains: [{main: raíz,
     sans: [*.raíz]}]`, prioridad 1, `noop@internal` y una regla
@@ -253,6 +256,20 @@ web/src/
     uno por nombre. Por eso los generados van sin resolutor. Los servicios ya
     desplegados conservan sus etiquetas (y sus certificados, que Traefik sigue
     renovando y prefiere al comodín) hasta el siguiente despliegue.
+    **El token** llega a Traefik por `CF_DNS_API_TOKEN` del `.env` del
+    servidor o, sin entrar en él, desde Ajustes → Dominios y TLS («Token de
+    Cloudflare del certificado comodín», `tokencomodin.ts`): Skyway lo prueba
+    en Cloudflare (token activo, no la clave global, y que ve la zona del
+    dominio raíz) y lo escribe con permisos 600 en el volumen `traefik-secrets`,
+    que Traefik monta para solo lectura y lee con `CF_DNS_API_TOKEN_FILE`;
+    nunca en `settings`, así que tampoco viaja en las copias de `skyway.db`. Si
+    están los dos, manda el del `.env` (lego mira la variable antes que el
+    fichero; Traefik 3.7 usa lego v5, que busca `CLOUDFLARE_DNS_API_TOKEN` y
+    después `CF_DNS_API_TOKEN`, cada una con su variante `_FILE`). lego lee el
+    token al crear su cliente y lo conserva hasta que Traefik se reinicia: si
+    Traefik ya usaba el del panel, sustituirlo o eliminarlo reinicia Traefik
+    (también guardar el primero con el comodín ya activado), siempre después
+    de responder, porque la propia petición pasa por Traefik.
   - **Proveedor HTTP** (`GET /api/traefik/mailway`, que Traefik lee cada 15 s):
     además de las rutas saneadas de Mailway, los routers de
     `SKYWAY_DOMAIN_EXTRA` y el del certificado comodín, sirve lo propio del cambio de dominio
@@ -1701,9 +1718,12 @@ con lo ya aprobado». Nunca se escriben valores en el registro ni en la auditor�
   servicio con dominio. Opcional, **certificado comodín del dominio raíz** (§2):
   la casilla «Certificado comodín para el dominio raíz» de Ajustes → Dominios y
   TLS solo aparece si Traefik tiene el resolutor `lecomodin`; sin el token de
-  Cloudflare (`CF_DNS_API_TOKEN` en el `.env` del servidor) sale desactivada con
-  el aviso de lo que hay que hacer, y ya activada sale siempre para poder
-  desactivarla. Dominio principal automático (www primero, §5.5). El
+  Cloudflare sale desactivada con el aviso de lo que hay que hacer, y ya
+  activada sale siempre para poder desactivarla. Debajo, el bloque «Token de
+  Cloudflare del certificado comodín» lo guarda con su propio botón (solo se
+  escribe; después se ve su pista y «Eliminar token», que pide confirmación) o
+  explica que hay que actualizar Skyway si falta el volumen compartido; si
+  Traefik usa el del `.env`, lo indica. Dominio principal automático (www primero, §5.5). El
   editor muestra los dominios en una lista con el estado del DNS (punto de color
   y etiqueta: «Configurado», «Esperando DNS», «Apunta a otra IP», «Proxy de
   Cloudflare») y, si falta algo, el registro A que hay que crear (tipo, nombre y
@@ -2697,8 +2717,10 @@ distroless), el explorador lo indica y no está disponible.
 | POST | `/system/backups` | admin | crea un snapshot ahora (VACUUM INTO) |
 | GET | `/system/backups/:file/download` | admin + session | descarga un snapshot (.db restaurable). Exige sesión de navegador: lleva en claro los secretos que la API nunca devuelve (token de Cloudflare, de Mailway, de GitHub…) |
 | DELETE | `/system/backups/:file` | admin | borra un snapshot |
-| GET | `/settings` | admin | ajustes (secretos como booleanos; `wildcardCert` = `'1'` o null) + `traefikAcme: {status: ok/missing/invalid/unknown, email}` (correo real de Traefik) + `comodin: {resolver: 'lecomodin', resolutor: ok/sin_token/sin_resolutor/desconocido, declarado, disponible, enUso, certificado}` (lo que Traefik tiene para el certificado comodín; `enUso` = dominio raíz cuyo comodín se usa ahora, o null; `certificado` = si Traefik ya lo sirve, `ok`/`invalido`/`desconocido`, comprobado por SNI con `skyway-comodin.<raíz>` como en `comprobarTlsLocal`, o null sin comodín en uso; del token solo se sabe si tiene valor). Ajustes avisa si aún no lo sirve (la primera emisión tarda unos minutos; si no llega, el token no puede editar la zona) y, al cambiar el dominio raíz con el comodín activo, de que el token debe poder editar también la zona nueva + `defaults.keepImages` |
+| GET | `/settings` | admin | ajustes (secretos como booleanos; `wildcardCert` = `'1'` o null) + `traefikAcme: {status: ok/missing/invalid/unknown, email}` (correo real de Traefik) + `comodin: {resolver: 'lecomodin', resolutor: ok/sin_token/sin_resolutor/desconocido, declarado, disponible, enUso, certificado}` (lo que Traefik tiene para el certificado comodín; `enUso` = dominio raíz cuyo comodín se usa ahora, o null; `certificado` = si Traefik ya lo sirve, `ok`/`invalido`/`desconocido`, comprobado por SNI con `skyway-comodin.<raíz>` como en `comprobarTlsLocal`, o null sin comodín en uso; `token` = de dónde lo toma Traefik, `entorno`/`panel`/`fichero` o null; `panel: {disponible, configurado, pista}` = el volumen compartido con Traefik está montado, hay un token guardado desde el panel y sus últimos 4 caracteres; del token nunca sale nada más). Ajustes avisa si aún no lo sirve (la primera emisión tarda unos minutos; si no llega, el token no puede editar la zona) y, al cambiar el dominio raíz con el comodín activo, de que el token debe poder editar también la zona nueva + `defaults.keepImages` |
 | PUT | `/settings` | admin | guarda ajustes (dominio, TLS, token GitHub, alertas, `keepImages` 1–50 o vacío → 400 `invalid_keep_images`); `rootDomain` debe ser un nombre de host válido o vacío; `serverIpv6`, una IPv6 sin identificador de zona (`fe80::1%eth0` da 400: ningún DNS la publica) o vacía. `wildcardCert` (booleano): activarlo exige dominio raíz (400 `wildcard_needs_root_domain`) y que Traefik tenga el resolutor `lecomodin` con el token, o `SKYWAY_TRAEFIK_WILDCARD=1` si no se puede leer Traefik (400 `wildcard_unavailable` con lo que hay que hacer); se comprueba antes de guardar nada, y reenviar el valor que ya tiene no vuelve a comprobarlo. Cambiarlo audita `wildcard_cert_enabled` o `wildcard_cert_disabled` (detalle: el dominio raíz) |
+| PUT | `/settings/wildcard-token` | admin + session | `{token}`: token de Cloudflare del certificado comodín. Exige dominio raíz (400) y el volumen `traefik-secrets` montado (409, con «skyway update»); lo prueba en Cloudflare **antes** de guardarlo (activo, no la clave global, y que ve la zona del dominio raíz; si no, 400 y no se guarda nada) y lo escribe con permisos 600 en el volumen que lee Traefik (`CF_DNS_API_TOKEN_FILE`), nunca en `settings` → `{ok, zona, reinicio, comodin}`. `reinicio`: Traefik se reinicia tras responder porque ya usaba el anterior del panel, o porque el comodín estaba activado; con el token en el `.env` no. Guardar el mismo no cambia nada. Audita `wildcard_token_saved` o `wildcard_token_replaced` («zona …», sin el token). 10/min |
+| DELETE | `/settings/wildcard-token` | admin + session | borra el token del panel → `{ok, reinicio, comodin}` (reinicia Traefik si lo usaba). Audita `wildcard_token_removed` |
 | POST | `/settings/github/test` | admin | valida el token de GitHub |
 | DELETE | `/settings/github` | admin | borra el token de GitHub |
 | POST | `/settings/alerts/test` | admin | envía notificación de prueba |
@@ -2821,10 +2843,11 @@ Zone · Read» y «Zone · DNS · Edit»; la clave global se rechaza). Se guarda
 4 caracteres) y las zonas que ve. El instalador de Mailway lo deja puesto con
 `tools/cloudflare.js conectar` (§9).
 
-El certificado comodín del dominio raíz (§2) usa **otro token**,
-`CF_DNS_API_TOKEN`, que solo lee Traefik (resolutor `lecomodin`, reto DNS-01):
-va en el `.env` del servidor, nunca en `settings`, y conviene limitarlo a la
-zona del dominio raíz. No se reutiliza este a propósito: el del DNS automático
+El certificado comodín del dominio raíz (§2) usa **otro token**, que solo lee
+Traefik (resolutor `lecomodin`, reto DNS-01): va en el `.env` del servidor
+(`CF_DNS_API_TOKEN`) o se guarda en Ajustes → Dominios y TLS, que lo deja en el
+volumen `traefik-secrets`; nunca en `settings`, y conviene limitarlo a la zona
+del dominio raíz. No se reutiliza este a propósito: el del DNS automático
 suele ver todas las zonas del operador, y Traefik solo necesita escribir el
 registro TXT `_acme-challenge` de una.
 
@@ -2984,7 +3007,9 @@ desplegar: 409 `migration_services_pending`.
 | `SKYWAY_DOMAIN_EXTRA` | — | nombres adicionales del panel, separados por comas (p. ej. el anterior mientras se cambia de dominio). Mismas reservas que `SKYWAY_DOMAIN`; sus routers (HTTP con redirección y HTTPS con certificado propio, hacia `skyway@docker`) los publica Skyway en el proveedor dinámico que Traefik ya lee (`/api/traefik/mailway`) |
 | `SKYWAY_TRAEFIK_CONTAINER` | `skyway-traefik` | contenedor de Traefik del que se lee el correo de Let's Encrypt (`tls.ts`) y su resolutor `lecomodin` (`comodin.ts`) |
 | `SKYWAY_TRAEFIK_WILDCARD` | — | `1` declara que Traefik tiene el resolutor `lecomodin` con su token cuando Skyway no puede leerlo (Traefik configurado por fichero o en otro contenedor). Lo que se ve en el contenedor de Traefik manda sobre la declaración |
-| `CF_DNS_API_TOKEN` | — | **de Traefik, no de Skyway** (el `.env` lo pasa solo al contenedor de Traefik): token de API de Cloudflare del certificado comodín (§2), con «Zone · DNS · Edit» y «Zone · Zone · Read» limitados a la zona del dominio raíz. Skyway solo comprueba en el `docker inspect` de Traefik que tiene valor (también `CLOUDFLARE_DNS_API_TOKEN` y las variantes `_FILE`); nunca lo guarda, lo registra ni lo devuelve. Vacío, nada cambia. Tras cambiarlo, `docker compose up -d traefik` |
+| `CF_DNS_API_TOKEN` | — | **de Traefik, no de Skyway** (el `.env` lo pasa solo al contenedor de Traefik): token de API de Cloudflare del certificado comodín (§2), con «Zone · DNS · Edit» y «Zone · Zone · Read» limitados a la zona del dominio raíz. Opcional: se puede guardar en Ajustes → Dominios y TLS en su lugar, y si están los dos manda este. Skyway solo comprueba en el `docker inspect` de Traefik que tiene valor (también `CLOUDFLARE_DNS_API_TOKEN` y las variantes `_FILE`); nunca lo guarda, lo registra ni lo devuelve. Vacío, nada cambia. Tras cambiarlo, `docker compose up -d traefik` |
+| `CF_DNS_API_TOKEN_FILE` | `/secrets/cf_dns_api_token` | de Traefik (en el `docker-compose.yml`, no en el `.env`): el fichero del token que guarda el panel, en el volumen `traefik-secrets` montado para solo lectura. Skyway lo reconoce por esa ruta (`RUTA_TOKEN_EN_TRAEFIK`); otro `_FILE` del operador se da por bueno |
+| `SKYWAY_TRAEFIK_SECRETS_DIR` | `/traefik-secrets` | donde Skyway monta el volumen `traefik-secrets` para escribir el token del panel. Si no existe (un `docker-compose.yml` anterior), no se crea y Ajustes pide actualizar Skyway |
 
 Ajustes en la UI (tabla `settings`, solo admin): `rootDomain`, `letsencryptEmail`,
 `serverIp`, `githubToken`, umbrales de alerta y canales (Discord/Telegram/webhook),

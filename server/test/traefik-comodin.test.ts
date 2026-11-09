@@ -7,6 +7,8 @@
  * servicio separa los subdominios generados (router con TLS y sin resolutor:
  * se sirven con el comodín) de los propios (router con `le`). Cada router
  * lleva la huella de sus hosts. Sin token en Traefik, todo sigue como siempre.
+ * El token se puede guardar desde el panel (`tokencomodin.ts`): va a un
+ * volumen que Traefik lee con `CF_DNS_API_TOKEN_FILE`, nunca a la base.
  */
 import Database from 'better-sqlite3';
 import crypto from 'crypto';
@@ -18,7 +20,10 @@ import { buildApp } from '../src/app';
 import {
   AJUSTE_COMODIN,
   RESOLUTOR_COMODIN,
+  RUTA_TOKEN_EN_TRAEFIK,
   configuracionTraefikComodin,
+  escribirTokenPanel,
+  origenTokenComodin,
   resolutorComodinDesdeTraefik,
   setEstadoComodinForTests,
   type ResolutorComodin,
@@ -28,7 +33,9 @@ import { traefikLabels, traefikRouter, traefikServiceName } from '../src/docker/
 import type { TraefikDynamicConfig } from '../src/mailwaytraefik';
 import { configuracionTraefikSkyway, mezclarConfiguracion } from '../src/redirecciones';
 import { setTraefikAcmeStateForTests } from '../src/tls';
+import { setRetrasoReinicioForTests } from '../src/tokencomodin';
 import type { ProjectRow, ServiceRow } from '../src/types';
+import { CF_HOST, cf, cloudflareFetch, reiniciarCloudflare, zona } from './cloudflarefake';
 
 // Lo que devuelve el `docker inspect` de Traefik y el certificado que sirve por
 // SNI: sin Docker ni Traefik en las pruebas, se fingen.
@@ -36,10 +43,17 @@ const m = vi.hoisted(() => ({
   traefik: null as { args: string[]; env: string[] } | null,
   tls: 'desconocido' as 'ok' | 'invalido' | 'desconocido',
   sni: [] as string[],
+  reinicios: 0,
 }));
 vi.mock('../src/tls', async (importOriginal) => {
   const mod = await importOriginal<typeof import('../src/tls')>();
-  return { ...mod, leerTraefik: vi.fn(async () => m.traefik) };
+  return {
+    ...mod,
+    leerTraefik: vi.fn(async () => m.traefik),
+    reiniciarTraefik: vi.fn(async () => {
+      m.reinicios += 1;
+    }),
+  };
 });
 vi.mock('../src/redirecciones', async (importOriginal) => {
   const mod = await importOriginal<typeof import('../src/redirecciones')>();
@@ -81,8 +95,22 @@ const huella = (hosts: string[]) =>
     .digest('hex')
     .slice(0, 8);
 
+/** El volumen que Skyway comparte con Traefik, en una carpeta temporal de la prueba. */
+let secretos = '';
+
 beforeAll(async () => {
   initDb();
+  secretos = fs.mkdtempSync(path.join(process.env.DATA_DIR!, 'traefik-secrets-'));
+  process.env.SKYWAY_TRAEFIK_SECRETS_DIR = secretos;
+  setRetrasoReinicioForTests(0);
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
+      if (url.host === CF_HOST) return cloudflareFetch(url, init);
+      throw new TypeError('fetch failed');
+    }),
+  );
   raw = new Database(path.join(process.env.DATA_DIR!, 'skyway.db'));
   app = buildApp();
   await app.ready();
@@ -131,6 +159,7 @@ beforeEach(() => {
   m.traefik = null;
   m.tls = 'desconocido';
   m.sni = [];
+  m.reinicios = 0;
 });
 
 afterEach(() => {
@@ -201,6 +230,22 @@ describe('resolutor del comodín en Traefik', () => {
     ).toBe('ok');
   });
 
+  it('el token, por el orden de lego: la variable con valor, después el fichero; el del panel solo si el panel lo ha guardado', () => {
+    const delPanel = `CF_DNS_API_TOKEN_FILE=${RUTA_TOKEN_EN_TRAEFIK}`;
+    // Como en el compose: la variable vacía y el fichero del panel.
+    expect(origenTokenComodin(['CF_DNS_API_TOKEN=', delPanel], false)).toBeNull();
+    expect(origenTokenComodin(['CF_DNS_API_TOKEN=', delPanel], true)).toBe('panel');
+    expect(resolutorComodinDesdeTraefik(resolutor, ['CF_DNS_API_TOKEN=', delPanel], false)).toBe('sin_token');
+    expect(resolutorComodinDesdeTraefik(resolutor, ['CF_DNS_API_TOKEN=', delPanel], true)).toBe('ok');
+    // El del .env manda sobre el fichero, también sobre el del panel.
+    expect(origenTokenComodin(['CF_DNS_API_TOKEN=del-env', delPanel], true)).toBe('entorno');
+    // lego mira antes CLOUDFLARE_DNS_API_TOKEN: su fichero gana a la variable CF_.
+    expect(origenTokenComodin(['CLOUDFLARE_DNS_API_TOKEN_FILE=/run/secrets/cf', 'CF_DNS_API_TOKEN=x'], false)).toBe('fichero');
+    // Un fichero que pone el operador se da por bueno: Skyway no lo ve.
+    expect(origenTokenComodin(['CF_DNS_API_TOKEN_FILE=/run/secrets/cf'], false)).toBe('fichero');
+    expect(origenTokenComodin([], true)).toBeNull();
+  });
+
   it('el resolutor también puede venir del entorno de Traefik; con otro proveedor de DNS se confía en quien lo configuró', () => {
     expect(
       resolutorComodinDesdeTraefik([], ['TRAEFIK_CERTIFICATESRESOLVERS_LECOMODIN_ACME_DNSCHALLENGE_PROVIDER=cloudflare', 'CF_DNS_API_TOKEN=x']),
@@ -231,6 +276,11 @@ describe('resolutor del comodín en Traefik', () => {
     expect(resolutorComodinDesdeTraefik(flagsCompose, ['CF_DNS_API_TOKEN=cf-token-de-prueba'])).toBe('ok');
     // El panel no recibe el token: solo lo usa Traefik.
     expect(bloque('skyway')).not.toContain('CF_DNS_API_TOKEN');
+    // El token del panel: Skyway escribe en el volumen y Traefik lo lee, solo para leer, del fichero que espera Skyway.
+    expect(bloque('traefik')).toContain(`CF_DNS_API_TOKEN_FILE: ${RUTA_TOKEN_EN_TRAEFIK}`);
+    expect(bloque('traefik')).toContain(`- traefik-secrets:${path.posix.dirname(RUTA_TOKEN_EN_TRAEFIK)}:ro`);
+    expect(bloque('skyway')).toMatch(/- traefik-secrets:\/traefik-secrets\n/);
+    expect(compose).toMatch(/\nvolumes:\n(?: {2}.*\n)*? {2}traefik-secrets:/);
   });
 });
 
@@ -446,6 +496,8 @@ describe('Ajustes → Dominios y TLS', () => {
       disponible: false,
       enUso: null,
       certificado: null,
+      token: null,
+      panel: { disponible: true, configurado: false, pista: null },
     });
     // Sin comodín en uso no se pregunta nada a Traefik.
     expect(m.sni).toEqual([]);
@@ -461,6 +513,8 @@ describe('Ajustes → Dominios y TLS', () => {
       disponible: true,
       enUso: RAIZ,
       certificado: 'invalido',
+      token: null,
+      panel: { disponible: true, configurado: false, pista: null },
     });
     // Por SNI, con un nombre de un nivel bajo la raíz: lo cubre el comodín y ningún otro.
     expect(m.sni).toEqual([`skyway-comodin.${RAIZ}`]);
@@ -542,5 +596,161 @@ describe('Ajustes → Dominios y TLS', () => {
     setSetting(AJUSTE_COMODIN, null);
     setEstadoComodinForTests({ resolutor: 'sin_token', checkedAt: Date.now() });
     expect(await informe()).not.toContain('wildcard-unavailable');
+  });
+});
+
+describe('token de Cloudflare guardado desde el panel', () => {
+  const TOKEN = 'TokenDeCloudflareDePrueba0123456789abcd';
+  const OTRO = 'OtroTokenDeCloudflareDePrueba9876543210';
+  const AJENO = 'TokenQueNoVeLaZonaDelDominioRaiz00000000';
+  const fichero = () => path.join(secretos, 'cf_dns_api_token');
+  // La ruta admite 10 por minuto y usuario, y todas las pruebas son del mismo
+  // administrador: el token anterior se prepara con la misma función que usa
+  // la ruta (`escribirTokenPanel`) y solo pasa por la ruta lo que se prueba.
+  const guardar = (token: string, headers: Record<string, string> = { cookie, ...SAME_ORIGIN }) =>
+    app.inject({ method: 'PUT', url: '/api/settings/wildcard-token', headers, payload: { token } });
+  const borrar = () => app.inject({ method: 'DELETE', url: '/api/settings/wildcard-token', headers: { cookie, ...SAME_ORIGIN } });
+  /** Traefik como en el compose: sin valor en el .env, con el fichero del panel. */
+  const traefikDelCompose = (env: string[] = ['CF_DNS_API_TOKEN=']) => {
+    m.traefik = { args: flagsCompose, env: [...env, `CF_DNS_API_TOKEN_FILE=${RUTA_TOKEN_EN_TRAEFIK}`] };
+  };
+  /** Entradas nuevas de la auditoría con esa acción desde `desde`. */
+  const auditadas = (accion: string, desde: number) => listAudit({ action: accion, limit: 500 }).length - desde;
+  const cuenta = (accion: string) => listAudit({ action: accion, limit: 500 }).length;
+  /** Da tiempo al reinicio programado (sin margen en las pruebas). */
+  const tras = () => new Promise((r) => setTimeout(r, 20));
+
+  beforeEach(() => {
+    reiniciarCloudflare();
+    const z = zona('acme.es');
+    const otra = zona('otra.es');
+    for (const t of [TOKEN, OTRO]) cf.tokens.set(t, { kind: 'user', accountId: 'cuenta1', zoneIds: [z.id], status: 'active' });
+    cf.tokens.set(AJENO, { kind: 'user', accountId: 'cuenta1', zoneIds: [otra.id], status: 'active' });
+    fs.rmSync(fichero(), { force: true });
+    traefikDelCompose();
+  });
+
+  it('se guarda en el volumen de Traefik con permisos 600 y nunca sale: ni en la respuesta, ni en Ajustes, ni en la auditoría', async () => {
+    const altas = cuenta('wildcard_token_saved');
+    const r = await guardar(TOKEN);
+    expect(r.statusCode, r.body).toBe(200);
+    expect(fs.readFileSync(fichero(), 'utf8')).toBe(TOKEN);
+    expect(fs.statSync(fichero()).mode & 0o777).toBe(0o600);
+    expect(r.body).not.toContain(TOKEN);
+    expect(r.json()).toMatchObject({ ok: true, zona: 'acme.es', reinicio: false });
+    expect(r.json().comodin).toMatchObject({
+      resolutor: 'ok',
+      token: 'panel',
+      disponible: true,
+      panel: { disponible: true, configurado: true, pista: TOKEN.slice(-4) },
+    });
+
+    const ajustes = await app.inject({ method: 'GET', url: '/api/settings', headers: { cookie } });
+    expect(ajustes.body).not.toContain(TOKEN);
+    expect(ajustes.json().comodin.panel).toEqual({ disponible: true, configurado: true, pista: TOKEN.slice(-4) });
+    expect(auditadas('wildcard_token_saved', altas)).toBe(1);
+    expect(listAudit({ action: 'wildcard_token_saved', limit: 1 })[0].detail).toBe('zona acme.es');
+    expect(JSON.stringify(listAudit({ limit: 500 }))).not.toContain(TOKEN.slice(0, 12));
+    // Ni en la base del panel: no pasa por `settings`.
+    expect(JSON.stringify(raw.prepare('SELECT key, value FROM settings').all())).not.toContain(TOKEN.slice(0, 12));
+    // La primera vez, con la casilla sin marcar, Traefik no lo había usado: no se reinicia.
+    await tras();
+    expect(m.reinicios).toBe(0);
+  });
+
+  it('sustituir el que Traefik ya usa lo reinicia; el mismo otra vez no cambia nada', async () => {
+    escribirTokenPanel(TOKEN);
+    const sustituciones = cuenta('wildcard_token_replaced');
+    const igual = await guardar(TOKEN);
+    expect(igual.statusCode, igual.body).toBe(200);
+    expect(igual.json().reinicio).toBe(false);
+    expect(auditadas('wildcard_token_replaced', sustituciones)).toBe(0);
+
+    const otro = await guardar(OTRO);
+    expect(otro.statusCode, otro.body).toBe(200);
+    expect(otro.json().reinicio).toBe(true);
+    expect(fs.readFileSync(fichero(), 'utf8')).toBe(OTRO);
+    expect(auditadas('wildcard_token_replaced', sustituciones)).toBe(1);
+    await tras();
+    expect(m.reinicios).toBe(1);
+  });
+
+  it('con el comodín activado, guardar el primero también reinicia Traefik (pudo intentarlo sin token)', async () => {
+    conComodin('sin_token');
+    const r = await guardar(TOKEN);
+    expect(r.statusCode, r.body).toBe(200);
+    expect(r.json().reinicio).toBe(true);
+    await tras();
+    expect(m.reinicios).toBe(1);
+  });
+
+  it('con el token en el .env, el del panel no se usa: se guarda, se avisa y Traefik no se reinicia', async () => {
+    traefikDelCompose(['CF_DNS_API_TOKEN=token-del-env']);
+    escribirTokenPanel(TOKEN);
+    const r = await guardar(OTRO);
+    expect(r.statusCode, r.body).toBe(200);
+    expect(r.json()).toMatchObject({ reinicio: false, comodin: { token: 'entorno' } });
+    await tras();
+    expect(m.reinicios).toBe(0);
+  });
+
+  it('eliminarlo borra el fichero y, si Traefik lo usaba, lo reinicia', async () => {
+    escribirTokenPanel(TOKEN);
+    const bajas = cuenta('wildcard_token_removed');
+    const r = await borrar();
+    expect(r.statusCode, r.body).toBe(200);
+    expect(r.json()).toMatchObject({ reinicio: true, comodin: { resolutor: 'sin_token', token: null, panel: { configurado: false, pista: null } } });
+    expect(fs.existsSync(fichero())).toBe(false);
+    expect(auditadas('wildcard_token_removed', bajas)).toBe(1);
+    await tras();
+    expect(m.reinicios).toBe(1);
+    // Sin token, eliminar no hace nada.
+    expect((await borrar()).json().reinicio).toBe(false);
+    expect(auditadas('wildcard_token_removed', bajas)).toBe(1);
+  });
+
+  it('se prueba en Cloudflare antes de guardarlo: un token que no ve la zona del dominio raíz o la clave global no se guardan', async () => {
+    const altas = cuenta('wildcard_token_saved');
+    const ajeno = await guardar(AJENO);
+    expect(ajeno.statusCode).toBe(400);
+    expect(ajeno.json().error).toContain(`zona de ${RAIZ}`);
+    const global = await guardar('0123456789abcdef0123456789abcdef01234');
+    expect(global.statusCode).toBe(400);
+    expect(global.json().error).toMatch(/clave global/);
+    expect(fs.existsSync(fichero())).toBe(false);
+    expect(auditadas('wildcard_token_saved', altas)).toBe(0);
+  });
+
+  it('sin dominio raíz o sin el volumen compartido no se guarda nada', async () => {
+    setSetting('rootDomain', null);
+    const sinRaiz = await guardar(TOKEN);
+    expect(sinRaiz.statusCode, sinRaiz.body).toBe(400);
+    expect(sinRaiz.json().error).toMatch(/dominio raíz/);
+    setSetting('rootDomain', RAIZ);
+
+    process.env.SKYWAY_TRAEFIK_SECRETS_DIR = path.join(secretos, 'no-existe');
+    try {
+      const sinVolumen = await guardar(TOKEN);
+      expect(sinVolumen.statusCode, sinVolumen.body).toBe(409);
+      expect(sinVolumen.json().error).toMatch(/skyway update/);
+      expect((await app.inject({ method: 'GET', url: '/api/settings', headers: { cookie } })).json().comodin.panel.disponible).toBe(false);
+      // No se crea: un directorio nuevo dentro del contenedor no lo vería Traefik.
+      expect(fs.existsSync(path.join(secretos, 'no-existe'))).toBe(false);
+    } finally {
+      process.env.SKYWAY_TRAEFIK_SECRETS_DIR = secretos;
+    }
+    expect(fs.existsSync(fichero())).toBe(false);
+    // Ni siquiera se consulta Cloudflare.
+    expect(cf.calls).toEqual([]);
+  });
+
+  it('exige sesión de navegador: un token de API, aunque sea de un administrador, no puede guardarlo ni eliminarlo', async () => {
+    const tok = await app.inject({ method: 'POST', url: '/api/tokens', headers: { cookie, ...SAME_ORIGIN }, payload: { name: 'agente' } });
+    expect(tok.statusCode, tok.body).toBe(201);
+    const bearer = { authorization: `Bearer ${tok.json().token as string}` };
+    expect((await guardar(TOKEN, bearer)).statusCode).toBe(403);
+    escribirTokenPanel(TOKEN);
+    expect((await app.inject({ method: 'DELETE', url: '/api/settings/wildcard-token', headers: bearer })).statusCode).toBe(403);
+    expect(fs.readFileSync(fichero(), 'utf8')).toBe(TOKEN);
   });
 });

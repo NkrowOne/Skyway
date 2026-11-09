@@ -16,7 +16,17 @@ import { channelsConfigured, dispatchToChannels } from '../notify';
 import { verifyGithubToken } from '../github/client';
 import { DEFAULT_KEEP_IMAGES } from '../deploy/deployer';
 import { refreshTraefikAcme } from '../tls';
-import { AJUSTE_COMODIN, comodinDisponible, motivoComodinNoDisponible, refreshTraefikComodin, vistaComodin } from '../comodin';
+import {
+  AJUSTE_COMODIN,
+  comodinDisponible,
+  type EstadoComodin,
+  motivoComodinNoDisponible,
+  refreshTraefikComodin,
+  vistaComodin,
+} from '../comodin';
+import { cloudflareTokenSchema } from '../cloudflareconfig';
+import { rateLimit } from '../ratelimit';
+import { borrarTokenComodin, guardarTokenComodin } from '../tokencomodin';
 import { esIpv6Publicable } from '../domains';
 import { comprobarTlsLocal } from '../redirecciones';
 import { domainSchema } from './services';
@@ -50,6 +60,18 @@ const SETTINGS_KEYS = [
   // '1' si se usa el certificado comodín del dominio raíz (comodin.ts).
   AJUSTE_COMODIN,
 ] as const;
+
+/**
+ * Lo que ve Ajustes del certificado comodín y, si está en uso, si Traefik ya
+ * lo sirve: se le pregunta por SNI con un nombre de un nivel bajo la raíz, sin
+ * depender del DNS público. Es lo que ve el administrador si el token no puede
+ * editar la zona (por ejemplo, tras cambiar el dominio raíz a otra).
+ */
+async function vistaAjustesComodin(estado: EstadoComodin) {
+  const vista = vistaComodin(estado);
+  const certificado = vista.enUso ? (await comprobarTlsLocal(`skyway-comodin.${vista.enUso}`, { plazoMs: 3000 })).estado : null;
+  return { ...vista, certificado };
+}
 
 /** Núcleos del host: no cambian en caliente, y `os.cpus()` construye la lista entera en cada llamada. */
 const HOST_CPUS = os.cpus().length;
@@ -191,16 +213,10 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
       // servidor), que es el que decide si se emiten certificados (ver tls.ts),
       // y si tiene el resolutor del certificado comodín (comodin.ts).
       const [acme, comodin] = await Promise.all([refreshTraefikAcme(), refreshTraefikComodin()]);
-      const vista = vistaComodin(comodin);
-      // Con el comodín en uso, si Traefik ya lo sirve: se le pregunta por SNI
-      // con un nombre de un nivel bajo la raíz, sin depender del DNS público.
-      // Es lo que ve el administrador si el token no puede editar la zona (por
-      // ejemplo, tras cambiar el dominio raíz a otra).
-      const certificado = vista.enUso ? (await comprobarTlsLocal(`skyway-comodin.${vista.enUso}`, { plazoMs: 3000 })).estado : null;
       return {
         settings: out,
         traefikAcme: { status: acme.status, email: acme.email },
-        comodin: { ...vista, certificado },
+        comodin: await vistaAjustesComodin(comodin),
         defaults: { keepImages: DEFAULT_KEEP_IMAGES },
       };
     });
@@ -287,6 +303,27 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
       }
       audit(req, 'settings_updated');
       return { ok: true };
+    });
+
+    /**
+     * Token de Cloudflare del certificado comodín (tokencomodin.ts): solo se
+     * escribe, con sesión de navegador, como el token de Ajustes → Cloudflare.
+     * Se prueba en Cloudflare antes de guardarlo y, si Traefik ya usaba el
+     * anterior, Traefik se reinicia después de responder (`reinicio`).
+     */
+    secured.put(
+      '/api/settings/wildcard-token',
+      { preHandler: [requireAdmin, requireSession, rateLimit({ max: 10, windowMs: 60_000 })] },
+      async (req) => {
+        const { token } = cloudflareTokenSchema.parse(req.body ?? {});
+        const r = await guardarTokenComodin(token, (action, target) => audit(req, action, target), req.log);
+        return { ok: true, zona: r.zona, reinicio: r.reinicio, comodin: await vistaAjustesComodin(await refreshTraefikComodin()) };
+      },
+    );
+
+    secured.delete('/api/settings/wildcard-token', { preHandler: [requireAdmin, requireSession] }, async (req) => {
+      const r = await borrarTokenComodin((action, target) => audit(req, action, target), req.log);
+      return { ok: true, reinicio: r.reinicio, comodin: await vistaAjustesComodin(await refreshTraefikComodin()) };
     });
 
     /** Valida el token de GitHub: el guardado, o uno pasado para probar antes de guardar. */

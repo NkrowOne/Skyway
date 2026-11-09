@@ -20,7 +20,7 @@
  * responder), se confía en el ajuste, como antes.
  */
 import { getSetting } from './db';
-import { dockerQuery } from './docker/client';
+import { docker, dockerQuery } from './docker/client';
 
 /** Contenedor de Traefik del docker-compose de Skyway. */
 const TRAEFIK_CONTAINER = process.env.SKYWAY_TRAEFIK_CONTAINER || 'skyway-traefik';
@@ -98,6 +98,15 @@ export async function leerTraefik(): Promise<{ args: string[]; env: string[] } |
   } catch {
     return null;
   }
+}
+
+/**
+ * Reinicia el contenedor de Traefik (lo pide el panel al cambiar el token del
+ * certificado comodín, ver tokencomodin.ts). Con el cliente sin plazo: Traefik
+ * espera a las peticiones en curso antes de pararse. Lanza si Docker no responde.
+ */
+export async function reiniciarTraefik(): Promise<void> {
+  await docker.getContainer(TRAEFIK_CONTAINER).restart({ t: 10 });
 }
 
 /** Vuelve a leer el correo de Traefik (como mucho una lectura a la vez). Nunca lanza. */

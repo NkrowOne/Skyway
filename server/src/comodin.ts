@@ -30,11 +30,21 @@
  *    por nombre. Por eso los generados van sin resolutor y no con `le`.
  *
  * Disponible si Traefik tiene el resolutor con reto DNS y el token de
- * Cloudflare en su entorno: Skyway lo lee de su contenedor (`docker inspect`,
- * como el correo de Let's Encrypt en tls.ts) o, si no se puede, lo declara el
- * operador con `SKYWAY_TRAEFIK_WILDCARD=1`. Sin token todo sigue como siempre.
+ * Cloudflare: Skyway lo lee de su contenedor (`docker inspect`, como el correo
+ * de Let's Encrypt en tls.ts) o, si no se puede, lo declara el operador con
+ * `SKYWAY_TRAEFIK_WILDCARD=1`. Sin token todo sigue como siempre.
+ *
+ * El token llega a Traefik por su entorno (`CF_DNS_API_TOKEN` del `.env` del
+ * servidor) o por el fichero que guarda el panel en Ajustes → Dominios y TLS
+ * (`CF_DNS_API_TOKEN_FILE`): el volumen `traefik-secrets`, que Skyway monta
+ * para escribir y Traefik solo para leer. Así se configura sin entrar en el
+ * servidor, y el token no pasa por la base de datos del panel ni por sus
+ * copias. lego lee el token una vez, al crear su cliente, y lo conserva hasta
+ * que Traefik se reinicia (ver `tokencomodin.ts`).
  */
 import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
 import { getSetting } from './db';
 import { esSubdominioGenerado, normalizarDominio } from './dominioprincipal';
 import type { TraefikRouterSkyway } from './redirecciones';
@@ -45,12 +55,22 @@ export const RESOLUTOR_COMODIN = 'lecomodin';
 /** Ajuste del panel: '1' si el administrador lo ha activado. */
 export const AJUSTE_COMODIN = 'wildcardCert';
 /**
- * Variables en las que lego (el cliente ACME de Traefik) busca el token de API
- * de Cloudflare, también con el sufijo `_FILE`. La clave global
- * (`CF_API_KEY` + `CF_API_EMAIL`) no cuenta a propósito: da acceso a toda la
- * cuenta, y para esto basta un token limitado a la zona del dominio raíz.
+ * Variables en las que lego (el cliente ACME de Traefik 3.7, lego v5) busca el
+ * token de API de Cloudflare, en su orden: la principal y su nombre
+ * alternativo, cada una con su valor o, si está vacía, con el fichero de su
+ * variante `_FILE`. La clave global (`CLOUDFLARE_API_KEY` +
+ * `CLOUDFLARE_EMAIL`) no cuenta a propósito: da acceso a toda la cuenta, y para
+ * esto basta un token limitado a la zona del dominio raíz.
  */
-const VARIABLES_TOKEN = ['CF_DNS_API_TOKEN', 'CLOUDFLARE_DNS_API_TOKEN'];
+const VARIABLES_TOKEN = ['CLOUDFLARE_DNS_API_TOKEN', 'CF_DNS_API_TOKEN'];
+/**
+ * El fichero del token que guarda el panel, tal como lo ve Traefik
+ * (`CF_DNS_API_TOKEN_FILE` en docker-compose.yml, volumen `traefik-secrets`
+ * montado en /secrets para solo lectura).
+ */
+export const RUTA_TOKEN_EN_TRAEFIK = '/secrets/cf_dns_api_token';
+/** El mismo fichero, en el volumen montado en el contenedor de Skyway. */
+const FICHERO_TOKEN = 'cf_dns_api_token';
 /** Cada cuánto se vuelve a mirar: el resolutor y el token solo cambian al recrear Traefik. */
 const TTL_MS = 60_000;
 /**
@@ -71,42 +91,132 @@ const HOST_RE = /^(?=.{4,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9]
  */
 export type ResolutorComodin = 'ok' | 'sin_token' | 'sin_resolutor';
 
+/**
+ * De dónde lee lego el token: `entorno` (una variable con valor, la del `.env`),
+ * `panel` (el fichero que guarda Ajustes) o `fichero` (otro fichero que haya
+ * puesto el operador).
+ */
+export type OrigenTokenComodin = 'entorno' | 'panel' | 'fichero';
+
 export interface EstadoComodin {
   /** `desconocido` si no se ha podido leer el contenedor de Traefik. */
   resolutor: ResolutorComodin | 'desconocido';
+  /** De dónde toma Traefik el token, o null si de ninguna parte (o no se sabe). */
+  token: OrigenTokenComodin | null;
   checkedAt: number | null;
 }
 
-let estado: EstadoComodin = { resolutor: 'desconocido', checkedAt: null };
+let estado: EstadoComodin = { resolutor: 'desconocido', token: null, checkedAt: null };
 let enCurso: Promise<EstadoComodin> | null = null;
 
-/**
- * El resolutor del comodín según la línea de órdenes y el entorno de Traefik
- * (función pura, para las pruebas). Las opciones de Traefik no distinguen
- * mayúsculas, como en `acmeEmailFromTraefik`; los nombres de las variables del
- * token, sí (lego solo lee esos). Del token solo se mira si tiene valor: nunca
- * se guarda, se registra ni se devuelve.
- */
-export function resolutorComodinDesdeTraefik(args: readonly string[], env: readonly string[]): ResolutorComodin {
-  const flag = `--certificatesresolvers.${RESOLUTOR_COMODIN}.acme.dnschallenge.provider`;
-  let proveedor: string | undefined;
-  for (const arg of args) {
-    if (arg.toLowerCase().startsWith(`${flag}=`)) proveedor = arg.slice(flag.length + 1).trim().toLowerCase();
-  }
+function variablesDe(env: readonly string[]): Map<string, string> {
   const variables = new Map<string, string>();
   for (const entry of env) {
     const eq = entry.indexOf('=');
     if (eq > 0) variables.set(entry.slice(0, eq), entry.slice(eq + 1));
   }
+  return variables;
+}
+
+/**
+ * De dónde leerá lego el token, con su mismo orden (`VARIABLES_TOKEN`). El
+ * fichero del panel (`RUTA_TOKEN_EN_TRAEFIK`) solo cuenta si el panel ha
+ * guardado un token: sin él, lego no lee nada y pasa al nombre siguiente. Otro
+ * fichero, el que haya puesto el operador, se da por bueno: Skyway no lo ve.
+ * Los nombres distinguen mayúsculas, como en lego. Del token solo se mira si
+ * tiene valor: nunca se guarda, se registra ni se devuelve.
+ */
+export function origenTokenComodin(env: readonly string[], tokenEnPanel: boolean): OrigenTokenComodin | null {
+  const variables = variablesDe(env);
+  for (const nombre of VARIABLES_TOKEN) {
+    if ((variables.get(nombre) ?? '').trim()) return 'entorno';
+    const fichero = (variables.get(`${nombre}_FILE`) ?? '').trim();
+    if (!fichero) continue;
+    if (fichero !== RUTA_TOKEN_EN_TRAEFIK) return 'fichero';
+    if (tokenEnPanel) return 'panel';
+  }
+  return null;
+}
+
+/**
+ * El resolutor del comodín según la línea de órdenes y el entorno de Traefik
+ * (función pura, para las pruebas), y si el panel tiene guardado el token. Las
+ * opciones de Traefik no distinguen mayúsculas, como en `acmeEmailFromTraefik`.
+ */
+export function resolutorComodinDesdeTraefik(args: readonly string[], env: readonly string[], tokenEnPanel = false): ResolutorComodin {
+  const flag = `--certificatesresolvers.${RESOLUTOR_COMODIN}.acme.dnschallenge.provider`;
+  let proveedor: string | undefined;
+  for (const arg of args) {
+    if (arg.toLowerCase().startsWith(`${flag}=`)) proveedor = arg.slice(flag.length + 1).trim().toLowerCase();
+  }
   if (proveedor === undefined) {
     const nombre = `TRAEFIK_CERTIFICATESRESOLVERS_${RESOLUTOR_COMODIN.toUpperCase()}_ACME_DNSCHALLENGE_PROVIDER`;
-    for (const [clave, valor] of variables) if (clave.toUpperCase() === nombre) proveedor = valor.trim().toLowerCase();
+    for (const [clave, valor] of variablesDe(env)) if (clave.toUpperCase() === nombre) proveedor = valor.trim().toLowerCase();
   }
   if (!proveedor) return 'sin_resolutor';
   // Con otro proveedor de DNS no se sabe qué variables lee: se confía en quien lo configuró.
   if (proveedor !== 'cloudflare') return 'ok';
-  const conValor = (nombre: string) => (variables.get(nombre) ?? '').trim() !== '';
-  return VARIABLES_TOKEN.some((v) => conValor(v) || conValor(`${v}_FILE`)) ? 'ok' : 'sin_token';
+  return origenTokenComodin(env, tokenEnPanel) ? 'ok' : 'sin_token';
+}
+
+/* ------------------------- token guardado por el panel ------------------------- */
+
+/** Donde Skyway monta el volumen que comparte con Traefik. */
+function directorioSecretos(): string {
+  return process.env.SKYWAY_TRAEFIK_SECRETS_DIR || '/traefik-secrets';
+}
+
+function rutaTokenPanel(): string {
+  return path.join(directorioSecretos(), FICHERO_TOKEN);
+}
+
+/**
+ * ¿Está montado el volumen compartido con Traefik? No se crea si falta: con un
+ * docker-compose.yml anterior, un directorio nuevo dentro del contenedor no lo
+ * vería Traefik, y el token se guardaría donde nadie lo lee.
+ */
+export function secretosDisponibles(): boolean {
+  try {
+    const dir = directorioSecretos();
+    if (!fs.statSync(dir).isDirectory()) return false;
+    fs.accessSync(dir, fs.constants.W_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** El token que guardó el panel, o null. Nunca sale del servidor: solo su pista. */
+export function tokenPanel(): string | null {
+  try {
+    return fs.readFileSync(rutaTokenPanel(), 'utf8').trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Escribe el token para Traefik: primero un temporal con permisos 600 y después
+ * se renombra, para que lego nunca lea uno a medias. Sin salto de línea: lego
+ * solo quita los del final, pero así no depende de ello.
+ */
+export function escribirTokenPanel(token: string): void {
+  const tmp = path.join(directorioSecretos(), `.${FICHERO_TOKEN}.${crypto.randomBytes(6).toString('hex')}.tmp`);
+  try {
+    fs.writeFileSync(tmp, token, { mode: 0o600 });
+    fs.chmodSync(tmp, 0o600);
+    fs.renameSync(tmp, rutaTokenPanel());
+  } catch (err) {
+    fs.rmSync(tmp, { force: true });
+    throw err;
+  }
+}
+
+/** Borra el token del panel. Devuelve si había alguno. */
+export function borrarTokenPanel(): boolean {
+  const habia = tokenPanel() !== null;
+  fs.rmSync(rutaTokenPanel(), { force: true });
+  return habia;
 }
 
 /** Vuelve a mirar el contenedor de Traefik (como mucho una lectura a la vez). Nunca lanza. */
@@ -115,8 +225,10 @@ export function refreshTraefikComodin(opts: { force?: boolean } = {}): Promise<E
   if (enCurso) return enCurso;
   enCurso = (async () => {
     const traefik = await leerTraefik();
+    const enPanel = tokenPanel() !== null;
     const next: EstadoComodin = {
-      resolutor: traefik ? resolutorComodinDesdeTraefik(traefik.args, traefik.env) : 'desconocido',
+      resolutor: traefik ? resolutorComodinDesdeTraefik(traefik.args, traefik.env, enPanel) : 'desconocido',
+      token: traefik ? origenTokenComodin(traefik.env, enPanel) : null,
       checkedAt: Date.now(),
     };
     estado = next;
@@ -148,7 +260,7 @@ export function comodinDisponible(e: EstadoComodin = estadoComodin()): boolean {
 }
 
 /** El dominio raíz de los ajustes si es un nombre válido, normalizado; si no, null. */
-function dominioRaiz(): string | null {
+export function dominioRaiz(): string | null {
   const raiz = normalizarDominio(getSetting('rootDomain') ?? '');
   return HOST_RE.test(raiz) ? raiz : null;
 }
@@ -217,22 +329,39 @@ export interface VistaComodin {
   disponible: boolean;
   /** Dominio raíz cuyo comodín se usa ahora mismo, o null. */
   enUso: string | null;
+  /** De dónde toma Traefik el token (`entorno` manda sobre el del panel). */
+  token: OrigenTokenComodin | null;
+  /**
+   * El token del panel: si el volumen compartido con Traefik está montado (si
+   * no, solo se puede poner en el `.env`), si hay uno guardado y su pista
+   * (últimos 4 caracteres). Nunca el token.
+   */
+  panel: { disponible: boolean; configurado: boolean; pista: string | null };
 }
 
 export function vistaComodin(e: EstadoComodin = estadoComodin()): VistaComodin {
+  const guardado = tokenPanel();
   return {
     resolver: RESOLUTOR_COMODIN,
     resolutor: e.resolutor,
     declarado: comodinDeclarado(),
     disponible: comodinDisponible(e),
     enUso: dominioComodin(),
+    token: e.token,
+    panel: {
+      disponible: secretosDisponibles(),
+      configurado: guardado !== null,
+      pista: guardado && guardado.length > 8 ? guardado.slice(-4) : null,
+    },
   };
 }
 
 /** Por qué no se puede activar, en una frase con lo que hay que hacer. */
 export function motivoComodinNoDisponible(e: EstadoComodin): string {
   if (e.resolutor === 'sin_token') {
-    return `Traefik tiene el resolutor «${RESOLUTOR_COMODIN}», pero no el token de Cloudflare. Define CF_DNS_API_TOKEN en el .env del servidor y ejecuta docker compose up -d traefik.`;
+    return secretosDisponibles()
+      ? `Traefik tiene el resolutor «${RESOLUTOR_COMODIN}», pero no el token de Cloudflare. Guárdalo en Ajustes → Dominios y TLS, o define CF_DNS_API_TOKEN en el .env del servidor y ejecuta docker compose up -d traefik.`
+      : `Traefik tiene el resolutor «${RESOLUTOR_COMODIN}», pero no el token de Cloudflare. Define CF_DNS_API_TOKEN en el .env del servidor y ejecuta docker compose up -d traefik.`;
   }
   if (e.resolutor === 'sin_resolutor') {
     return `Traefik no tiene el resolutor «${RESOLUTOR_COMODIN}» (reto DNS-01 de Cloudflare). Actualiza Skyway con skyway update para obtener el docker-compose.yml actual, define CF_DNS_API_TOKEN en el .env del servidor y ejecuta docker compose up -d traefik.`;
@@ -241,6 +370,6 @@ export function motivoComodinNoDisponible(e: EstadoComodin): string {
 }
 
 /** Solo para las pruebas: fija el estado sin preguntar a Docker. */
-export function setEstadoComodinForTests(next: EstadoComodin | null): void {
-  estado = next ?? { resolutor: 'desconocido', checkedAt: null };
+export function setEstadoComodinForTests(next: (Omit<EstadoComodin, 'token'> & { token?: OrigenTokenComodin | null }) | null): void {
+  estado = next ? { token: null, ...next } : { resolutor: 'desconocido', token: null, checkedAt: null };
 }

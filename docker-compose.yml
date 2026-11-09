@@ -24,6 +24,10 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - skyway-data:/data
+      # Token de Cloudflare del certificado comodín que se guarda en Ajustes →
+      # Dominios y TLS. Skyway lo escribe aquí y Traefik lo lee (abajo, solo
+      # lectura): no pasa por la base de datos del panel ni por sus copias.
+      - traefik-secrets:/traefik-secrets
     networks:
       - skyway-edge
     ports:
@@ -58,6 +62,10 @@ services:
       # y cada nombre sigue con su certificado («le»). Solo lo usa Traefik;
       # Skyway únicamente comprueba que tiene valor (server/src/comodin.ts).
       CF_DNS_API_TOKEN: ${CF_DNS_API_TOKEN:-}
+      # Sin valor en el .env, el token se lee del fichero que guarda el panel
+      # (Ajustes → Dominios y TLS) en el volumen traefik-secrets. Si están los
+      # dos, manda el del .env.
+      CF_DNS_API_TOKEN_FILE: /secrets/cf_dns_api_token
     command:
       - --providers.docker=true
       - --providers.docker.exposedbydefault=false
@@ -113,6 +121,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - traefik-letsencrypt:/letsencrypt
+      - traefik-secrets:/secrets:ro
     networks:
       - skyway-edge
 
@@ -125,3 +134,6 @@ networks:
 volumes:
   skyway-data:
   traefik-letsencrypt:
+  # Solo el token del certificado comodín (ver arriba): lo escribe Skyway y lo
+  # lee Traefik.
+  traefik-secrets:
