@@ -16,7 +16,9 @@ import { channelsConfigured, dispatchToChannels } from '../notify';
 import { verifyGithubToken } from '../github/client';
 import { DEFAULT_KEEP_IMAGES } from '../deploy/deployer';
 import { refreshTraefikAcme } from '../tls';
+import { AJUSTE_COMODIN, comodinDisponible, motivoComodinNoDisponible, refreshTraefikComodin, vistaComodin } from '../comodin';
 import { esIpv6Publicable } from '../domains';
+import { comprobarTlsLocal } from '../redirecciones';
 import { domainSchema } from './services';
 import {
   SYSTEM_BACKUP_RETENTION,
@@ -45,6 +47,8 @@ const SETTINGS_KEYS = [
   'alertDiscordUrl',
   'alertTelegramChat',
   'keepImages',
+  // '1' si se usa el certificado comodín del dominio raíz (comodin.ts).
+  AJUSTE_COMODIN,
 ] as const;
 
 /** Núcleos del host: no cambian en caliente, y `os.cpus()` construye la lista entera en cada llamada. */
@@ -184,11 +188,19 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
       out.hasGithubToken = !!getSetting('githubToken');
       out.hasTelegramToken = !!getSetting('alertTelegramToken');
       // El correo con el que Traefik se registra en Let's Encrypt (del .env del
-      // servidor), que es el que decide si se emiten certificados (ver tls.ts).
-      const acme = await refreshTraefikAcme();
+      // servidor), que es el que decide si se emiten certificados (ver tls.ts),
+      // y si tiene el resolutor del certificado comodín (comodin.ts).
+      const [acme, comodin] = await Promise.all([refreshTraefikAcme(), refreshTraefikComodin()]);
+      const vista = vistaComodin(comodin);
+      // Con el comodín en uso, si Traefik ya lo sirve: se le pregunta por SNI
+      // con un nombre de un nivel bajo la raíz, sin depender del DNS público.
+      // Es lo que ve el administrador si el token no puede editar la zona (por
+      // ejemplo, tras cambiar el dominio raíz a otra).
+      const certificado = vista.enUso ? (await comprobarTlsLocal(`skyway-comodin.${vista.enUso}`, { plazoMs: 3000 })).estado : null;
       return {
         settings: out,
         traefikAcme: { status: acme.status, email: acme.email },
+        comodin: { ...vista, certificado },
         defaults: { keepImages: DEFAULT_KEEP_IMAGES },
       };
     });
@@ -223,11 +235,28 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
           alertTelegramChat: z.string().trim().optional(),
           // Versiones por servicio cuya imagen se conserva para volver a ellas.
           keepImages: z.union([z.string(), z.number()]).optional(),
+          // Certificado comodín del dominio raíz para los subdominios generados.
+          wildcardCert: z.boolean().optional(),
         })
         .parse(req.body);
       const keepImages = body.keepImages === undefined ? undefined : String(body.keepImages).trim();
       if (keepImages !== undefined && keepImages !== '' && !(/^\d{1,2}$/.test(keepImages) && Number(keepImages) >= 1 && Number(keepImages) <= 50)) {
         return reply.code(400).send({ error: 'Las versiones conservadas por servicio deben ser un número entre 1 y 50.', code: 'invalid_keep_images' });
+      }
+      // Activarlo exige un dominio raíz y el resolutor `lecomodin` con su token
+      // en Traefik: sin ellos, marcarlo no haría nada. Se comprueba antes de
+      // guardar nada. Lo que ya estaba activado no se vuelve a comprobar: un
+      // Traefik que no responde no debe impedir guardar el resto de ajustes.
+      const comodinAntes = getSetting(AJUSTE_COMODIN) === '1';
+      const raizTrasGuardar = body.rootDomain !== undefined ? body.rootDomain : (getSetting('rootDomain') ?? '');
+      if (body.wildcardCert === true && !comodinAntes) {
+        if (!raizTrasGuardar) {
+          return reply.code(400).send({ error: 'Indica el dominio raíz para activar el certificado comodín.', code: 'wildcard_needs_root_domain' });
+        }
+        const estado = await refreshTraefikComodin({ force: true });
+        if (!comodinDisponible(estado)) {
+          return reply.code(400).send({ error: motivoComodinNoDisponible(estado), code: 'wildcard_unavailable' });
+        }
       }
 
       const setIf = (key: string, value: string | number | undefined) => {
@@ -246,6 +275,16 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
       setIf('alertTelegramToken', body.alertTelegramToken);
       setIf('alertTelegramChat', body.alertTelegramChat);
       setIf('keepImages', keepImages);
+      if (body.wildcardCert !== undefined && body.wildcardCert !== comodinAntes) {
+        setSetting(AJUSTE_COMODIN, body.wildcardCert ? '1' : null);
+        // Cambia cómo se piden los certificados de todos los subdominios
+        // generados: queda en la auditoría con el dominio raíz.
+        audit(req, body.wildcardCert ? 'wildcard_cert_enabled' : 'wildcard_cert_disabled', {
+          type: 'system',
+          id: 'traefik',
+          detail: raizTrasGuardar || undefined,
+        });
+      }
       audit(req, 'settings_updated');
       return { ok: true };
     });

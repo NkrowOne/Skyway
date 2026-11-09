@@ -42,6 +42,7 @@ recomendaciones a futuro.
 | 17 | Media | Dominios reservados (Mailway) | Al cambiar los nombres de la instancia de Mailway, Skyway sustituía la lista de hosts reservados por los nuevos: `mail.viejo.com` y `webmail.viejo.com`, que siguen apuntando al servidor y que los titulares tienen configurados, quedaban libres y el servicio de un cliente podía asignárselos y obtener su certificado. | Los nombres que dejan de anunciarse (por la instancia, por la URL configurada, al desconectar o en las etiquetas de Traefik de los contenedores `mailway-*`) pasan a `mailway.previousHosts` y siguen reservados hasta que el administrador los libera en Ajustes → Correo (`DELETE /mailway/previous-hosts/:host`, con sesión). Prueba en `test/dominios.test.ts`. |
 | 18 | Media | DNS automático (reemplazo) | Nuevo: el administrador puede sustituir en Cloudflare el registro del hosting anterior. Sin límites, permitiría reapuntar nombres de la plataforma o de otro proyecto. | Solo administrador con sesión de navegador, solo A/AAAA/CNAME del nombre exacto, confirmando los registros revisados (409 si cambiaron), en un lote atómico y con copia para restaurar (un segundo reemplazo del mismo nombre se suma a la copia, no la sustituye); nunca el panel, el `rootDomain`, los nombres de Mailway ni los reservados a otro proyecto. |
 | 19 | Alta | Dependencias / DoS | zod 3.25 (congelado: zod 4 es una versión mayor que no se adopta) tiene el aviso GHSA-mrhx-c7xc-m3w5: `z.array()` valida todos los elementos aunque la lista pase de `.max()` y crea un issue por cada uno que no vale (`z.record()`, por cada clave), y varios esquemas no llevaban `.max()`. Un JSON de 1 MB con medio millón de ceros en `projectIds` costaba unos 200 MB de memoria y 0,6 s de CPU por petición, y la respuesta de error ocupaba 17 MB. | Hook `preValidation` global en `app.ts` (`superaTopeElementos`, `topecuerpo.ts`): un cuerpo con más de 20 000 elementos (elementos de lista más claves de objeto, contados sin recursión y con salida temprana) responde 400 `demasiados_elementos` antes de que corra ningún handler ni esquema, también en el login. La misma petición cuesta ahora unos 12 ms y 5 MB. Quedan fuera el proxy del gateway de IA (`/gw/…`, reenvía el cuerpo sin zod) y los webhooks (`/api/webhooks/…`, firmados y sin zod); la subida de archivos recibe un Buffer, que no se recorre. Prueba en `test/tope-elementos.test.ts`. |
+| 20 | Media | Certificados (nuevo secreto) | Nuevo: el certificado comodín del dominio raíz (un solo certificado para `rootDomain` y `*.rootDomain` en lugar de uno por subdominio generado) se pide por DNS-01 y exige un token de API de Cloudflare con permiso para escribir en el DNS de la zona. Quien lo obtenga puede cambiar los registros de esa zona (llevar el tráfico a otro servidor) y emitir certificados para cualquier nombre de ella. | Opcional y con el mínimo permiso: `CF_DNS_API_TOKEN` con «Zone · DNS · Edit» y «Zone · Zone · Read» (lego la necesita para encontrar la zona), limitados en «Zone Resources» a la zona del dominio raíz; la clave global de la cuenta no cuenta como token. Vive solo en el entorno de Traefik: el `.env` del servidor (ignorado por git; `chmod 600`), nunca en `skyway.db` ni en sus copias, y el contenedor de Skyway no lo recibe (`docker-compose.yml`). Skyway solo comprueba en el `docker inspect` de Traefik que tiene valor: no lo guarda, no lo registra ni lo devuelve (`GET /settings` dice `sin_token`/`ok`). Activarlo es de un admin, exige el resolutor y el token, y queda en la auditoría (`wildcard_cert_enabled`/`wildcard_cert_disabled`, con el dominio raíz). Solo lo usan los subdominios generados; los dominios propios siguen con su certificado por HTTP-01. Sin token, nada cambia. Prueba en `test/traefik-comodin.test.ts` (también que ni la API ni la auditoría incluyen el token y que el compose no se lo pasa al panel). |
 
 Todas verificadas: `npm run typecheck` y `npm run build` en verde, y *smoke test*
 del servidor confirmando las cabeceras y que las rutas nuevas exigen sesión.
@@ -359,6 +360,20 @@ Estos no son defectos, sino consecuencias del propósito de la herramienta
   zonas que ve); la auditoría no lo incluye. Recomendación:
   un token limitado a «Zone · Zone · Read» y «Zone · DNS · Edit» sobre las
   zonas necesarias, nunca la clave global (se rechaza).
+- **Token de DNS de Cloudflare de Traefik en claro** (certificado comodín,
+  `CF_DNS_API_TOKEN`): está en el `.env` del servidor y en el entorno del
+  contenedor de Traefik, porque lego lo envía tal cual a Cloudflare. Lo ve
+  quien pueda leer ese fichero o hacer `docker inspect` en el host, y por tanto
+  cualquier administrador de Skyway (controla el socket de Docker, §3 primer
+  punto): es la misma exposición que el resto del servidor. Mitigado: es
+  opcional, solo lo lee Traefik (el panel no lo recibe ni lo guarda) y basta
+  limitarlo a la zona del dominio raíz. Recomendación: un token dedicado, no el
+  del DNS automático (que suele ver todas las zonas); `chmod 600 .env`; y, si se
+  sospecha de un acceso al servidor o al panel, revocarlo en Cloudflare, crear
+  otro, ponerlo en el `.env` y ejecutar `docker compose up -d traefik`. Si se
+  quita sin desactivar el comodín, el certificado emitido deja de renovarse y,
+  mientras exista en `acme.json`, Traefik no pide certificados por nombre para
+  lo que cubre: el informe de seguridad lo avisa (`wildcard-unavailable`).
 - **Rutas de Mailway sin token**: quitar el token o la dirección deja publicadas
   en Traefik las últimas rutas buenas (re-saneadas con los dominios de ahora),
   para no dejar sin webmail a los clientes por un token rotado o borrado por

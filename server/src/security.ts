@@ -1,5 +1,6 @@
 import { countFailedLogins, getSetting, listProjects, listServicesForProjects } from './db';
 import { refreshTraefikAcme, tlsBlocked } from './tls';
+import { AJUSTE_COMODIN, RESOLUTOR_COMODIN, refreshTraefikComodin } from './comodin';
 import { channelsConfigured } from './notify';
 import { hostDisk } from './disk';
 import { DatabaseConfig, SecurityFinding, ServiceRow } from './types';
@@ -16,7 +17,7 @@ export async function securityFindings(): Promise<{ findings: SecurityFinding[];
   const tlsConfigured = !!getSetting('letsencryptEmail');
   // Con el ajuste puesto pero un correo de ejemplo en Traefik no se emite
   // ningún certificado: contarlo como TLS activo era dar por bueno lo roto.
-  await refreshTraefikAcme();
+  const [, comodin] = await Promise.all([refreshTraefikAcme(), refreshTraefikComodin()]);
   const tlsRoto = tlsBlocked();
 
   const servicesWithDomains: string[] = [];
@@ -94,6 +95,20 @@ export async function securityFindings(): Promise<{ findings: SecurityFinding[];
       title: 'TLS sin certificados: Traefik no tiene un correo válido para Let\'s Encrypt',
       detail: `Hay servicios con dominio (${servicesWithDomains.slice(0, 5).join(', ')}) y el correo de Let's Encrypt está configurado en el panel, pero Traefik arrancó con un correo de ejemplo, que Let's Encrypt rechaza: no se emite ningún certificado. Mientras tanto, Skyway no redirige los dominios a HTTPS.`,
       fix: 'Define LETSENCRYPT_EMAIL en el .env del servidor (junto a docker-compose.yml) con un correo real, o déjalo vacío, y recrea Traefik: docker compose up -d traefik. Después vuelve a desplegar los servicios con dominio.',
+    });
+  }
+
+  // El comodín ya emitido sigue en acme.json y Traefik lo sirve, pero sin el
+  // token no puede renovarlo; y mientras exista, Traefik no pide certificados
+  // por nombre para lo que cubre (comodin.ts): al caducar, los subdominios
+  // generados se quedarían con un certificado caducado.
+  if (tlsConfigured && getSetting(AJUSTE_COMODIN) === '1' && (comodin.resolutor === 'sin_token' || comodin.resolutor === 'sin_resolutor')) {
+    findings.push({
+      id: 'wildcard-unavailable',
+      severity: 'warning',
+      title: 'Certificado comodín activado sin el token de Cloudflare en Traefik',
+      detail: `El certificado comodín del dominio raíz está activado en Ajustes, pero Traefik no tiene el resolutor «${RESOLUTOR_COMODIN}» o el token de Cloudflare: no puede emitirlo ni renovarlo. Mientras tanto, Skyway no publica el router que lo pide y los servicios que se despliegan piden un certificado por nombre. Si el comodín ya estaba emitido, Traefik lo sirve hasta que caduque y, mientras exista, no pide certificados por nombre para los subdominios que cubre.`,
+      fix: 'Define CF_DNS_API_TOKEN en el .env del servidor y ejecuta docker compose up -d traefik, o desactiva «Certificado comodín para el dominio raíz» en Ajustes → Dominios y TLS. Para volver a un certificado por nombre, sigue los pasos de «Certificado comodín del dominio raíz» en el README.',
     });
   }
 

@@ -9,6 +9,7 @@ import { avisarServiciosQuePasanAUnaSolaCopia } from './deploy/avisoestrategia';
 import { marcarCambiosInterrumpidos } from './domainmigration';
 import { panelDomainWarning } from './paneldomain';
 import { refreshTraefikAcme } from './tls';
+import { refreshTraefikComodin } from './comodin';
 import { dockerAvailable } from './docker/client';
 import { ensureNetwork, EDGE_NETWORK } from './docker/networks';
 import { startMonitor, stopMonitor } from './monitor';
@@ -63,9 +64,11 @@ async function main(): Promise<void> {
   startMonitor({ warn: (msg) => app.log.warn(msg) });
   startScheduler({ warn: (msg) => app.log.warn(msg) });
   startAutoDeploy({ warn: (msg) => app.log.warn(msg) });
-  // El correo real de Traefik decide si hay TLS (tls.ts): se lee ya, antes de
-  // que el panel o un despliegue lo pregunten.
+  // El correo real de Traefik decide si hay TLS (tls.ts), y su resolutor
+  // `lecomodin`, si se usa el certificado comodín (comodin.ts): se leen ya,
+  // antes de que el panel, un despliegue o el proveedor HTTP lo pregunten.
   void refreshTraefikAcme();
+  void refreshTraefikComodin();
   // Restos de un intercambio que el reinicio cortó a mitad («--next», «--prev»):
   // un bot podía quedarse con dos copias vivas hasta su siguiente despliegue.
   // Solo se encola su limpieza (por la cola de cada servicio) y va ANTES del

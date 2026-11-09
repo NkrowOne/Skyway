@@ -52,6 +52,12 @@ services:
     image: traefik:v3.7.16
     container_name: skyway-traefik
     restart: unless-stopped
+    environment:
+      # Token de API de Cloudflare del certificado comodín del dominio raíz
+      # (resolutor «lecomodin», abajo). Opcional: vacío, ese resolutor no se usa
+      # y cada nombre sigue con su certificado («le»). Solo lo usa Traefik;
+      # Skyway únicamente comprueba que tiene valor (server/src/comodin.ts).
+      CF_DNS_API_TOKEN: ${CF_DNS_API_TOKEN:-}
     command:
       - --providers.docker=true
       - --providers.docker.exposedbydefault=false
@@ -78,6 +84,19 @@ services:
       - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
       - --certificatesresolvers.le.acme.httpchallenge=true
       - --certificatesresolvers.le.acme.httpchallenge.entrypoint=web
+      # Certificado comodín del dominio raíz (opcional): uno solo para el
+      # dominio raíz y *.dominio-raíz, por DNS-01 con la API de Cloudflare
+      # (CF_DNS_API_TOKEN). Lo pide Skyway por el proveedor HTTP de abajo cuando
+      # se activa en Ajustes → Dominios y TLS, y solo si Traefik tiene el token;
+      # sin él, este resolutor no se usa y no cambia nada. Comparte acme.json con
+      # «le»: cada resolutor guarda allí su cuenta y sus certificados.
+      - --certificatesresolvers.lecomodin.acme.email=${LETSENCRYPT_EMAIL:-}
+      - --certificatesresolvers.lecomodin.acme.storage=/letsencrypt/acme.json
+      - --certificatesresolvers.lecomodin.acme.dnschallenge.provider=cloudflare
+      # La zona y sus servidores DNS se buscan con los resolutores públicos de
+      # Cloudflare y no con los del servidor, que pueden tener otra vista de la
+      # zona (un DNS local para el mismo dominio) o el TXT anterior en caché.
+      - --certificatesresolvers.lecomodin.acme.dnschallenge.resolvers=1.1.1.1:53,1.0.0.1:53
       # Rutas de Mailway (webmail de marca blanca y autoconfiguración de los
       # dominios de correo de los clientes). Traefik las lee de Skyway, que las
       # obtiene de Mailway y las filtra: solo reglas Host() hacia contenedores

@@ -82,24 +82,36 @@ export function acmeEmailFromTraefik(args: readonly string[], env: readonly stri
   return undefined;
 }
 
+/**
+ * Línea de órdenes y entorno del contenedor de Traefik (`docker inspect`), o
+ * null si no se puede leer (sin Docker o sin ese contenedor). El entorno puede
+ * traer secretos, como el token de Cloudflare del certificado comodín: quien lo
+ * lee solo mira lo que necesita y no lo guarda (ver comodin.ts).
+ */
+export async function leerTraefik(): Promise<{ args: string[]; env: string[] } | null> {
+  try {
+    const info = await dockerQuery.getContainer(TRAEFIK_CONTAINER).inspect();
+    return {
+      args: [...((info.Config?.Cmd as string[] | null) ?? []), ...((info.Args as string[] | null) ?? [])],
+      env: (info.Config?.Env as string[] | null) ?? [],
+    };
+  } catch {
+    return null;
+  }
+}
+
 /** Vuelve a leer el correo de Traefik (como mucho una lectura a la vez). Nunca lanza. */
 export function refreshTraefikAcme(opts: { force?: boolean } = {}): Promise<TraefikAcmeState> {
   if (!opts.force && state.checkedAt !== null && Date.now() - state.checkedAt < TTL_MS) return Promise.resolve(state);
   if (inflight) return inflight;
   inflight = (async () => {
-    let next: TraefikAcmeState;
-    try {
-      const info = await dockerQuery.getContainer(TRAEFIK_CONTAINER).inspect();
-      const args = [...((info.Config?.Cmd as string[] | null) ?? []), ...((info.Args as string[] | null) ?? [])];
-      const email = acmeEmailFromTraefik(args, (info.Config?.Env as string[] | null) ?? []);
-      next =
-        email === undefined
-          ? { status: 'unknown', email: null, checkedAt: Date.now() }
-          : { status: classifyAcmeEmail(email), email: email.trim() || null, checkedAt: Date.now() };
-    } catch {
-      // Sin Docker o sin ese contenedor: no se sabe, y se confía en el ajuste.
-      next = { status: 'unknown', email: null, checkedAt: Date.now() };
-    }
+    const traefik = await leerTraefik();
+    // Sin Docker o sin ese contenedor: no se sabe, y se confía en el ajuste.
+    const email = traefik ? acmeEmailFromTraefik(traefik.args, traefik.env) : undefined;
+    const next: TraefikAcmeState =
+      email === undefined
+        ? { status: 'unknown', email: null, checkedAt: Date.now() }
+        : { status: classifyAcmeEmail(email), email: email.trim() || null, checkedAt: Date.now() };
     state = next;
     return next;
   })().finally(() => {
