@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import https from 'node:https';
 import net, { type AddressInfo } from 'node:net';
@@ -943,6 +943,45 @@ describe.skipIf(!hayOpenssl)('certificado y remisión a una AEAT simulada', () =
     } finally {
       mudo.closeAllConnections();
       await new Promise((ok) => mudo.close(ok));
+    }
+  });
+
+  it('un rechazo del certificado de cliente en el TLS no deja el envío como enviado, ni en TLS 1.2 ni en 1.3', async () => {
+    // Un servidor que solo acepta certificados de otra CA y lo dice con una
+    // alerta TLS, como la AEAT. En TLS 1.3 la alerta llega después de que el
+    // cliente haya escrito la petición, y aun así el servicio no la ha visto.
+    // (Un servidor https de Node cierra sin alerta: no sirve para esto.)
+    openssl(['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', 'otra-ca.key', '-out', 'otra-ca.pem', '-days', '7300', '-subj', '/CN=OTRA CA DE PRUEBAS']);
+    const cert = { pfx: leer('cliente.p12'), passphrase: 'clave de pruebas' };
+    for (const version of ['-tls1_2', '-tls1_3']) {
+      const libre = net.createServer();
+      await new Promise<void>((ok) => libre.listen(0, '127.0.0.1', ok));
+      const port = (libre.address() as AddressInfo).port;
+      await new Promise((ok) => libre.close(ok));
+      const servidor = spawn(
+        'openssl',
+        ['s_server', '-accept', `127.0.0.1:${port}`, '-key', 'servidor.key', '-cert', 'servidor.pem', '-Verify', '1', '-verify_return_error', '-CAfile', 'otra-ca.pem', version, '-quiet'],
+        { cwd: dirCert, stdio: 'ignore' },
+      );
+      try {
+        // Hasta que escuche (sin pasar de 5 s).
+        for (let i = 0; i < 100; i++) {
+          const escucha = await new Promise<boolean>((ok) => {
+            const c = net.connect(port, '127.0.0.1', () => {
+              c.destroy();
+              ok(true);
+            });
+            c.on('error', () => ok(false));
+          });
+          if (escucha) break;
+          await new Promise((ok) => setTimeout(ok, 50));
+        }
+        const error = await peticionHttps(`https://localhost:${port}/x`, '<x/>', cert, { timeoutMs: 5000, ca: leer('servidor.pem') }).catch((e: unknown) => e);
+        expect(error, version).toBeInstanceOf(Error);
+        expect(error, version).toMatchObject({ enviado: false });
+      } finally {
+        servidor.kill();
+      }
     }
   });
 

@@ -86,10 +86,21 @@ export function peticionHttps(
   return new Promise((resolve, reject) => {
     const u = new URL(url);
     const datos = cuerpo === null ? null : Buffer.from(cuerpo, 'utf8');
-    // 'finish': la petición entera ha salido hacia la AEAT. Un fallo antes (DNS,
-    // conexión rechazada, TLS) deja claro que no ha llegado; uno después, no.
+    // ¿Pudo el servicio ver la petición? Solo si salió entera ('finish') por una
+    // sesión TLS establecida ('secureConnect') y lo que falla después no es un
+    // rechazo del propio TLS. Un fallo antes (DNS, conexión rechazada, handshake)
+    // deja claro que no ha llegado. Y una alerta TLS (el servidor rechaza el
+    // certificado de cliente) puede llegar después de 'finish': en TLS 1.3 el
+    // cliente da el handshake por hecho y escribe antes de que el servidor
+    // valide su certificado, pero el servicio nunca ve esa petición.
     let entregada = false;
-    const rechazar = (err: Error): void => reject(Object.assign(err, { enviado: entregada }));
+    let segura = false;
+    let conRespuesta = false;
+    const rechazar = (err: Error): void => {
+      const codigo = (err as NodeJS.ErrnoException).code ?? '';
+      const rechazoTls = /^ERR_SSL_/.test(codigo) || codigo === 'EPROTO';
+      reject(Object.assign(err, { enviado: entregada && segura && (conRespuesta || !rechazoTls) }));
+    };
     const req = https.request(
       {
         protocol: u.protocol,
@@ -110,6 +121,7 @@ export function peticionHttps(
           : { Accept: 'text/xml' },
       },
       (res) => {
+        conRespuesta = true;
         const trozos: Buffer[] = [];
         let total = 0;
         res.on('data', (c: Buffer) => {
@@ -124,6 +136,11 @@ export function peticionHttps(
         res.on('error', rechazar);
       },
     );
+    req.on('socket', (s) => {
+      s.once('secureConnect', () => {
+        segura = true;
+      });
+    });
     req.on('finish', () => {
       entregada = true;
     });

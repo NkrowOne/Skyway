@@ -350,20 +350,22 @@ Art. 20 y 21 de la Orden y especificación del QR de la AEAT:
     repetida), las alertas de los registros anteriores de esa factura quedan
     resueltas.
   - `Incorrecto` con 3000 (duplicado) y `RegistroDuplicado`: si un envío anterior
-    del registro acabó sin saber si la AEAT lo guardó (la petición salió y se cortó
-    la conexión o se perdió la respuesta, llegó una respuesta HTTP que no era del
-    servicio, o la respuesta no traía su línea; columna `envio_incierto`), es el
-    propio registro y manda el estado que ya tenía la AEAT: en un alta, `Correcta`
-    → `correcto` y `AceptadaConErrores` → `aceptado_con_errores`; en una
-    anulación, `Anulada` → `correcto`. Al reenviar un alta, una factura `Anulada`
-    en la AEAT es otra (la anulación de una factura nunca sale antes de resolverse
-    su alta): rechazo. Una anulación reenviada tras un envío incierto que la AEAT
-    rechaza con 3001 (ya dada de baja) o con 3000 sin `RegistroDuplicado` (como
-    una anulación «sin registro previo» que sí llegó, anexo 6.2 de las
-    validaciones) queda `correcto`: repetirla se rechazaría sin fin. Si no hubo ningún envío incierto (el primer envío, o
-    tras un SOAP Fault, en el que la AEAT no guarda nada), quiere decir que la AEAT
-    ya tiene otra factura con ese número y fecha (de otro sistema, o un número
-    reutilizado): el registro queda `incorrecto`, con su alerta.
+    del registro acabó sin saber si la AEAT lo guardó (la petición salió entera por
+    una sesión TLS establecida y se cortó la conexión o se perdió la respuesta,
+    llegó una respuesta HTTP que no era del servicio, o la respuesta no traía su
+    línea; columna `envio_incierto`), es el propio registro y manda el estado que
+    ya tenía la AEAT: en un alta, `Correcta` → `correcto` y `AceptadaConErrores` →
+    `aceptado_con_errores`; en una anulación, `Anulada` → `correcto`. Al reenviar
+    un alta, una factura `Anulada` en la AEAT es otra (la anulación de una factura
+    nunca sale antes de resolverse su alta): rechazo. Si no hubo ningún envío
+    incierto (el primer envío, o tras un SOAP Fault, en el que la AEAT no guarda
+    nada), quiere decir que la AEAT ya tiene otra factura con ese número y fecha (de
+    otro sistema, o un número reutilizado): el registro queda `incorrecto`, con su
+    alerta.
+  - Una anulación reenviada tras un envío incierto que la AEAT rechaza con 3001
+    (ya dada de baja) o con 3000 sin `RegistroDuplicado` (como una anulación «sin
+    registro previo» que sí llegó, anexo 6.2 de las validaciones) queda
+    `correcto`: repetirla se rechazaría sin fin.
   - SOAP Fault (envío entero rechazado, códigos 4xxx) → los registros siguen en
     cola y se reintenta, salvo que el rechazo lo cause un registro (punto
     siguiente).
