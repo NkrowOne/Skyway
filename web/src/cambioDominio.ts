@@ -207,8 +207,13 @@ export interface MigracionSkyway {
 export interface ListaCambios {
   abierta: MigracionSkyway | null;
   anteriores: MigracionSkyway[];
-  /** Dominios de los servicios del proyecto, para proponer el actual. */
+  /** Dominios de los servicios del proyecto, para proponer el actual (primero los dominios raíz anteriores). */
   dominios: string[];
+  /**
+   * Dominio nuevo que se propone al elegir uno de `dominios` como actual: para
+   * un dominio raíz anterior, el dominio raíz actual de la plataforma.
+   */
+  propuestas: Record<string, string>;
 }
 
 export interface PeticionPlan {

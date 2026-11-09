@@ -33,10 +33,10 @@ import {
   getPrepublished,
   getProject,
   getService,
-  getSetting,
   serviceIdsForDomain,
 } from './db';
 import { completarParejasWww, limpiarSinPareja } from './dominioprincipal';
+import { raicesGeneradas } from './dominioraiz';
 import { mailwayProject, mailwayReservedHosts } from './mailway';
 import { mailwayPublishedHosts, mailwayWhitelabelHosts } from './mailwaytraefik';
 import { panelDomains } from './paneldomain';
@@ -149,14 +149,16 @@ export function dominiosConPareja(
   domains: readonly string[],
   opts: { claim: DomainClaim; sinPareja?: readonly string[]; nuevos?: Iterable<string> },
 ): { domains: string[]; anadidos: string[]; sinPareja: string[] } {
-  const rootDomain = getSetting('rootDomain');
+  // El actual y los anteriores: un subdominio de un dominio raíz anterior
+  // sigue al final de la lista y sin pareja con www, como cuando se generó.
+  const raices = raicesGeneradas();
   const { domains: completos, anadidos } = completarParejasWww(domains, {
-    rootDomain,
+    raices,
     nuevos: opts.nuevos,
     sinPareja: opts.sinPareja,
     disponible: (d) => domainClaimError([d], opts.claim) === null,
   });
-  return { domains: completos, anadidos, sinPareja: limpiarSinPareja(opts.sinPareja ?? [], completos, rootDomain) };
+  return { domains: completos, anadidos, sinPareja: limpiarSinPareja(opts.sinPareja ?? [], completos, raices) };
 }
 
 /**

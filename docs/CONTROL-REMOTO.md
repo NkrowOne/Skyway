@@ -321,7 +321,11 @@ se consulta, `GET /api/cloudflare/config`, y se prueba,
 `POST /api/cloudflare/test`). Por lo mismo, descargar una copia de `skyway.db`
 (`GET /api/system/backups/:file/download`), que lleva el token en claro, exige
 sesión de navegador: con un token de API se crea, se lista y se borra, pero no
-se descarga. Desde la terminal del servidor, el instalador de
+se descarga. Y por lo mismo, cargar o retirar el certificado electrónico de
+VERI*FACTU (`POST` y `DELETE /api/verifactu/certificado`) exige sesión de
+navegador: con un token de API se consulta el estado (`GET /api/verifactu`), se
+prueba la conexión y se envía la cola, pero no se cambia el certificado. Desde la
+terminal del servidor, el instalador de
 Mailway lo deja puesto con el token SOLO por la entrada estándar (un token en
 los argumentos se rechaza sin leer nada); la salida nunca incluye el token:
 

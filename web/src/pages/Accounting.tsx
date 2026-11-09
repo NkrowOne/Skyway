@@ -5,6 +5,7 @@ import { Ban, Building2, CalendarClock, Coins, CreditCard, Download, Landmark, R
 import { api } from '../api';
 import { Button, Chip, EmptyState, ErrorState, Field, NumberInput, Skeleton, StatusBadge, Toggle, useToast } from '../components/ui';
 import { RevenueBars } from '../components/BillingCharts';
+import VerifactuSettings, { VerifactuMarca } from '../components/Verifactu';
 import { AccountingInvoice, AccountingSummary, AiGatewayConfig, AiModelPrices, AiPriceSync, AiPriceSyncState, BillingAutomation, BillingProfile, BillingProfileResponse, InvoiceStatus } from '../types';
 import { cx, fmtDate, fmtMoney, timeAgo } from '../utils';
 
@@ -162,7 +163,10 @@ export default function AccountingPage() {
                           <span className="font-mono text-xs text-subtle">{inv.number ?? '—'}</span>
                           <span className="truncate">{inv.workspace_name ?? 'Sin cuenta'}</span>
                         </p>
-                        <p className="text-xs text-subtle">{fmtDate(inv.period_start)}{inv.payment_method === 'stripe' ? ' · Stripe' : inv.payment_method === 'bank_transfer' ? ' · transferencia' : ''}</p>
+                        <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-subtle">
+                          <span>{fmtDate(inv.period_start)}{inv.payment_method === 'stripe' ? ' · Stripe' : inv.payment_method === 'bank_transfer' ? ' · transferencia' : ''}</span>
+                          {inv.verifactu && <VerifactuMarca v={inv.verifactu} />}
+                        </p>
                       </div>
                       <div className="flex shrink-0 items-center gap-2">
                         <span className="text-sm font-semibold tnum">{fmtMoney(inv.total_cents, inv.currency)}</span>
@@ -179,6 +183,10 @@ export default function AccountingPage() {
 
       <div className="mt-5">
         <CompanyProfile />
+      </div>
+
+      <div className="mt-5">
+        <VerifactuSettings />
       </div>
 
       <div className="mt-5">
@@ -735,9 +743,12 @@ function CompanyProfile() {
       const d = draft!;
       const payload: Record<string, unknown> = {
         companyName: d.companyName, taxId: d.taxId, address: d.address, email: d.email, phone: d.phone,
+        // El modo de VERI*FACTU no viaja desde aquí: lo cambia su propia sección,
+        // que confirma la activación y el paso a producción.
         currency: d.currency, vatRate: d.vatRate, invoicePrefix: d.invoicePrefix, paymentTermsDays: d.paymentTermsDays,
-        defaultIrpfRate: d.defaultIrpfRate, sifMode: d.sifMode,
+        defaultIrpfRate: d.defaultIrpfRate,
         iban: d.iban, bic: d.bic, bankName: d.bankName, footer: d.footer, stripePublishableKey: d.stripePublishableKey,
+        paymentReturnUrl: d.paymentReturnUrl,
         smtpHost: d.smtpHost, smtpPort: d.smtpPort, smtpSecure: d.smtpSecure, smtpUser: d.smtpUser,
         smtpFrom: d.smtpFrom, smtpFromName: d.smtpFromName,
       };
@@ -753,6 +764,9 @@ function CompanyProfile() {
       // La moneda de la empresa es la de los totales de arriba: cambiarla
       // dejaba los KPI en la divisa anterior hasta recargar.
       queryClient.invalidateQueries({ queryKey: ['accounting-summary'] });
+      // VERI*FACTU toma del emisor el productor por defecto, la declaración
+      // responsable y el aviso de un certificado de otro NIF.
+      queryClient.invalidateQueries({ queryKey: ['verifactu'] });
     },
     onError: (err: Error) => toast(err.message, 'err'),
   });
@@ -777,18 +791,9 @@ function CompanyProfile() {
           <Field label="Moneda"><input className="input" maxLength={3} value={draft.currency} onChange={(e) => set({ currency: e.target.value })} /></Field>
           <Field label="Prefijo de serie" hint="Por ejemplo, FRA · numeración por ejercicio"><input className="input" maxLength={12} value={draft.invoicePrefix} onChange={(e) => set({ invoicePrefix: e.target.value })} /></Field>
         </div>
-        <div className="grid gap-3 sm:grid-cols-3">
+        <div className="grid gap-3 sm:grid-cols-2">
           <Field label="IVA por defecto (%)"><NumberInput className="input tnum" inputMode="decimal" min={0} max={100} value={draft.vatRate} onChange={(v) => set({ vatRate: v })} /></Field>
           <Field label="IRPF por defecto (%)" hint="0 en el caso de sociedades"><NumberInput className="input tnum" inputMode="decimal" min={0} max={100} value={draft.defaultIrpfRate} onChange={(v) => set({ defaultIrpfRate: v })} /></Field>
-          {/* El registro encadenado (invoice_ledger) está creado como reserva, pero
-              la huella, el QR y la remisión a la AEAT aún no se implementan: el
-              selector solo deja constancia de la intención, no activa nada. */}
-          <Field label="Modo Verifactu" hint="Preparado, todavía no operativo">
-            <select className="input" value={draft.sifMode} onChange={(e) => set({ sifMode: e.target.value as BillingProfile['sifMode'] })}>
-              <option value="no_verifactu">No Verifactu (local)</option>
-              <option value="verifactu">Verifactu (AEAT) — pendiente de activar</option>
-            </select>
-          </Field>
         </div>
         <Field label="Pie de factura"><textarea className="input min-h-14" value={draft.footer} onChange={(e) => set({ footer: e.target.value })} placeholder="Condiciones, agradecimiento…" /></Field>
       </section>
@@ -819,6 +824,12 @@ function CompanyProfile() {
               <input className="input font-mono" type="password" value={draft.stripeWebhookSecret} onChange={(e) => set({ stripeWebhookSecret: e.target.value })} placeholder={stripe.hasWebhookSecret ? '•••••••• configurado' : 'whsec_…'} />
             </Field>
             <Field label="Clave publicable (pk_…)"><input className="input font-mono" value={draft.stripePublishableKey} onChange={(e) => set({ stripePublishableKey: e.target.value })} placeholder="pk_live_…" /></Field>
+            <Field
+              label="Página de vuelta tras pagar"
+              hint="Página pública a la que vuelve el cliente al pagar o cancelar con Stripe, por ejemplo una página de la web de la empresa. Si se deja vacía, vuelve al panel, que pide iniciar sesión."
+            >
+              <input className="input font-mono" type="url" inputMode="url" value={draft.paymentReturnUrl} onChange={(e) => set({ paymentReturnUrl: e.target.value })} placeholder="https://www.empresa.com/pago" />
+            </Field>
           </div>
         </section>
 

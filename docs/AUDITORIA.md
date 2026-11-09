@@ -40,7 +40,7 @@ recomendaciones a futuro.
 | 15 | Alta | Dependencias | `npm audit` señalaba avisos sin parche en lo instalado: Fastify 4 (sin soporte desde junio de 2025) y `find-my-way` (entre otros, `request.protocol` y `request.host` se podían falsear con `X-Forwarded-Proto`/`-Host` desde una conexión que no llegaba de un proxy de confianza, y validaciones de cuerpo que se podían saltar), `proxy-addr` (IP falseable con subredes IPv4 mapeadas en IPv6), `@fastify/static` ≤ 10.1.1 (guardas de ruta que se saltaban con rutas no canónicas), `@simplewebauthn/server` ≤ 13.3.1 (certificados de atestación que no encadenaban con un ancla de confianza), React Router 6 (redirección abierta con `\` en `<Link>` y `navigate`) y `uuid` < 11.1.1 (vía `dockerode` 4). | Fastify 5.12, `@fastify/static` 10, `@fastify/cookie` 11, SimpleWebAuthn 14, React Router 7 y `dockerode` 5 (ya no usa `uuid`); Node 22 como mínimo. `X-Forwarded-Host` y `X-Forwarded-Proto` solo cuentan si la conexión llega de un proxy de confianza (HSTS, cookie `Secure`, guarda CSRF y URLs públicas del panel); `TRUST_PROXY` con un número de saltos conserva su criterio, que Fastify 5 ya no admite como número. La web compilada responde 403 a las rutas no canónicas (`//`, `/./`, `/../`) y `;` deja de separar la query. Las passkeys se guardan igual y las registradas antes siguen iniciando sesión (`test/passkeys.test.ts`, con filas de la versión anterior); `test/proxy.test.ts`, `test/estaticos.test.ts` y `test/http.test.ts` fijan el resto. |
 | 16 | Alta | Dependencias de desarrollo | `npm audit` (sin `--omit=dev`) señalaba avisos críticos en las herramientas de pruebas y de compilación, que no llegan a la imagen: `tinypool` < 2.1.2 (contaminación de prototipo que acaba en ejecución de código, vía `vitest` 2), `vitest` < 3.2.6 (lectura y ejecución de ficheros con la interfaz de Vitest escuchando), `@vitest/mocker` < 4.1.11 (lectura de ficheros arbitrarios), `vite` ≤ 6.4.2 (saltos de `server.fs.deny` y recorrido de rutas en el servidor de desarrollo) y su `esbuild` ≤ 0.24.2 (cualquier web podía hacer peticiones al servidor de desarrollo y leer la respuesta). | `vite` 6.4.4 y `vitest` 5.0.3 en los dos espacios de trabajo, con un solo `vite` en el árbol (`server` lo declara porque `vitest` 5 lo exige como dependencia par) y `@vitejs/plugin-react` ≥ 4.7.0. `rollup` y el `esbuild` de `tsx` siguen en la misma versión y ninguna dependencia de producción cambia. Quedan los avisos de la cadena de Tailwind 3 (`braces`, `micromatch`, `fast-glob`, `chokidar`, `postcss-selector-parser`): denegación de servicio al compilar con patrones o CSS del propio repositorio, sin entrada externa; se resuelven con Tailwind 4, que es una migración aparte. |
 | 17 | Media | Dominios reservados (Mailway) | Al cambiar los nombres de la instancia de Mailway, Skyway sustituía la lista de hosts reservados por los nuevos: `mail.viejo.com` y `webmail.viejo.com`, que siguen apuntando al servidor y que los titulares tienen configurados, quedaban libres y el servicio de un cliente podía asignárselos y obtener su certificado. | Los nombres que dejan de anunciarse (por la instancia, por la URL configurada, al desconectar o en las etiquetas de Traefik de los contenedores `mailway-*`) pasan a `mailway.previousHosts` y siguen reservados hasta que el administrador los libera en Ajustes → Correo (`DELETE /mailway/previous-hosts/:host`, con sesión). Prueba en `test/dominios.test.ts`. |
-| 18 | Media | DNS automático (reemplazo) | Nuevo: el administrador puede sustituir en Cloudflare el registro del hosting anterior. Sin límites, permitiría reapuntar nombres de la plataforma o de otro proyecto. | Solo administrador con sesión de navegador, solo A/AAAA/CNAME del nombre exacto, confirmando los registros revisados (409 si cambiaron), en un lote atómico y con copia para restaurar (un segundo reemplazo del mismo nombre se suma a la copia, no la sustituye); nunca el panel, el `rootDomain`, los nombres de Mailway ni los reservados a otro proyecto. |
+| 18 | Media | DNS automático (reemplazo) | Nuevo: el administrador puede sustituir en Cloudflare el registro del hosting anterior. Sin límites, permitiría reapuntar nombres de la plataforma o de otro proyecto. | Solo administrador con sesión de navegador, solo A/AAAA/CNAME del nombre exacto, confirmando los registros revisados (409 si cambiaron), en un lote atómico y con copia para restaurar (un segundo reemplazo del mismo nombre se suma a la copia, no la sustituye); nunca el panel, el `rootDomain` (ni un dominio raíz anterior mientras siga en `rootDomainAnteriores`), los nombres de Mailway ni los reservados a otro proyecto. |
 | 19 | Alta | Dependencias / DoS | zod 3.25 (congelado: zod 4 es una versión mayor que no se adopta) tiene el aviso GHSA-mrhx-c7xc-m3w5: `z.array()` valida todos los elementos aunque la lista pase de `.max()` y crea un issue por cada uno que no vale (`z.record()`, por cada clave), y varios esquemas no llevaban `.max()`. Un JSON de 1 MB con medio millón de ceros en `projectIds` costaba unos 200 MB de memoria y 0,6 s de CPU por petición, y la respuesta de error ocupaba 17 MB. | Hook `preValidation` global en `app.ts` (`superaTopeElementos`, `topecuerpo.ts`): un cuerpo con más de 20 000 elementos (elementos de lista más claves de objeto, contados sin recursión y con salida temprana) responde 400 `demasiados_elementos` antes de que corra ningún handler ni esquema, también en el login. La misma petición cuesta ahora unos 12 ms y 5 MB. Quedan fuera el proxy del gateway de IA (`/gw/…`, reenvía el cuerpo sin zod) y los webhooks (`/api/webhooks/…`, firmados y sin zod); la subida de archivos recibe un Buffer, que no se recorre. Prueba en `test/tope-elementos.test.ts`. |
 
 Todas verificadas: `npm run typecheck` y `npm run build` en verde, y *smoke test*
@@ -106,6 +106,22 @@ del servidor confirmando las cabeceras y que las rutas nuevas exigen sesión.
   auditoría específica del cálculo (qué se cobra, cuántas veces y a quién) está en
   [AUDITORIA-FACTURACION.md](AUDITORIA-FACTURACION.md), que corrigió 34 defectos —
   dos de ellos críticos— y deja 13 puntos pendientes.
+- **VERI*FACTU** (`routes/verifactu.ts`, `verifactu/*.ts`; diseño en
+  [VERIFACTU.md](VERIFACTU.md)): todas las rutas exigen **admin**, validan con
+  **zod** y auditan (`verifactu_updated`, `verifactu_certificate_uploaded`,
+  `verifactu_certificate_removed`, `verifactu_send_now`,
+  `verifactu_record_corrected`). El **certificado electrónico** (.pfx/.p12) y su
+  contraseña se guardan en `settings` como las claves de Stripe y **nunca se
+  devuelven**: la API, la auditoría y el registro de eventos solo llevan sus datos
+  públicos (titular, NIF, caducidad, huella SHA-256); tamaño máximo 64 KB y
+  base64 comprobado. El TLS con la AEAT verifica su certificado de servidor con
+  las raíces de Node (incluyen las de la FNMT) y no se desactiva nunca. La
+  respuesta de la AEAT se lee con un analizador propio que rechaza DOCTYPE (sin
+  entidades externas) y con un tope de 8 MB; el XML de salida escapa todos los
+  textos y elimina los caracteres que la AEAT no admite. Los registros
+  (`invoice_ledger`) y los eventos son **inmutables**: disparadores de SQLite
+  impiden borrarlos o cambiar lo encadenado. Las facturas de una cuenta solo
+  enseñan a su propietario el estado de su propio registro.
 
 - **Integración con Mailway (correo)** (`mailway.ts`, `mailwaytraefik.ts`,
   `mailwaycuentas.ts`, `mailwayrenovacion.ts`, `routes/mailway.ts`): el token
@@ -318,6 +334,15 @@ del servidor confirmando las cabeceras y que las rutas nuevas exigen sesión.
 
 Estos no son defectos, sino consecuencias del propósito de la herramienta
 (paridad con Railway). Se documentan para que sean decisiones conscientes.
+
+- **Certificado de VERI*FACTU en la base de datos**: el .pfx y su contraseña viven
+  en `settings`, igual que las claves de Stripe y el secreto de las sesiones, así
+  que quien tenga una copia de `skyway.db` (o acceso de administrador al servidor)
+  tiene el certificado, con el que se puede actuar ante la AEAT en nombre de su
+  titular. Cifrarlo con una clave guardada en la misma base no protegería nada.
+  Mitigado: nunca sale por la API; se recomienda un certificado de representante
+  o de sello antes que el personal del administrador, y proteger las copias de
+  la base como se protege el propio certificado.
 
 - **Control del Docker del host**: montar `/var/run/docker.sock` implica que quien
   entra en Skyway controla todos los contenedores del servidor. Mitigado por bind

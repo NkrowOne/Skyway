@@ -1,7 +1,7 @@
 import { createHash } from 'crypto';
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { assertWorkspaceAccess, requireAdmin, requireAuth } from '../auth';
+import { assertWorkspaceAccess, currentUser, requireAdmin, requireAuth } from '../auth';
 import { audit, auditSystem } from '../audit';
 import {
   assignSeriesNumber,
@@ -23,6 +23,8 @@ import {
   planContractedSince,
   reopenChargesForInvoice,
   reopenChargesNotIn,
+  registrosDeFactura,
+  registrosDeFacturas,
   transaction,
   updateInvoice,
   updateWorkspace,
@@ -38,8 +40,12 @@ import { getBillingAutomation } from '../billingsettings';
 import { priceTiers } from '../pricing';
 import { reactivateWorkspaceIfCurrent } from '../billingauto';
 import { StripeError, createStripeCheckout, retrieveStripeCheckout, stripeAmount } from '../stripe';
-import { BillingProfile, InvoiceLine, InvoiceRow, InvoiceStatus, IssuerSnapshot, PlanRow, TaxBreakdownEntry, VatRegime, WorkspaceRow } from '../types';
+import { BillingProfile, InvoiceLine, InvoiceRow, InvoiceStatus, IssuerSnapshot, PlanRow, RegistroFacturacionRow, TaxBreakdownEntry, VatRegime, WorkspaceRow } from '../types';
 import { safeParse } from '../util';
+import { verifactuActivo } from '../verifactu/ajustes';
+import { fechaExpedicionIso, fechaLocal } from '../verifactu/formato';
+import { ErrorVerifactu, registrarAlta, registrarAnulacion, resumenRegistros, ultimaAlta } from '../verifactu/registro';
+import { avisarRemision } from '../verifactu/remision';
 
 const HOUR_MS = 3_600_000;
 
@@ -366,6 +372,7 @@ function invoicePdfData(inv: InvoiceRow): InvoicePdfData {
   return {
     number: inv.number ?? 'BORRADOR',
     status: inv.status,
+    issuedDate: fechaExpedicionIso(inv),
     invoiceType: inv.invoice_type === 'rectificativa' ? 'rectificativa' : inv.invoice_type === 'simplificada' ? 'simplificada' : 'normal',
     issuedAt: inv.issued_at,
     operationDate: inv.operation_date,
@@ -401,6 +408,12 @@ function invoicePdfData(inv: InvoiceRow): InvoicePdfData {
     paymentMethod: inv.payment_method,
     bank: { iban: profile.iban, bic: profile.bic, bankName: profile.bankName },
     footer: profile.footer,
+    // QR tributario de VERI*FACTU: el del último registro de alta de la factura
+    // (una subsanación no cambia los datos del QR, pero manda la última).
+    verifactu: (() => {
+      const alta = ultimaAlta(inv.id);
+      return alta?.qr_url ? { qrUrl: alta.qr_url, entorno: alta.entorno } : null;
+    })(),
   };
 }
 
@@ -509,7 +522,11 @@ function issuerSnapshot(profile: BillingProfile): IssuerSnapshot {
   };
 }
 
-function publicInvoice(inv: InvoiceRow) {
+/**
+ * La factura tal como la ve el panel. `registros` son sus registros de
+ * VERI*FACTU si quien llama ya los tiene (los listados los leen de una vez).
+ */
+function publicInvoice(inv: InvoiceRow, registros?: RegistroFacturacionRow[]) {
   return {
     id: inv.id,
     workspace_id: inv.workspace_id,
@@ -542,6 +559,7 @@ function publicInvoice(inv: InvoiceRow) {
     payment_method: inv.payment_method,
     stripe_url: inv.stripe_url,
     issued_at: inv.issued_at,
+    issued_date: fechaExpedicionIso(inv),
     // Vencimiento congelado al emitir: es el que imprime el PDF y el que usa la
     // morosidad; sin exponerlo el panel no podía mostrar cuándo vence.
     due_at: inv.due_at,
@@ -549,6 +567,9 @@ function publicInvoice(inv: InvoiceRow) {
     locked: inv.locked,
     notes: inv.notes,
     created_at: inv.created_at,
+    rectify_code: inv.rectify_code,
+    // Estado del registro de VERI*FACTU (null si la factura no tiene ninguno).
+    verifactu: resumenRegistros(registros ?? registrosDeFactura(inv.id)),
   };
 }
 
@@ -798,12 +819,39 @@ function performEmission(inv: InvoiceRow, target: 'issued' | 'paid', extra: Reco
     const blocker = fiscalBlocker(inv, profile, ws);
     if (blocker) throw new BillingError(blocker);
   }
+  const primeraEmision = !inv.number;
+  let emitida: InvoiceRow;
+  try {
+    emitida = emitirEnTransaccion(inv, target, extra, opts, profile, ws);
+  } catch (err) {
+    // Un dato que haría rechazar el registro de VERI*FACTU deshace la emisión
+    // entera (número incluido): mejor un borrador por corregir que una factura
+    // emitida con su registro rechazado.
+    if (err instanceof ErrorVerifactu) throw new BillingError(err.message);
+    throw err;
+  }
+  if (primeraEmision && verifactuActivo()) avisarRemision();
+  return emitida;
+}
+
+function emitirEnTransaccion(
+  inv: InvoiceRow,
+  target: 'issued' | 'paid',
+  extra: Record<string, unknown>,
+  opts: { requireFiscalData?: boolean },
+  profile: BillingProfile,
+  ws: WorkspaceRow | undefined,
+): InvoiceRow {
   return transaction(() => {
     const fields: Record<string, unknown> = { ...extra };
     const issuedAt = (extra.issued_at as number | undefined) ?? inv.issued_at ?? Date.now();
     // Congelar emisor y destinatario la primera vez que se emite.
     if (!inv.issued_at) {
       fields.issued_at = issuedAt;
+      // La fecha de expedición se fija ya, en hora peninsular: de madrugada la
+      // UTC sería la del día anterior (y, en Nochevieja, del año anterior). La
+      // imprimen el PDF y el registro de VERI*FACTU, y fija el año de la serie.
+      fields.issued_date = fechaLocal(issuedAt);
       // El vencimiento se resuelve AQUÍ y se congela: es lo que se imprime en la
       // factura y lo que la morosidad usa para contar los días de impago.
       fields.due_at = issuedAt + profile.paymentTermsDays * 86_400_000;
@@ -821,7 +869,9 @@ function performEmission(inv: InvoiceRow, target: 'issued' | 'paid', extra: Reco
       const code = isRect ? 'REC' : (profile.invoicePrefix || 'FRA').trim() || 'FRA';
       const assigned = assignSeriesNumber({
         code,
-        year: new Date(issuedAt).getFullYear(),
+        // El año de la serie es el de la fecha de expedición que se imprime (y
+        // que lleva el registro), no el del reloj del proceso.
+        year: Number(fechaExpedicionIso({ issued_date: inv.issued_date ?? (fields.issued_date as string | undefined), issued_at: issuedAt })!.slice(0, 4)),
         prefix: code,
         kind: isRect ? 'rectificativa' : inv.invoice_type === 'simplificada' ? 'simplificada' : 'ordinaria',
       });
@@ -843,7 +893,14 @@ function performEmission(inv: InvoiceRow, target: 'issued' | 'paid', extra: Reco
     if (ws && inv.period_start === ws.last_billed_period_end && inv.period_end > inv.period_start) {
       updateWorkspace(ws.id, { last_billed_period_end: inv.period_end });
     }
-    return getInvoice(inv.id)!;
+    const emitida = getInvoice(inv.id)!;
+    // VERI*FACTU: el registro de alta nace con el número, en esta misma
+    // transacción (art. 9 del RD 1007/2023: se genera al expedir la factura).
+    // Solo en la primera emisión: pasar de emitida a pagada no es otra factura.
+    if (!inv.number && verifactuActivo()) {
+      registrarAlta(emitida, { estricto: !!opts.requireFiscalData });
+    }
+    return emitida;
   });
 }
 
@@ -1123,6 +1180,20 @@ export function generateCycleDraft(ws: WorkspaceRow, cycle = currentCycle(ws)): 
   });
 }
 
+/**
+ * URL de vuelta de Stripe Checkout en la página pública del perfil: añade
+ * `estado` y `factura` sin perder los parámetros que ya traiga (si repite uno de
+ * los dos, prevalece el de Skyway). `searchParams` reescribe la consulta entera y
+ * codifica las llaves, pero Stripe solo sustituye `{CHECKOUT_SESSION_ID}` escrito
+ * con llaves literales: se le devuelve esa forma.
+ */
+function urlDeVueltaStripe(pagina: string, estado: 'pagado' | 'cancelado', factura: string): string {
+  const url = new URL(pagina);
+  url.searchParams.set('estado', estado);
+  url.searchParams.set('factura', factura);
+  return url.href.replace(/%7BCHECKOUT_SESSION_ID%7D/g, '{CHECKOUT_SESSION_ID}');
+}
+
 /** Facturas cuyo enlace de Stripe se está creando ahora mismo (guarda contra el doble clic). */
 const stripeLinkEnCurso = new Set<string>();
 
@@ -1136,7 +1207,20 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
     if (!ws) return reply.code(404).send({ error: 'Workspace no encontrado' });
     if (!assertWorkspaceAccess(req, reply, id)) return reply;
     return {
-      invoices: listInvoices(id).map(publicInvoice),
+      invoices: (() => {
+        const facturas = listInvoices(id);
+        const registros = registrosDeFacturas(facturas.map((f) => f.id));
+        // El propietario de la cuenta ve si su factura consta en la AEAT y su QR,
+        // pero no el CSV del envío (un envío agrupa facturas de varios clientes)
+        // ni la huella o los errores, que son cosa del emisor.
+        const admin = currentUser(req)?.role === 'admin';
+        return facturas.map((f) => {
+          const pub = publicInvoice(f, registros.get(f.id) ?? []);
+          if (admin || !pub.verifactu) return pub;
+          const { estado, tipo, entorno, qrUrl } = pub.verifactu;
+          return { ...pub, verifactu: { estado, tipo, entorno, qrUrl } };
+        });
+      })(),
       issuer: getBillingProfile(),
       client: {
         name: ws.name,
@@ -1321,7 +1405,22 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
       }
     } else {
       if (target !== inv.status) fields.status = target; // draft/issued → void
-      updateInvoice(id, fields);
+      let anulada: ReturnType<typeof registrarAnulacion> = null;
+      try {
+        anulada = transaction(() => {
+          updateInvoice(id, fields);
+          // VERI*FACTU: anular una factura emitida genera su registro de
+          // anulación en la misma transacción (con alta, aunque el modo esté ya
+          // desactivado: la AEAT tiene el alta y tiene que saber que se anuló).
+          return target === 'void' && inv.status !== 'void' && inv.number ? registrarAnulacion(getInvoice(id)!) : null;
+        });
+      } catch (err) {
+        // Reloj del servidor atrasado respecto al último registro: no se anula
+        // nada hasta corregirlo. (Una anomalía de la cadena no bloquea: avisa.)
+        if (err instanceof ErrorVerifactu) return reply.code(409).send({ error: err.message });
+        throw err;
+      }
+      if (anulada) avisarRemision();
       // Al anular, los cargos puntuales enlazados vuelven a pendientes (no se
       // pierden) y el periodo vuelve a estar sin facturar.
       if (target === 'void' && inv.status !== 'void') {
@@ -1423,6 +1522,11 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
     const body = z
       .object({
         reason: z.string().trim().min(3).max(500),
+        // Causa de la rectificación con las claves de VERI*FACTU: R1 (art. 80.Uno,
+        // Dos y Seis de la Ley del IVA —descuentos, devoluciones, operaciones
+        // resueltas— o error fundado en derecho), R2 (concurso), R3 (créditos
+        // incobrables) o R4 (resto: cualquier otro error de la factura).
+        cause: z.enum(['R1', 'R2', 'R3', 'R4']).default('R1'),
         // Líneas CORRECTAS (lo que la factura debería decir). Vacío = anulación total.
         lines: z.array(lineSchema).max(100).default([]),
         operationDate: z.coerce.number().int().nullable().optional(),
@@ -1455,6 +1559,7 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
       invoice_type: 'rectificativa',
       rectifies_invoice_id: original.id,
       rectify_reason: body.reason,
+      rectify_code: body.cause,
       currency: original.currency,
       subtotal_cents: totals.subtotal,
       tax_cents: totals.tax,
@@ -1522,6 +1627,10 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
         throw err;
       }
       const number = issued.number ?? issued.id;
+      // Quien paga no tiene por qué tener cuenta en el panel: con una página de
+      // vuelta en el perfil, Stripe le devuelve a ella y no a la pantalla de
+      // inicio de sesión. Sin ella se vuelve al panel, como siempre.
+      const paginaDeVuelta = getBillingProfile().paymentReturnUrl;
 
       try {
         const session = await createStripeCheckout(secret, {
@@ -1529,8 +1638,8 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
           currency: issued.currency,
           invoiceNumber: number,
           invoiceId: issued.id,
-          successUrl: `${origin}/workspaces/${issued.workspace_id}?paid=1`,
-          cancelUrl: `${origin}/workspaces/${issued.workspace_id}`,
+          successUrl: paginaDeVuelta ? urlDeVueltaStripe(paginaDeVuelta, 'pagado', number) : `${origin}/workspaces/${issued.workspace_id}?paid=1`,
+          cancelUrl: paginaDeVuelta ? urlDeVueltaStripe(paginaDeVuelta, 'cancelado', number) : `${origin}/workspaces/${issued.workspace_id}`,
           customerEmail: ws?.billing_email ?? null,
         });
         // Si el webhook la ha cobrado mientras se creaba la sesión, no se pisa el

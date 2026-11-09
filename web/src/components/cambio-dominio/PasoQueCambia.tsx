@@ -19,6 +19,12 @@ import { Aviso, Avisos, AvisosWebhooks, Desplegable } from './comunes';
 
 const ROTULO_AMBITO = { project: 'Compartida', service: 'Servicio', build: 'Compilación' } as const;
 
+/** El dominio nuevo que se propone para un dominio actual; solo las claves propias (no «constructor» ni «toString»). */
+function propuestaPara(propuestas: Record<string, string>, dominio: string): string | null {
+  const clave = dominio.trim().toLowerCase();
+  return Object.prototype.hasOwnProperty.call(propuestas, clave) ? propuestas[clave] : null;
+}
+
 function modoTexto(modo: ModoHost, to: string): string {
   if (modo === 'redirigir') return `Redirigir a ${to}`;
   if (modo === 'servir') return `Servir también en ${to} (sin redirigir)`;
@@ -29,19 +35,29 @@ function modoTexto(modo: ModoHost, to: string): string {
  * Paso 1, «Qué cambia»: los dos dominios y la vista previa (web, correo y
  * variables) con sus bloqueos. Revisar un nombre o una variable vuelve a pedir
  * el plan: la huella que se envía al preparar es la de lo que se ve.
+ *
+ * Elegir un dominio raíz anterior como dominio actual rellena el dominio nuevo
+ * con el raíz actual (`propuestas`): un solo cambio mueve todos los
+ * subdominios generados del proyecto.
  */
 export default function PasoQueCambia({
   projectId,
   dominios,
+  propuestas,
   onPreparado,
 }: {
   projectId: string;
   dominios: string[];
+  propuestas: Record<string, string>;
   onPreparado: (m: MigracionSkyway) => void;
 }) {
   const toast = useToast();
   const [from, setFrom] = useState(dominios[0] ?? '');
-  const [to, setTo] = useState('');
+  const [to, setTo] = useState(() => propuestaPara(propuestas, dominios[0] ?? '') ?? '');
+  // El dominio nuevo que se rellenó solo: mientras nadie lo cambie, elegir
+  // otro dominio actual lo sustituye por su propuesta (o lo vacía). Lo escrito
+  // a mano no se toca.
+  const [toPropuesto, setToPropuesto] = useState<string | null>(() => propuestaPara(propuestas, dominios[0] ?? ''));
   const [soloWeb, setSoloWeb] = useState(false);
   const [plan, setPlan] = useState<PlanSkyway | null>(null);
   // La petición con la que se obtuvo el plan: los cambios de modo o de
@@ -111,6 +127,15 @@ export default function PasoQueCambia({
     calcular.mutate({ fromDomain: from.trim(), toDomain: to.trim(), soloWeb });
   };
 
+  const elegirActual = (valor: string) => {
+    setFrom(valor);
+    if (to.trim() && to !== toPropuesto) return;
+    const propuesto = propuestaPara(propuestas, valor);
+    setTo(propuesto ?? '');
+    setToPropuesto(propuesto);
+  };
+  const raizPropuesta = propuestaPara(propuestas, from);
+
   // Lo escrito ya no es lo calculado: el plan de abajo es de otros dominios.
   const desfasado = !!pedido && (pedido.fromDomain !== from.trim() || pedido.toDomain !== to.trim() || pedido.soloWeb !== soloWeb);
   const destino = plan?.toDomain ?? to.trim();
@@ -124,7 +149,7 @@ export default function PasoQueCambia({
               className="input font-mono"
               list="cambio-dominio-actuales"
               value={from}
-              onChange={(e) => setFrom(e.target.value)}
+              onChange={(e) => elegirActual(e.target.value)}
               placeholder="dominio.es"
               autoCapitalize="off"
               autoCorrect="off"
@@ -150,6 +175,13 @@ export default function PasoQueCambia({
             />
           </Field>
         </div>
+        {raizPropuesta && (
+          <p className="text-xs text-subtle">
+            <span className="font-mono">{from.trim()}</span> es un dominio raíz anterior. Con el dominio raíz actual,{' '}
+            <span className="font-mono">{raizPropuesta}</span>, como dominio nuevo, un solo cambio de dominio mueve todos los subdominios de
+            este proyecto que dependen de él.
+          </p>
+        )}
         {/* También si el plan falla: sin poder consultar el correo (Mailway no
             responde, el cliente está vinculado a otra integración), la web se
             puede cambiar igualmente. */}

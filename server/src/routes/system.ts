@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { currentUser, requireAdmin, requireAuth, requireSession } from '../auth';
 import { audit } from '../audit';
 import { config } from '../config';
-import { getSetting, setSetting } from '../db';
+import { getSetting, setSetting, transaction } from '../db';
 import { dockerDiskTotals, hostDisk } from '../disk';
 import { dockerAvailable } from '../docker/client';
 import { dockerErrorText } from '../docker/resources';
@@ -17,6 +17,14 @@ import { verifyGithubToken } from '../github/client';
 import { DEFAULT_KEEP_IMAGES } from '../deploy/deployer';
 import { refreshTraefikAcme } from '../tls';
 import { esIpv6Publicable } from '../domains';
+import {
+  anterioresTrasCambio,
+  dominioRaiz,
+  guardarRaicesAnteriores,
+  MAX_RAICES_ANTERIORES,
+  quitarRaizAnterior,
+  usoRaicesAnteriores,
+} from '../dominioraiz';
 import { domainSchema } from './services';
 import {
   SYSTEM_BACKUP_RETENTION,
@@ -190,6 +198,9 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
         settings: out,
         traefikAcme: { status: acme.status, email: acme.email },
         defaults: { keepImages: DEFAULT_KEEP_IMAGES },
+        // Con cuántos servicios los usan todavía: con 0, quitarlos de la lista
+        // ya no cambia el dominio principal de nadie.
+        rootDomainAnteriores: usoRaicesAnteriores(),
       };
     });
 
@@ -229,11 +240,28 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
       if (keepImages !== undefined && keepImages !== '' && !(/^\d{1,2}$/.test(keepImages) && Number(keepImages) >= 1 && Number(keepImages) <= 50)) {
         return reply.code(400).send({ error: 'Las versiones conservadas por servicio deben ser un número entre 1 y 50.', code: 'invalid_keep_images' });
       }
+      // Cambiar el dominio raíz no mueve ningún servicio: el que se sustituye
+      // pasa a la lista de anteriores para que sus subdominios sigan contando
+      // como generados, y volver a uno de la lista lo quita (`dominioraiz.ts`).
+      // Se calcula antes de guardar nada: con la lista llena no cambia ningún ajuste.
+      const raizActual = dominioRaiz();
+      const raizNueva = body.rootDomain === undefined ? undefined : body.rootDomain || null;
+      const cambiaRaiz = raizNueva !== undefined && raizNueva !== raizActual;
+      const anteriores = cambiaRaiz ? anterioresTrasCambio(raizActual, raizNueva) : null;
+      if (anteriores && anteriores.length > MAX_RAICES_ANTERIORES) {
+        return reply.code(400).send({
+          error: `Ya hay ${MAX_RAICES_ANTERIORES} dominios raíz anteriores. Quita en la lista los que ya no se usen antes de cambiar el dominio raíz.`,
+          code: 'too_many_previous_root_domains',
+        });
+      }
 
       const setIf = (key: string, value: string | number | undefined) => {
         if (value !== undefined) setSetting(key, value === '' ? null : String(value));
       };
-      setIf('rootDomain', body.rootDomain);
+      transaction(() => {
+        setIf('rootDomain', body.rootDomain);
+        if (anteriores) guardarRaicesAnteriores(anteriores);
+      });
       setIf('letsencryptEmail', body.letsencryptEmail);
       setIf('serverIp', body.serverIp);
       setIf('serverIpv6', body.serverIpv6);
@@ -247,7 +275,26 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
       setIf('alertTelegramChat', body.alertTelegramChat);
       setIf('keepImages', keepImages);
       audit(req, 'settings_updated');
+      if (cambiaRaiz) {
+        audit(req, 'root_domain_changed', { type: 'system', id: 'rootDomain', detail: `${raizActual ?? '(vacío)'} → ${raizNueva ?? '(vacío)'}` });
+      }
       return { ok: true };
+    });
+
+    /**
+     * Quita un dominio raíz anterior de la lista: sus subdominios dejan de
+     * contar como generados y, en un servicio que también tenga un dominio
+     * propio, uno de ellos puede pasar a ser el dominio principal en el
+     * siguiente despliegue. Es para cuando ya se han movido todos con «Cambiar
+     * de dominio» (`GET /settings` dice cuántos servicios lo usan todavía).
+     */
+    secured.delete('/api/settings/previous-root-domains/:domain', { preHandler: requireAdmin }, async (req, reply) => {
+      const { domain } = z.object({ domain: domainSchema }).parse(req.params);
+      if (!quitarRaizAnterior(domain)) {
+        return reply.code(404).send({ error: `${domain} no está entre los dominios raíz anteriores.`, code: 'not_found' });
+      }
+      audit(req, 'previous_root_domain_removed', { type: 'system', id: 'rootDomain', detail: domain });
+      return { ok: true, rootDomainAnteriores: usoRaicesAnteriores() };
     });
 
     /** Valida el token de GitHub: el guardado, o uno pasado para probar antes de guardar. */

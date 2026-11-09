@@ -12,6 +12,7 @@ import {
   GithubConnectorRow,
   GithubInstallationRow,
   HostMetricHour,
+  EventoSifRow,
   InvoiceRow,
   InvoiceSeriesRow,
   MailwayLinkRow,
@@ -25,6 +26,7 @@ import {
   PlanPeriodRow,
   PlanRow,
   ProjectRow,
+  RegistroFacturacionRow,
   ServiceConfig,
   ServiceMetricHour,
   ServiceMetricSample,
@@ -688,6 +690,8 @@ export function initDb(): void {
   ensureColumn('workspace_invoices', 'invoice_type', "TEXT NOT NULL DEFAULT 'normal'");
   ensureColumn('workspace_invoices', 'rectifies_invoice_id', 'TEXT');
   ensureColumn('workspace_invoices', 'rectify_reason', 'TEXT');
+  // Causa de la rectificativa con las claves de VERI*FACTU (R1…R4).
+  ensureColumn('workspace_invoices', 'rectify_code', 'TEXT');
   ensureColumn('workspace_invoices', 'operation_date', 'INTEGER');
   ensureColumn('workspace_invoices', 'tax_breakdown', "TEXT NOT NULL DEFAULT '[]'");
   ensureColumn('workspace_invoices', 'vat_regime', "TEXT NOT NULL DEFAULT 'general'");
@@ -711,6 +715,45 @@ export function initDb(): void {
   // la suspensión no puedan divergir.
   ensureColumn('workspace_invoices', 'due_at', 'INTEGER');
   ensureColumn('workspace_invoices', 'locked', 'INTEGER NOT NULL DEFAULT 0');
+  // Fecha de expedición en hora peninsular, congelada al emitir (ver InvoiceRow).
+  ensureColumn('workspace_invoices', 'issued_date', 'TEXT');
+  // VERI*FACTU: el libro de registros (`invoice_ledger`) se creó vacío como
+  // reserva; estas columnas completan lo que necesita la remisión a la AEAT.
+  // `registro_json` es la foto del registro con los campos de la AEAT: el XML
+  // se construye siempre desde ella, nunca desde la factura viva.
+  ensureColumn('invoice_ledger', 'entorno', "TEXT NOT NULL DEFAULT 'pruebas'");
+  ensureColumn('invoice_ledger', 'registro_json', "TEXT NOT NULL DEFAULT '{}'");
+  ensureColumn('invoice_ledger', 'subsanacion', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('invoice_ledger', 'incidencia', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('invoice_ledger', 'intentos', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn('invoice_ledger', 'ultimo_intento_at', 'INTEGER');
+  ensureColumn('invoice_ledger', 'respuesta_at', 'INTEGER');
+  ensureColumn('invoice_ledger', 'codigo_error', 'TEXT');
+  ensureColumn('invoice_ledger', 'descripcion_error', 'TEXT');
+  ensureColumn('invoice_ledger', 'id_peticion', 'TEXT');
+  ensureColumn('invoice_ledger', 'envio_incierto', 'INTEGER NOT NULL DEFAULT 0');
+  db.exec(`
+    -- Una cadena por emisor y entorno: dos registros nunca ocupan el mismo
+    -- puesto, ni aunque dos emisiones se cruzaran.
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_ledger_cadena ON invoice_ledger(emisor_nif, entorno, seq);
+    CREATE INDEX IF NOT EXISTS idx_ledger_estado ON invoice_ledger(estado_remision, entorno, seq);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_events_log_seq ON invoice_events_log(seq);
+    -- Registros inmutables (art. 8 del RD 1007/2023): solo cambia lo que dice
+    -- la AEAT al remitirlos. Un borrado o un cambio de los datos encadenados
+    -- rompería la cadena sin que nadie lo notara hasta la siguiente remisión.
+    CREATE TRIGGER IF NOT EXISTS trg_ledger_sin_borrado BEFORE DELETE ON invoice_ledger
+    BEGIN SELECT RAISE(ABORT, 'Los registros de facturación no se pueden borrar'); END;
+    CREATE TRIGGER IF NOT EXISTS trg_ledger_inmutable BEFORE UPDATE OF
+      id, seq, invoice_id, record_type, emisor_nif, num_serie_factura, fecha_expedicion, tipo_factura,
+      cuota_total_cents, importe_total_cents, fecha_hora_gen, huella, huella_anterior, sif_mode, firma,
+      qr_url, version_sif, created_at, entorno, registro_json, subsanacion
+    ON invoice_ledger
+    BEGIN SELECT RAISE(ABORT, 'Los registros de facturación no se pueden modificar'); END;
+    CREATE TRIGGER IF NOT EXISTS trg_events_log_sin_borrado BEFORE DELETE ON invoice_events_log
+    BEGIN SELECT RAISE(ABORT, 'El registro de eventos no se puede borrar'); END;
+    CREATE TRIGGER IF NOT EXISTS trg_events_log_inmutable BEFORE UPDATE ON invoice_events_log
+    BEGIN SELECT RAISE(ABORT, 'El registro de eventos no se puede modificar'); END;
+  `);
   // Datos fiscales del cliente (destinatario de la factura).
   ensureColumn('workspaces', 'billing_tax_id', 'TEXT');
   ensureColumn('workspaces', 'billing_address', 'TEXT');
@@ -892,6 +935,36 @@ export function initDb(): void {
   backfillPlanPeriods();
   releaseDeletedProjectRefs();
   mailwayLinksCompartidos();
+  verifactuModoSinActivar();
+}
+
+/**
+ * Hasta la 0.40, el selector «Modo Verifactu» de los datos de la empresa
+ * guardaba 'verifactu' («pendiente de activar») sin activar nada. Leído tal
+ * cual por esta versión, VERI*FACTU quedaría activo sin pasar por la
+ * activación (sin comprobar el NIF ni anotar el evento): se vuelve a
+ * desactivado si nunca se ha generado un registro ni anotado una activación.
+ * Una sola vez; en una instalación nueva solo deja la marca.
+ */
+function verifactuModoSinActivar(): void {
+  if (getSetting('migrations:verifactu_modo_v1') === 'done') return;
+  db.transaction(() => {
+    const raw = getSetting('billingProfile');
+    let perfil: Record<string, unknown> | null = null;
+    try {
+      const v = raw ? JSON.parse(raw) : null;
+      perfil = v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+    } catch {
+      perfil = null;
+    }
+    const usado =
+      !!stmt('SELECT 1 FROM invoice_ledger LIMIT 1').get() ||
+      !!stmt("SELECT 1 FROM invoice_events_log WHERE tipo_evento = 'activacion' LIMIT 1").get();
+    if (perfil && perfil.sifMode === 'verifactu' && !usado) {
+      setSetting('billingProfile', JSON.stringify({ ...perfil, sifMode: 'desactivado' }));
+    }
+    setSetting('migrations:verifactu_modo_v1', 'done');
+  })();
 }
 
 /**
@@ -2475,6 +2548,11 @@ export function serviceIdsForDomain(domain: string): string[] {
     .map((r) => r.id);
 }
 
+/** Los dominios de cada servicio que tiene alguno, en minúsculas (solo la columna de configuración). */
+export function listServiceDomains(): { id: string; domains: string[] }[] {
+  return serviceDomainRows();
+}
+
 function serviceDomainRows(): { id: string; domains: string[] }[] {
   const out: { id: string; domains: string[] }[] = [];
   for (const row of stmt('SELECT id, config FROM services').all() as { id: string; config: string }[]) {
@@ -3698,11 +3776,11 @@ export function getInvoice(invoiceId: string): InvoiceRow | undefined {
 
 /** Valores por defecto de las columnas fiscales/opcionales de una factura nueva. */
 const INVOICE_DEFAULTS = {
-  series_id: null, number: null, invoice_type: 'normal', rectifies_invoice_id: null, rectify_reason: null,
+  series_id: null, number: null, invoice_type: 'normal', rectifies_invoice_id: null, rectify_reason: null, rectify_code: null,
   operation_date: null, tax_breakdown: '[]', vat_regime: 'general', legal_mentions: null,
   irpf_rate: 0, irpf_cents: 0, issuer_snapshot: null, client_name: null, client_tax_id: null,
   client_address: null, client_country: null, origin: 'manual', plan_name: null, payment_method: null, stripe_session_id: null,
-  stripe_url: null, issued_at: null, due_at: null, paid_at: null, locked: 0, notes: null,
+  stripe_url: null, issued_at: null, issued_date: null, due_at: null, paid_at: null, locked: 0, notes: null,
 } as const;
 
 type InvoiceCore = Pick<
@@ -3714,27 +3792,27 @@ export function createInvoice(row: InvoiceCore & Partial<InvoiceRow>): InvoiceRo
   const full: InvoiceRow = { ...INVOICE_DEFAULTS, ...row, id: id('inv'), created_at: now() };
   stmt(
     `INSERT INTO workspace_invoices (
-       id, workspace_id, series_id, number, invoice_type, rectifies_invoice_id, rectify_reason,
+       id, workspace_id, series_id, number, invoice_type, rectifies_invoice_id, rectify_reason, rectify_code,
        period_start, period_end, operation_date, status, currency, subtotal_cents, tax_cents, tax_rate,
        tax_breakdown, vat_regime, legal_mentions, irpf_rate, irpf_cents, total_cents, lines, plan_name,
        issuer_snapshot, client_name, client_tax_id, client_address, client_country, origin, payment_method, stripe_session_id,
-       stripe_url, issued_at, due_at, paid_at, locked, notes, created_at)
+       stripe_url, issued_at, issued_date, due_at, paid_at, locked, notes, created_at)
      VALUES (
-       @id, @workspace_id, @series_id, @number, @invoice_type, @rectifies_invoice_id, @rectify_reason,
+       @id, @workspace_id, @series_id, @number, @invoice_type, @rectifies_invoice_id, @rectify_reason, @rectify_code,
        @period_start, @period_end, @operation_date, @status, @currency, @subtotal_cents, @tax_cents, @tax_rate,
        @tax_breakdown, @vat_regime, @legal_mentions, @irpf_rate, @irpf_cents, @total_cents, @lines, @plan_name,
        @issuer_snapshot, @client_name, @client_tax_id, @client_address, @client_country, @origin, @payment_method, @stripe_session_id,
-       @stripe_url, @issued_at, @due_at, @paid_at, @locked, @notes, @created_at)`,
+       @stripe_url, @issued_at, @issued_date, @due_at, @paid_at, @locked, @notes, @created_at)`,
   ).run(full);
   return full;
 }
 
 const INVOICE_COLUMNS = new Set([
-  'series_id', 'number', 'invoice_type', 'rectifies_invoice_id', 'rectify_reason', 'period_start',
+  'series_id', 'number', 'invoice_type', 'rectifies_invoice_id', 'rectify_reason', 'rectify_code', 'period_start',
   'period_end', 'operation_date', 'status', 'currency', 'subtotal_cents', 'tax_cents', 'tax_rate',
   'tax_breakdown', 'vat_regime', 'legal_mentions', 'irpf_rate', 'irpf_cents', 'total_cents', 'lines',
   'plan_name', 'issuer_snapshot', 'client_name', 'client_tax_id', 'client_address', 'client_country', 'payment_method',
-  'stripe_session_id', 'stripe_url', 'issued_at', 'due_at', 'paid_at', 'locked', 'notes',
+  'stripe_session_id', 'stripe_url', 'issued_at', 'issued_date', 'due_at', 'paid_at', 'locked', 'notes',
 ]);
 
 export function updateInvoice(invoiceId: string, fields: Record<string, unknown>): void {
@@ -3826,6 +3904,178 @@ export function assignSeriesNumber(opts: {
 
 export function listInvoiceSeries(): InvoiceSeriesRow[] {
   return stmt('SELECT * FROM invoice_series ORDER BY year DESC, code ASC').all() as InvoiceSeriesRow[];
+}
+
+// ---------- VERI*FACTU: libro de registros de facturación ----------
+
+/** Último registro de la cadena de un emisor en un entorno (el que encadena el siguiente). */
+export function ultimoRegistroCadena(emisorNif: string, entorno: string): RegistroFacturacionRow | undefined {
+  return stmt('SELECT * FROM invoice_ledger WHERE emisor_nif = ? AND entorno = ? ORDER BY seq DESC LIMIT 1').get(emisorNif, entorno) as
+    | RegistroFacturacionRow
+    | undefined;
+}
+
+export function insertarRegistroFacturacion(r: RegistroFacturacionRow): void {
+  stmt(
+    `INSERT INTO invoice_ledger (
+       id, seq, invoice_id, record_type, emisor_nif, num_serie_factura, fecha_expedicion, tipo_factura,
+       cuota_total_cents, importe_total_cents, fecha_hora_gen, huella, huella_anterior, sif_mode, firma,
+       qr_url, estado_remision, csv_aeat, version_sif, created_at, entorno, registro_json, subsanacion,
+       incidencia, intentos, ultimo_intento_at, respuesta_at, codigo_error, descripcion_error, id_peticion, envio_incierto)
+     VALUES (
+       @id, @seq, @invoice_id, @record_type, @emisor_nif, @num_serie_factura, @fecha_expedicion, @tipo_factura,
+       @cuota_total_cents, @importe_total_cents, @fecha_hora_gen, @huella, @huella_anterior, @sif_mode, @firma,
+       @qr_url, @estado_remision, @csv_aeat, @version_sif, @created_at, @entorno, @registro_json, @subsanacion,
+       @incidencia, @intentos, @ultimo_intento_at, @respuesta_at, @codigo_error, @descripcion_error, @id_peticion, @envio_incierto)`,
+  ).run(r);
+}
+
+/** Registros de una factura, en el orden en que se generaron. */
+export function registrosDeFactura(invoiceId: string): RegistroFacturacionRow[] {
+  // Por orden de inserción (rowid), que es el de la cadena: `created_at` puede
+  // retroceder si el reloj del servidor da un paso atrás (hasta un minuto).
+  return stmt('SELECT * FROM invoice_ledger WHERE invoice_id = ? ORDER BY rowid ASC').all(invoiceId) as RegistroFacturacionRow[];
+}
+
+/** Registros de varias facturas a la vez (listados), agrupados por factura. */
+export function registrosDeFacturas(invoiceIds: string[]): Map<string, RegistroFacturacionRow[]> {
+  const out = new Map<string, RegistroFacturacionRow[]>();
+  for (let i = 0; i < invoiceIds.length; i += 500) {
+    const trozo = invoiceIds.slice(i, i + 500);
+    if (trozo.length === 0) continue;
+    const filas = stmt(
+      `SELECT * FROM invoice_ledger WHERE invoice_id IN (${trozo.map(() => '?').join(',')}) ORDER BY rowid ASC`,
+    ).all(...trozo) as RegistroFacturacionRow[];
+    for (const f of filas) {
+      const lista = out.get(f.invoice_id);
+      if (lista) lista.push(f);
+      else out.set(f.invoice_id, [f]);
+    }
+  }
+  return out;
+}
+
+export function getRegistroFacturacion(registroId: string): RegistroFacturacionRow | undefined {
+  return stmt('SELECT * FROM invoice_ledger WHERE id = ?').get(registroId) as RegistroFacturacionRow | undefined;
+}
+
+/** Cadenas (emisor y entorno) con registros en cola, la de registro pendiente más antiguo primero. */
+export function cadenasConPendientes(): { emisor_nif: string; entorno: string }[] {
+  return stmt(
+    `SELECT emisor_nif, entorno FROM invoice_ledger WHERE estado_remision = 'pendiente'
+      GROUP BY emisor_nif, entorno ORDER BY MIN(rowid) ASC`,
+  ).all() as { emisor_nif: string; entorno: string }[];
+}
+
+/** Registros en cola de una cadena, en su orden. */
+export function pendientesDeCadena(emisorNif: string, entorno: string, limite: number): RegistroFacturacionRow[] {
+  return stmt(
+    "SELECT * FROM invoice_ledger WHERE estado_remision = 'pendiente' AND emisor_nif = ? AND entorno = ? ORDER BY rowid ASC LIMIT ?",
+  ).all(emisorNif, entorno, limite) as RegistroFacturacionRow[];
+}
+
+/** Registro de una cadena por su puesto (para comprobar el enlace del último con el anterior). */
+export function registroDeCadena(emisorNif: string, entorno: string, seq: number): RegistroFacturacionRow | undefined {
+  return stmt('SELECT * FROM invoice_ledger WHERE emisor_nif = ? AND entorno = ? AND seq = ?').get(emisorNif, entorno, seq) as
+    | RegistroFacturacionRow
+    | undefined;
+}
+
+/** Columnas que cambian con la remisión: las únicas que permiten los disparadores. */
+export type CamposRemision = Partial<
+  Pick<
+    RegistroFacturacionRow,
+    | 'estado_remision'
+    | 'csv_aeat'
+    | 'incidencia'
+    | 'intentos'
+    | 'ultimo_intento_at'
+    | 'respuesta_at'
+    | 'codigo_error'
+    | 'descripcion_error'
+    | 'id_peticion'
+    | 'envio_incierto'
+  >
+>;
+
+const COLUMNAS_REMISION = new Set([
+  'estado_remision', 'csv_aeat', 'incidencia', 'intentos', 'ultimo_intento_at', 'respuesta_at', 'codigo_error', 'descripcion_error', 'id_peticion',
+  'envio_incierto',
+]);
+
+export function actualizarRemisionRegistro(registroId: string, campos: CamposRemision): void {
+  const claves = Object.keys(campos).filter((k) => COLUMNAS_REMISION.has(k));
+  if (claves.length === 0) return;
+  stmt(`UPDATE invoice_ledger SET ${claves.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`).run(
+    ...claves.map((k) => (campos as Record<string, unknown>)[k]),
+    registroId,
+  );
+}
+
+/**
+ * Registros en cola que no se pudieron remitir a su hora (con incidencia): los
+ * del aviso del art. 16.4. Con `entorno`, solo los de ese entorno.
+ */
+export function contarPendientesConIncidencia(entorno?: string): number {
+  if (entorno) {
+    return (stmt("SELECT COUNT(*) AS n FROM invoice_ledger WHERE estado_remision = 'pendiente' AND incidencia = 1 AND entorno = ?").get(entorno) as { n: number }).n;
+  }
+  return (stmt("SELECT COUNT(*) AS n FROM invoice_ledger WHERE estado_remision = 'pendiente' AND incidencia = 1").get() as { n: number }).n;
+}
+
+export function contarRegistrosPendientes(): number {
+  return (stmt("SELECT COUNT(*) AS n FROM invoice_ledger WHERE estado_remision = 'pendiente'").get() as { n: number }).n;
+}
+
+/** Marca como afectados por una incidencia los registros que siguen en cola (de una cadena, o de todas). */
+export function marcarIncidenciaPendientes(cadena?: { emisorNif: string; entorno: string }): number {
+  if (cadena) {
+    return stmt("UPDATE invoice_ledger SET incidencia = 1 WHERE estado_remision = 'pendiente' AND incidencia = 0 AND emisor_nif = ? AND entorno = ?").run(
+      cadena.emisorNif,
+      cadena.entorno,
+    ).changes;
+  }
+  return stmt("UPDATE invoice_ledger SET incidencia = 1 WHERE estado_remision = 'pendiente' AND incidencia = 0").run().changes;
+}
+
+/** Últimos registros con el número de la factura, para el panel. */
+export function listarRegistrosFacturacion(limite: number): (RegistroFacturacionRow & { invoice_number: string | null; workspace_id: string | null })[] {
+  return stmt(
+    `SELECT l.*, i.number AS invoice_number, i.workspace_id AS workspace_id FROM invoice_ledger l
+     LEFT JOIN workspace_invoices i ON i.id = l.invoice_id
+     ORDER BY l.rowid DESC LIMIT ?`,
+  ).all(limite) as (RegistroFacturacionRow & { invoice_number: string | null; workspace_id: string | null })[];
+}
+
+/** Recuento de registros por entorno y estado. */
+export function recuentoRegistrosFacturacion(): { entorno: string; estado_remision: string; n: number }[] {
+  return stmt('SELECT entorno, estado_remision, COUNT(*) AS n FROM invoice_ledger GROUP BY entorno, estado_remision').all() as {
+    entorno: string;
+    estado_remision: string;
+    n: number;
+  }[];
+}
+
+/** ¿Se ha generado alguna vez un registro para el entorno de producción? */
+export function hayRegistrosProduccion(): boolean {
+  return !!stmt("SELECT 1 FROM invoice_ledger WHERE entorno = 'produccion' LIMIT 1").get();
+}
+
+// ---------- VERI*FACTU: registro de eventos ----------
+
+export function ultimoEventoSif(): EventoSifRow | undefined {
+  return stmt('SELECT * FROM invoice_events_log ORDER BY seq DESC LIMIT 1').get() as EventoSifRow | undefined;
+}
+
+export function insertarEventoSif(e: EventoSifRow): void {
+  stmt(
+    `INSERT INTO invoice_events_log (id, seq, tipo_evento, ts, detalle, huella_evento, huella_evento_anterior, created_at)
+     VALUES (@id, @seq, @tipo_evento, @ts, @detalle, @huella_evento, @huella_evento_anterior, @created_at)`,
+  ).run(e);
+}
+
+export function listarEventosSif(limite: number): EventoSifRow[] {
+  return stmt('SELECT * FROM invoice_events_log ORDER BY seq DESC LIMIT ?').all(limite) as EventoSifRow[];
 }
 
 /** Todas las facturas de todos los workspaces, con el nombre del cliente, para la contabilidad. */

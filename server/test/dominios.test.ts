@@ -432,8 +432,18 @@ describe('T12/CD-12: reemplazar en Cloudflare el registro del hosting anterior',
       });
       expect(p.status).toBe(409);
       expect(escrituras()).toEqual([]);
+
+      // Tras cambiar el dominio raíz, el anterior sigue protegido mientras esté en la lista.
+      expect((await call('PUT', '/api/settings', admin(), { rootDomain: 'apps2.operador.com' })).status).toBe(200);
+      const anterior = await call('GET', `/api/services/${svc.id}/cloudflare-dns/replace?domain=apps.operador.com`, admin());
+      expect(anterior.json.plan.motivo).toMatch(/dominio raíz anterior/);
+      expect((await call('DELETE', '/api/settings/previous-root-domains/apps.operador.com', admin())).status).toBe(200);
+      const libre = await call('GET', `/api/services/${svc.id}/cloudflare-dns/replace?domain=apps.operador.com`, admin());
+      expect(libre.json.plan.motivo).toBeNull();
+      expect(escrituras()).toEqual([]);
     } finally {
       setSetting('rootDomain', null);
+      setSetting('rootDomainAnteriores', null);
     }
 
     // Un nombre de Mailway (el servidor de correo que anuncia la instancia).

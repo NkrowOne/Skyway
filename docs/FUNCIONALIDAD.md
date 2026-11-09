@@ -8,7 +8,7 @@
 > repos de GitHub y bases de datos sobre Docker, en un único servidor, con panel
 > web, métricas en vivo, dominios con TLS, backups y alertas.
 >
-> Versión de este documento: 0.40.0. Si el código y este documento discrepan,
+> Versión de este documento: 0.41.0. Si el código y este documento discrepan,
 > gana el código (`server/src/`).
 
 ---
@@ -31,6 +31,31 @@ server/src/
   quota.ts              cuota efectiva, asignación agregada de recursos y módulos por workspace
   company.ts            perfil fiscal de la empresa emisora + claves de Stripe (en settings)
   stripe.ts             cliente mínimo de Stripe (Checkout Session + verificación de firma de webhook)
+  invoicepdf.ts         PDF de la factura escrito a mano (sin dependencias), con el QR tributario de VERI*FACTU
+  verifactu/            VERI*FACTU (RD 1007/2023, Orden HAC/1177/2024; diseño en docs/VERIFACTU.md):
+    formato.ts            formatos de los campos de la AEAT (fechas, importes, NIF, texto sin < > " ' =) y
+                          fecha de expedición de la factura (`issued_date`, hora peninsular)
+    huella.ts             huella SHA-256 de los registros de alta y anulación (concatenación oficial)
+    registro.ts           registro de alta al emitir y de anulación al anular, encadenados en la misma
+                          transacción que la factura; comprobaciones antes de emitir y antes de encadenar
+                          (una anomalía de la cadena avisa sin interrumpir; el reloj bloquea); resumen por
+                          factura y subsanación
+    paises.ts             códigos de país que admite la AEAT (`CountryType2`), con UK → GB y EL → GR
+    xml.ts                XML SOAP de la remisión (orden de los XSD) y lectura de la respuesta o del Fault
+    remision.ts           cola de remisión por cadena (emisor y entorno): lotes de hasta 1000, control de
+                          flujo, reintentos, aislamiento del registro que hace rechazar un envío entero,
+                          duplicados, incidencias, alertas y prueba de conexión; bucle cada 10 s
+    estadocola.ts         estado de la cola por cadena (esperas, fallos, registros por aislar) en settings
+    certificado.ts        certificado electrónico (.pfx/.p12) para el TLS con la AEAT: se lee, se valida y
+                          se guarda en settings; nunca sale por la API
+    qr.ts                 generador de códigos QR (ISO/IEC 18004, modo byte) sin dependencias
+    ajustes.ts            entorno (pruebas/producción), productor (razón social y NIF juntos, o el emisor),
+                          número de instalación, URL de la AEAT
+    modo.ts               reglas para activar/desactivar VERI*FACTU y cambiar de entorno (las comparten las
+                          dos rutas que lo cambian)
+    eventos.ts            registro de eventos encadenado (activación, entorno, certificado, envíos, anomalías)
+    declaracion.ts        declaración responsable del sistema (rótulos del modelo de la AEAT), rellena con los
+                          datos de la instalación; también en texto plano
   mailway.ts            cliente de la API de integraciones de Mailway (correo): configuración en settings,
                         dirección interna del panel si lo despliega Skyway, token de gestión `mwt_…` (Bearer),
                         proyecto de Mailway en Skyway, hosts reservados de la instancia (actuales y anteriores), referencias
@@ -98,8 +123,12 @@ server/src/
   domains.ts            IP del servidor + verificación DNS de dominios (`clasificarDns`; distingue el proxy
                         de Cloudflare por sus rangos IPv4 publicados)
   dominioprincipal.ts   regla del dominio principal (`ordenarDominios`/`dominioPrincipal`): www primero,
-                        el resto en su orden y el subdominio generado al final; y la pareja con o sin www
-                        (`parejaWww`, `completarParejasWww`, `limpiarSinPareja`); sin dependencias (§5.5)
+                        el resto en su orden y el subdominio generado (también con un dominio raíz anterior)
+                        al final; y la pareja con o sin www (`parejaWww`, `completarParejasWww`,
+                        `limpiarSinPareja`); sin dependencias: reciben los dominios raíz (§5.5)
+  dominioraiz.ts        dominio raíz actual y anteriores (`rootDomainAnteriores`): el que se sustituye al
+                        cambiar el ajuste pasa a la lista y sus subdominios siguen contando como generados
+                        (`raicesGeneradas`); cuántos servicios los usan todavía (§5.5, §6.1)
   cloudflare.ts         cliente mínimo de la API de Cloudflare (verificar token, zona de un nombre, leer
                         registros, crear uno, borrar uno concreto y quitar el proxy de uno; sin un método
                         general para cambiar), portado del de Mailway
@@ -698,7 +727,7 @@ del servicio, **lo que está saliendo va por encima del activo**.
 | `plans` | `id`, `name`, `slug`, `price_cents`, `currency`, `interval`, cuotas incluidas (`cpu_cores`, `memory_mb`, `disk_mb`, `max_projects`, `max_services`, `max_members`), `modules` (JSON), `is_default`, `archived`, `discount_pct` (descuento comercial % de las cuentas del plan) |
 | `workspaces` | `id`, `name`, `slug`, `plan_id`, overrides de cuota (mismos campos, null = hereda del plan), `modules_override` (concesión del admin), `owner_disabled_modules` (acotado del propietario), `status` (`active`/`suspended`), `billing_email`, `billing_tax_id` (NIF/CIF del cliente), `billing_address` (domicilio fiscal del cliente), `billing_country` (ISO 3166-1 alfa-2, `ES` por defecto), `billing_day`, `discount_pct` (descuento % de la cuenta; null = hereda del plan), `plan_since` (contratación del plan vigente: ancla del aniversario de las cuotas anuales), `last_billed_period_end` (ancla de facturación: fin de lo último facturado), `notes`, y estado de morosidad (`ai_suspended`, `dunning_stage` 0→3, `dunning_since`, `last_dunning_action_at`, `dunning_exempt`) |
 | `workspace_plan_periods` | historial de plan **por tramos**: `id`, `workspace_id`, `plan_id` (null = sin plan en ese intervalo), `from_ms`, `to_ms` (null = tramo vigente), y una copia congelada de la tarifa (`plan_name`, `price_cents`, `currency`, `interval`) que solo se usa si el plan se borró del catálogo. Se abre en el alta y se parte en cada cambio de plan, en la misma transacción que `workspaces.plan_id`: el ciclo factura **cada tramo a su precio**, prorrateado por los días servidos |
-| `workspace_invoices` | `id`, `workspace_id`, `series_id` (FK `invoice_series`), `number` (nº correlativo por serie/ejercicio, p. ej. `FRA-2026-0001`), `invoice_type` (`normal`/`simplificada`/`rectificativa`), `rectifies_invoice_id`+`rectify_reason` (si rectificativa), `period_start/end`, `operation_date` (fecha de operación si difiere de la expedición), `status` (`draft`/`issued`/`paid`/`void`), `currency`, `subtotal_cents` (base imponible), `tax_cents`, `tax_rate` (tipo por defecto), `tax_breakdown` (JSON: bases y cuotas **por tipo de IVA**), `vat_regime` (general/exento/inversión SP…), `legal_mentions`, `irpf_rate`+`irpf_cents` (retención), `total_cents`, `lines` (JSON, con `taxRate` por línea), `plan_name`, `issuer_snapshot` (datos fiscales del emisor congelados al emitir), `client_name`+`client_tax_id`+`client_address` (destinatario congelado al emitir), `payment_method` (`bank_transfer`/`stripe`/`card`/`cash`/`other`), `stripe_session_id`, `stripe_url`, `issued_at`, `paid_at`, `locked` (1 = emitida, inmutable), `notes` |
+| `workspace_invoices` | `id`, `workspace_id`, `series_id` (FK `invoice_series`), `number` (nº correlativo por serie/ejercicio, p. ej. `FRA-2026-0001`), `invoice_type` (`normal`/`simplificada`/`rectificativa`), `rectifies_invoice_id`+`rectify_reason` (si rectificativa), `period_start/end`, `operation_date` (fecha de operación si difiere de la expedición), `status` (`draft`/`issued`/`paid`/`void`), `currency`, `subtotal_cents` (base imponible), `tax_cents`, `tax_rate` (tipo por defecto), `tax_breakdown` (JSON: bases y cuotas **por tipo de IVA**), `vat_regime` (general/exento/inversión SP…), `legal_mentions`, `irpf_rate`+`irpf_cents` (retención), `total_cents`, `lines` (JSON, con `taxRate` por línea), `plan_name`, `issuer_snapshot` (datos fiscales del emisor congelados al emitir), `client_name`+`client_tax_id`+`client_address` (destinatario congelado al emitir), `payment_method` (`bank_transfer`/`stripe`/`card`/`cash`/`other`), `stripe_session_id`, `stripe_url`, `issued_at`, `issued_date` (fecha de expedición `aaaa-mm-dd` en hora peninsular, congelada al emitir: la que imprime el PDF, la del registro de VERI*FACTU y la del año de la serie; null en las emitidas antes de la columna, que usan la fecha UTC de `issued_at`), `paid_at`, `locked` (1 = emitida, inmutable), `notes` |
 | `invoice_series` | `id`, `code`, `year` (ejercicio; reinicio anual), `prefix`, `padding`, `next_seq` (incremento atómico al emitir), `kind` (`ordinaria`/`rectificativa`/`simplificada`), `UNIQUE(code, year)`. Sustituye al contador global; las rectificativas usan serie propia |
 | `catalog_products` | catálogo multimodular: `id`, `name`, `slug`, `category` (`web`/`ia`/`app`/`hosting`/`bbdd`/`dominio`/`soporte`/`custom`), `billing_model` (`flat_one_off`/`subscription`/`metered`/`tiered`), `price_cents`, `currency`, `interval`, `unit`, `unit_size` (nº de unidades del medidor por unidad de precio; p. ej. 1000000 → precio por 1M tokens con céntimos enteros), `meter` (medidor de uso), `tier_mode` (`graduated`/`volume`), `tax_rate`, `irpf_rate`, `tax_exempt`, `modules` (JSON), `description`, `active`, `archived` |
 | `catalog_price_tiers` | tramos de precio de un producto `tiered`: `id`, `product_id`, `up_to` (null = último), `unit_cents`, `flat_cents`, `sort` |
@@ -706,13 +735,13 @@ del servicio, **lo que está saliendo va por encima del activo**.
 | `pending_charges` | cargos puntuales pendientes del próximo ciclo: `id`, `workspace_id`, `product_id`, `label`, `kind`, `qty`, `unit_cents`, `tax_rate`, `irpf_rate`, `status` (`pending`/`invoiced`/`cancelled`), `invoice_id` |
 | `usage_events` | ingesta cruda de consumo (idempotente): `id`, `idempotency_key` (único), `subject_type` (`workspace`/`service`), `subject_id`, `meter`, `quantity`, `product_id`, `ts`, `metadata` |
 | `usage_meter_hourly` | agregado horario del uso para tarifar: `PK(subject_id, meter, hour)`, `quantity` |
-| `invoice_ledger` | **reservada** (Verifactu, RD 1007/2023): libro inmutable encadenado por huella SHA-256 — `id`, `seq`, `invoice_id`, `record_type` (`alta`/`anulacion`), `huella`, `huella_anterior`, `qr_url`, `sif_mode`, `estado_remision`… Se crea vacía para no exigir migración al activar Verifactu; la lógica llega en fase posterior |
-| `invoice_events_log` | **reservada** (Verifactu): registro de eventos del SIF encadenado por huella |
+| `invoice_ledger` | registros de facturación de VERI*FACTU (RD 1007/2023, §7.2.4): uno de **alta** al emitir y uno de **anulación** al anular, encadenados por huella SHA-256 en una cadena por emisor (`emisor_nif`) y entorno (`entorno`: `pruebas`/`produccion`), con `seq` único por cadena. `registro_json` guarda el registro con los campos de la AEAT (de él sale el XML); `huella`, `huella_anterior`, `fecha_hora_gen`, `qr_url`, `tipo_factura`, importes. Remisión: `estado_remision` (`pendiente`, `correcto`, `aceptado_con_errores`, `incorrecto`), `csv_aeat`, `codigo_error`, `descripcion_error`, `intentos`, `incidencia` (no se pudo remitir a su hora: viaja con `Incidencia=S`), `envio_incierto` (algún envío acabó sin saber si la AEAT lo guardó: solo entonces un duplicado 3000 es el propio registro), `id_peticion` (duplicados). Los listados van por orden de inserción, que es el de la cadena. **Inmutable**: disparadores de SQLite impiden borrar filas y cambiar cualquier columna que no sea de la remisión |
+| `invoice_events_log` | registro de eventos de VERI*FACTU encadenado por huella (`seq`, `tipo_evento`, `ts` con huso, `detalle`, `huella_evento`, `huella_evento_anterior`): activación, entorno, productor, certificado, envíos, subsanaciones y anomalías de la cadena (`anomalia_cadena`). Inmutable (disparadores) |
 | `workspace_api_keys` | claves de API por cuenta para el proxy de IA: `id`, `workspace_id`, `name`, `key_hash` (sha256, único; el secreto `skai_…` solo se muestra al crear), `prefix`, `provider`, `allowed_models` (JSON), `status` (`active`/`suspended`/`revoked`), `budget_cents_month`, `spend_cents_cycle`, `rate_limit_rpm`, `last_used_at`, `expires_at`, `revoked_at`. El prefijo **no** empieza por `sky_`: nunca se resuelve como token de panel |
 | `ai_model_prices` | coste del operador por modelo y margen objetivo: `model` (PK), `cost_micros_in`/`cost_micros_cache`/`cost_micros_out` (micro-céntimos por millón de tokens), `margin_pct` (margen objetivo s/ venta, guía el PVP sugerido), `currency`, `source` (`auto` = lo mantiene la sincronización con la tarifa de Google, `manual` = fijado por el operador y respetado), `synced_at`, `updated_at`. Informativo; no interviene en la factura |
 | `passkeys` | credencial WebAuthn: `credential_id`, `public_key`, `counter`, `rp_id`… |
 | `api_tokens` | `token_hash` (sha256 hex), `prefix`, `expires_at` — tokens `sky_…` |
-| `settings` | pares clave/valor: `jwtSecret`, `githubToken`, `rootDomain`, `letsencryptEmail`, `serverIp`, `serverIpv6` (opcional: sin ella, cualquier AAAA de un dominio cuenta como ajeno), canales de alerta, `importReport:<projectId>`, `billingProfile` (perfil fiscal del emisor, JSON: razón social, NIF, domicilio, IVA por defecto, `defaultIrpfRate`, `sifMode` veri/no-veri, IBAN…), claves de Stripe (`stripeSecretKey`, `stripeWebhookSecret`, `stripePublishableKey` — las secretas nunca se devuelven), gateway de IA (`ai.geminiApiKey` — clave del operador, nunca devuelta; `ai.allowedModels`, `ai.geminiBaseUrl`), autoactualización de la tarifa de IA (`ai.prices.auto` por defecto activada, `ai.prices.url` fuente propia, `ai.prices.currency` por defecto EUR, `ai.prices.fx`/`ai.prices.fxAt` cambio USD→moneda, `ai.prices.defaultMarginPct`, `ai.prices.autoAllow`, `ai.prices.lastAt`/`ai.prices.last` resultado del último pase), dunning (`billing.dunningGraceDays` por defecto 14, `billing.dunningCancelDays` por defecto 44), Mailway (`mailway.baseUrl`, `mailway.serviceId`, `mailway.token` — token de gestión, nunca devuelto —, `mailway.traefikToken` y `mailway.traefikCache`, última configuración de Traefik saneada; `mailway.defaultPlanId`, plan con el que se crea el cliente si no lo elige un administrador; `mailway.hosts`, hosts públicos que anuncia la instancia; `mailway.containerHosts`, hosts de las reglas `Host(…)` de las etiquetas de Traefik de los contenedores `mailway-mail`, `mailway-webmail` y `mailway-panel`; `mailway.previousHosts`, nombres que fueron de la instancia (`[{host, lastSeen}]`) y siguen reservados hasta que el administrador los libera; `mailway.whitelabelHosts`, última lista buena de nombres de marca blanca de todos los clientes en cualquier estado, reservados para los servicios; `mailway.previousClient:<projectId>`, cliente que tenía el proyecto antes de desactivar el correo)… |
+| `settings` | pares clave/valor: `jwtSecret`, `githubToken`, `rootDomain`, `rootDomainAnteriores` (dominios raíz anteriores, JSON del más reciente al más antiguo, máx. 10: sus subdominios siguen contando como generados, §5.5), `letsencryptEmail`, `serverIp`, `serverIpv6` (opcional: sin ella, cualquier AAAA de un dominio cuenta como ajeno), canales de alerta, `importReport:<projectId>`, `billingProfile` (perfil fiscal del emisor, JSON: razón social, NIF, domicilio, IVA por defecto, `defaultIrpfRate`, `sifMode` `desactivado`/`verifactu` —el antiguo `no_verifactu` se lee como desactivado—, IBAN, `paymentReturnUrl` página de vuelta tras pagar con Stripe…), VERI*FACTU (`verifactu` —entorno, productor, dirección, lugar y fecha de la declaración responsable—, `verifactuNumeroInstalacion`, `verifactuCertPfx` y `verifactuCertPass` —certificado y contraseña, nunca se devuelven—, `verifactuCertInfo` —sus datos públicos—, `verifactuRemision` —estado de la cola por cadena (emisor y entorno): esperas, fallos seguidos y registros por aislar, con un resumen para el panel (esperas por entorno, fallos seguidos), y el último envío—, `migrations:verifactu_modo_v1` —marca de la migración del modo guardado antes de VERI*FACTU, §7.2.4—), claves de Stripe (`stripeSecretKey`, `stripeWebhookSecret`, `stripePublishableKey` — las secretas nunca se devuelven), gateway de IA (`ai.geminiApiKey` — clave del operador, nunca devuelta; `ai.allowedModels`, `ai.geminiBaseUrl`), autoactualización de la tarifa de IA (`ai.prices.auto` por defecto activada, `ai.prices.url` fuente propia, `ai.prices.currency` por defecto EUR, `ai.prices.fx`/`ai.prices.fxAt` cambio USD→moneda, `ai.prices.defaultMarginPct`, `ai.prices.autoAllow`, `ai.prices.lastAt`/`ai.prices.last` resultado del último pase), dunning (`billing.dunningGraceDays` por defecto 14, `billing.dunningCancelDays` por defecto 44), Mailway (`mailway.baseUrl`, `mailway.serviceId`, `mailway.token` — token de gestión, nunca devuelto —, `mailway.traefikToken` y `mailway.traefikCache`, última configuración de Traefik saneada; `mailway.defaultPlanId`, plan con el que se crea el cliente si no lo elige un administrador; `mailway.hosts`, hosts públicos que anuncia la instancia; `mailway.containerHosts`, hosts de las reglas `Host(…)` de las etiquetas de Traefik de los contenedores `mailway-mail`, `mailway-webmail` y `mailway-panel`; `mailway.previousHosts`, nombres que fueron de la instancia (`[{host, lastSeen}]`) y siguen reservados hasta que el administrador los libera; `mailway.whitelabelHosts`, última lista buena de nombres de marca blanca de todos los clientes en cualquier estado, reservados para los servicios; `mailway.previousClient:<projectId>`, cliente que tenía el proyecto antes de desactivar el correo)… |
 | `projects` | `id`, `name`, `slug` (único), `workspace_id` (cuenta de cliente), `client` (reflejo denormalizado del nombre del workspace para la UI), página de estado (`status_token`, `status_enabled`, `status_notice`) |
 | `services` | `id`, `project_id`, `name`, `slug`, `type` (`git`/`database`/`image`), `config` (JSON), `config_rev` (revisión de la configuración: sube con cada cambio guardado que exige redesplegar) |
 | `env_vars` | `(service_id, key)` → `value` — variables por servicio |
@@ -1298,13 +1327,25 @@ comprobación de `domainsBase` lo cuentan como cambio, y el enrutado de Traefik
 sigue atendiendo todos los dominios. Ajustes → Dominios enseña la lista en ese
 orden con el chip «Principal» en el primero (con dos dominios o más).
 
+**Dominios raíz anteriores** (`dominioraiz.ts`). Cambiar el dominio raíz en
+Ajustes no mueve ningún servicio, y el que se sustituye pasa a
+`rootDomainAnteriores`; sus subdominios de un nivel siguen contando como
+generados (también para la pareja con o sin www), así que un servicio con
+`web.apps.midominio.com` y un dominio propio conserva el propio como principal
+tras cambiar el dominio raíz a `apps.otrodominio.com`. Antes, el subdominio
+anterior pasaba a contar como dominio propio y, en un servicio guardado con él
+delante, se quedaba con la `PUBLIC_URL` en el siguiente despliegue. Siguen
+contando hasta que se mueven con «Cambiar de dominio» (§6.1) y la
+administración quita el dominio raíz anterior de la lista (Ajustes → Dominios y
+TLS, que dice cuántos servicios lo usan todavía).
+
 **Pareja con o sin www.** Una web pública responde con y sin www, así que la
 pareja no es una sugerencia: cada dominio propio **nuevo** que sea un dominio
 registrable (`ejemplo.com`) o su www (`www.ejemplo.com`) se guarda con la otra
 mitad (`completarParejasWww`; un subdominio más profundo como
-`app.ejemplo.com` y lo que cuelga del dominio raíz de la plataforma no tienen
-pareja; los sufijos de dos niveles más habituales, como `.com.es` o `.co.uk`,
-están en una lista corta). Lo hace el servidor al crear el servicio, en el
+`app.ejemplo.com` y lo que cuelga de un dominio raíz de la plataforma, actual o
+anterior, no tienen pareja; los sufijos de dos niveles más habituales, como
+`.com.es` o `.co.uk`, están en una lista corta). Lo hace el servidor al crear el servicio, en el
 PATCH, en las pilas y plantillas de Railway con `domain` y en la importación de
 Railway (la vista previa ya la enseña, con una nota), así que la API, la línea
 de comandos y las importaciones se comportan igual que el panel. Solo se
@@ -1655,7 +1696,12 @@ con lo ya aprobado». Nunca se escriben valores en el registro ni en la auditor�
   (§3.1).
 - **Dominios y TLS**: verificación DNS en vivo, subdominios con comodín, TLS
   automático con Let's Encrypt vía Traefik y redirección de HTTP a HTTPS en todo
-  servicio con dominio. Dominio principal automático (www primero, §5.5). El
+  servicio con dominio. Dominio principal automático (www primero, §5.5). En
+  Ajustes → Dominios y TLS, bajo el dominio raíz, la lista «Dominios raíz
+  anteriores» (los que se sustituyeron al cambiarlo) dice cuántos servicios usan
+  todavía cada uno y explica que sus subdominios siguen funcionando y cuentan
+  como generados hasta que se muevan con «Cambiar de dominio»; «Quitar» lo retira
+  de la lista con confirmación, que avisa si aún lo usa algún servicio. El
   editor muestra los dominios en una lista con el estado del DNS (punto de color
   y etiqueta: «Configurado», «Esperando DNS», «Apunta a otra IP», «Proxy de
   Cloudflare») y, si falta algo, el registro A que hay que crear (tipo, nombre y
@@ -1957,6 +2003,31 @@ Fases: **Qué cambia → Preparar → En transición → Terminado**
   `WP_HOME`/`WP_SITEURL` (sin él, un bucle de redirecciones). La huella
   combinada (`expect`) cubre nombres, variables y los buzones y alias de
   Mailway: si algo cambia, 409 `plan_changed`.
+- **Dominio actual y dominios raíz anteriores**: el listado del proyecto propone
+  como «Dominio actual» (`dominios`) los registrables de los dominios de sus
+  servicios, sin los subdominios del dominio raíz actual. Un nombre que cuelga
+  de un dominio raíz anterior (§5.5) propone ese dominio raíz entero
+  (`apps.midominio.com`, no `midominio.com`, que arrastraría al cambio otros
+  nombres del operador), y los dominios raíz anteriores van los primeros:
+  `propuestas` les asigna el dominio raíz actual como dominio nuevo (salvo sin
+  dominio raíz, o si uno cuelga del otro, que el plan rechaza por relacionados),
+  y el asistente lo rellena al elegirlo sin sustituir lo escrito a mano. Con el
+  mapa de siempre, un solo cambio por proyecto pasa todos sus
+  `xxx.apps.midominio.com` a `xxx.apps.otrodominio.com`, con las mismas fases,
+  prepublicación y redirección (temporal los 7 primeros días, después
+  permanente). **Para migrar todos los subdominios generados a un dominio raíz
+  nuevo**: cambia el dominio raíz en Ajustes, crea el registro comodín
+  `*.apps.otrodominio.com` hacia el servidor y mueve cada proyecto con «Cambiar
+  de dominio» eligiendo el dominio raíz anterior como dominio actual. Cada
+  nombre nuevo obtiene su propio certificado de Let's Encrypt (validación
+  HTTP-01, uno por nombre), y Let's Encrypt emite como mucho 50 certificados
+  nuevos por dominio registrado y semana
+  (<https://letsencrypt.org/docs/rate-limits/>): mover más de unos 40 servicios
+  en una semana bajo el mismo dominio registrado puede agotar el límite, así que
+  conviene repartir los proyectos en varias semanas. El comodín del dominio raíz
+  anterior se conserva mientras haya subdominios o redirecciones que servir;
+  cuando Ajustes indica que ningún servicio lo usa, el dominio raíz anterior se
+  puede quitar de la lista.
 - **Preparar** no despliega nada: guarda el cambio, **prepublica** los nombres
   nuevos (§2, proveedor HTTP; se publican en cuanto `checkDomain` da `ok`), abre
   el cambio en Mailway con `origen: 'skyway'` (desde ese momento solo Skyway lo
@@ -2285,13 +2356,13 @@ Niveles: **manage** = admin o propietario del workspace del recurso; **admin** =
 | POST | `/plans` | admin | crea un plan (usos incluidos + precio + `discount_pct` opcional) |
 | PATCH | `/plans/:id` | admin | edita un plan (409 al cambiar la moneda de uno contratado) |
 | DELETE | `/plans/:id` | admin | borra un plan (bloqueado si alguna cuenta lo usa) |
-| GET | `/workspaces/:id/invoices` | manage | facturas de la cuenta (con `due_at`, el vencimiento congelado) + datos del emisor (perfil fiscal), del cliente y si Stripe está activo |
+| GET | `/workspaces/:id/invoices` | manage | facturas de la cuenta (con `due_at`, el vencimiento congelado; `issued_date`, la fecha de expedición que imprime la factura; y `verifactu`: estado del último registro, CSV, error de la AEAT, URL del QR y acción posible —`subsanar`/`repetir_anulacion`—, o null) + datos del emisor (perfil fiscal), del cliente y si Stripe está activo |
 | POST | `/workspaces/:id/invoices/generate` | admin | genera la factura del ciclo (plan + uso) con el IVA del perfil |
 | POST | `/workspaces/:id/invoices` | admin | crea un borrador a medida (`{lines[], taxRate?, irpfRate?, vatRegime?, operationDate?, notes?}`); cada línea admite su propio `taxRate`; 400 si `periodEnd ≤ periodStart` |
-| PATCH | `/invoices/:id` | admin | edita el borrador o transiciona el estado. **El contenido fiscal solo es editable en borrador**; una factura emitida es inmutable (409). Al emitir (`issued`/`paid`) congela emisor y destinatario, asigna nº de serie del ejercicio y bloquea (`locked`). Transiciones válidas: `draft→issued→paid`, `→void`; nunca vuelve a borrador. Anular una factura con rectificativa viva → 409 (sería un doble abono) |
+| PATCH | `/invoices/:id` | admin | edita el borrador o transiciona el estado. **El contenido fiscal solo es editable en borrador**; una factura emitida es inmutable (409). Al emitir (`issued`/`paid`) congela emisor y destinatario y la fecha de expedición (`issued_date`, en hora peninsular), asigna nº de serie del ejercicio de esa fecha y bloquea (`locked`); con VERI*FACTU activo genera en la misma transacción su **registro de alta** encadenado (§7.2.4), y un dato que la AEAT rechazaría (NIF del cliente no válido, país que la AEAT no admite, moneda distinta del euro, tipo de IVA no vigente, fecha de operación posterior…) deshace la emisión con 409 sin gastar número. Anular una factura con registro de alta genera su **registro de anulación**. Si la emisión o la anulación tiene que generar un registro y el reloj del servidor va más de un minuto por detrás del último de la cadena → 409. Transiciones válidas: `draft→issued→paid`, `→void`; nunca vuelve a borrador. Anular una factura con rectificativa viva → 409 (sería un doble abono) |
 | DELETE | `/invoices/:id` | admin | **solo borradores**; una factura emitida se conserva (409): debe anularse o rectificarse, nunca borrarse |
-| POST | `/invoices/:id/rectify` | admin | crea una **factura rectificativa** (borrador, serie REC) que corrige una emitida (`{reason, lines?, operationDate?}`); sin `lines` es anulación total, con `lines` correctas factura la diferencia; enlaza por `rectifies_invoice_id` |
-| POST | `/invoices/:id/stripe-link` | admin | emite la factura (alta antes del cobro) y crea/reutiliza el enlace de pago Stripe; 400 si el total es ≤ 0 (antes de emitir), 409 si ya se está generando; el enlace guardado se renueva si Stripe lo da por caducado (`reused: true` solo si sigue abierto) |
+| POST | `/invoices/:id/rectify` | admin | crea una **factura rectificativa** (borrador, serie REC) que corrige una emitida (`{reason, cause?, lines?, operationDate?}`); sin `lines` es anulación total, con `lines` correctas factura la diferencia; enlaza por `rectifies_invoice_id`. `cause` es la clave de VERI*FACTU (`R1` por defecto: art. 80.Uno, Dos y Seis de la Ley del IVA o error fundado en derecho; `R2` concurso; `R3` créditos incobrables; `R4` resto), guardada en `rectify_code` |
+| POST | `/invoices/:id/stripe-link` | admin | emite la factura (alta antes del cobro) y crea/reutiliza el enlace de pago Stripe; 400 si el total es ≤ 0 (antes de emitir), 409 si ya se está generando; el enlace guardado se renueva si Stripe lo da por caducado (`reused: true` solo si sigue abierto). Con `paymentReturnUrl` en el perfil, Stripe devuelve al cliente a esa página con `estado=pagado` o `estado=cancelado` y `factura=<número>` (§7.2.1, contabilidad); sin ella, al panel (`/workspaces/:id?paid=1`), que pide iniciar sesión |
 
 **Motor de factura conforme (RD 1619/2012).** El total se recomputa siempre en
 servidor: la cuota de IVA se agrupa por tipo y se redondea **una vez por base de
@@ -2312,9 +2383,9 @@ con la factura rectificada; la original permanece intacta. Los **regímenes de I
 (`vat_regime`) aplican la mención legal obligatoria y ponen el IVA a cero cuando
 corresponde: exención por exportación (art. 21) o entrega intracomunitaria
 (art. 25), inversión del sujeto pasivo (art. 84), recargo de equivalencia, no
-sujeción y otras exenciones. Reservado: la estructura Verifactu (cadena de hash,
-QR, registros de alta/anulación y remisión a la AEAT — no obligatoria hasta 2027,
-RDL 15/2025).
+sujeción y otras exenciones. Con VERI*FACTU activo, cada emisión y cada anulación
+generan su registro de facturación encadenado y la factura lleva el QR tributario
+(§7.2.4).
 
 ### 7.2.1 Contabilidad de la empresa y facturación (nosotros como emisor)
 Perfil fiscal, resumen contable y cobros con Stripe. **Solo admin.** Las claves
@@ -2323,12 +2394,23 @@ booleanos, igual que el token de GitHub).
 
 | Método | Ruta | Nivel | Descripción |
 | --- | --- | --- | --- |
-| GET | `/billing/profile` | admin | perfil fiscal del emisor (IVA/IRPF por defecto, modo Verifactu) + estado de Stripe (claves como booleanos) |
-| PUT | `/billing/profile` | admin | actualiza el perfil fiscal (incl. `defaultIrpfRate`, `sifMode`); las claves de Stripe se guardan solo si se envían (`''` las borra) |
+| GET | `/billing/profile` | admin | perfil fiscal del emisor (IVA/IRPF por defecto, `sifMode`) + estado de Stripe (claves como booleanos) |
+| PUT | `/billing/profile` | admin | actualiza el perfil fiscal (incl. `defaultIrpfRate`, `sifMode`, `paymentReturnUrl`); las claves de Stripe se guardan solo si se envían (`''` las borra). `paymentReturnUrl` admite una URL `https://` sin usuario ni contraseña o `''`; otra cosa → 400. Las reglas de VERI*FACTU (§7.2.4) valen también aquí: activar sin razón social o NIF español válido, dejar un NIF no válido con VERI*FACTU activo, desactivarlo cuando ya hay registros del entorno de producción o cambiar entonces el NIF del emisor (un solo obligado tributario por instalación) → 409 |
 | GET·PUT | `/billing/automation` | admin | automatización: `autoGenerate` (generar el borrador del ciclo), `autoIssue` (emitirlo automáticamente; opt-in, off por defecto) y umbrales de morosidad (`dunningGraceDays` ≤ `dunningCancelDays`) |
 | GET | `/accounting/summary?months=` | admin | totales (facturado/cobrado/pendiente/borrador/anulado), serie mensual de ingresos y desglose por cliente |
-| GET | `/accounting/invoices?status=` | admin | todas las facturas de todos los clientes (nº, tipo, NIF, base, IVA, IRPF) |
-| GET | `/accounting/export.csv` | admin | libro registro de facturas emitidas en CSV (nº, tipo, NIF receptor, base, IVA, IRPF, total; guardas anti-inyección de fórmulas) |
+| GET | `/accounting/invoices?status=` | admin | todas las facturas de todos los clientes (nº, tipo, NIF, base, IVA, IRPF y estado de VERI*FACTU) |
+| GET | `/accounting/export.csv` | admin | libro registro de facturas emitidas en CSV (nº, tipo, NIF receptor, fecha de expedición —la que imprime la factura—, base, IVA, IRPF, total y fecha de cobro, en la misma zona que la de expedición; guardas anti-inyección de fórmulas) |
+
+**Página de vuelta tras pagar (`paymentReturnUrl`).** Es la página pública a la
+que Stripe devuelve al cliente al pagar o al cancelar, por ejemplo una página de
+la web de la empresa. Se configura en Contabilidad → «Stripe (pago con
+tarjeta)». Al crear el enlace de pago se añaden a su consulta
+`estado=pagado` (o `estado=cancelado`) y `factura=<número>`, codificado; los
+parámetros que ya traiga se conservan y `{CHECKOUT_SESSION_ID}` se mantiene
+para que Stripe lo sustituya. Vacía, el cliente vuelve al panel, que pide
+iniciar sesión. Un enlace ya creado conserva las URL de vuelta con las que se
+creó hasta que caduca. `estado` solo informa: el cobro lo confirma el webhook
+de Stripe (`/webhooks/stripe`).
 
 ### 7.2.2 Catálogo multimodular, suscripciones y uso
 Facturación de servicios (web, IA, hosting, BBDD, dominios, soporte, a medida)
@@ -2479,6 +2561,104 @@ descontada) y ninguna base queda negativa. Se excluyen del descuento las líneas
 **precio negociado por cliente** (`unit_cents` de la suscripción), para no rebajar
 dos veces un precio ya pactado. En una factura a medida el descuento se añade a mano
 como línea negativa; una factura emitida es inmutable y conserva su descuento.
+
+### 7.2.4 VERI*FACTU (registros de facturación y remisión a la AEAT)
+Modalidad **VERI*FACTU** del Reglamento de sistemas informáticos de facturación
+(RD 1007/2023) y la Orden HAC/1177/2024: cada factura emitida genera un registro de
+alta y cada anulación un registro de anulación, encadenados por huella SHA-256, que
+se remiten a la AEAT al momento con el certificado electrónico del emisor. El diseño
+completo (campos, huella, QR, remisión, reglas y fuentes) está en
+**[VERIFACTU.md](VERIFACTU.md)**, y la declaración responsable en
+**[DECLARACION-RESPONSABLE.md](DECLARACION-RESPONSABLE.md)**. **Solo admin.**
+
+| Método | Ruta | Nivel | Descripción |
+| --- | --- | --- | --- |
+| GET | `/verifactu` | admin | modo, ajustes (entorno, productor, declaración), productor efectivo (`productor`, con `esEmisor`), sistema (`SK`, versión, nº de instalación), punto de acceso en uso (`servicio`: el de sello si el certificado lo es), datos públicos del certificado, estado de la cola (por cadena, con un resumen para el panel) con recuento por estado, últimos 50 registros, últimos 20 eventos (y si su cadena está íntegra), declaración responsable y avisos |
+| PUT | `/verifactu` | admin | `{modo?, entorno?, productorNombre?, productorNif?, productorDireccion?, declaracionLugar?, declaracionFecha?}`. Activar exige razón social y NIF español válido del emisor; con registros del entorno de producción, desactivar o volver a pruebas → 409 (Skyway no comunica la renuncia). La razón social y el NIF del productor van juntos: si el cuerpo trae alguno de los dos y, con lo enviado, queda uno sin el otro → 400 (los dos vacíos: el productor es el emisor). Sin tocarlos, unos datos guardados a medias no bloquean nada: el productor es el emisor. Anota activación, entorno y productor en el registro de eventos |
+| POST | `/verifactu/certificado` | admin + session | `{pfx (base64 de un .pfx/.p12, ≤64 KB), password}`: lo abre, comprueba que no ha caducado y lo guarda; devuelve solo sus datos públicos (titular, NIF, emisor, validez, huella). 400 con contraseña incorrecta, fichero no válido, caducado o con cifrado antiguo (RC2) |
+| DELETE | `/verifactu/certificado` | admin + session | retira el certificado (los registros esperan en cola). Como la carga, exige sesión de navegador: un token de API recibe 403, como en el resto de credenciales persistentes |
+| GET | `/verifactu/declaracion.txt` | admin | la declaración responsable en texto plano (`text/plain; charset=utf-8`, como adjunto `declaracion-responsable-skyway-<versión>.txt`, porque la declaración es de una versión concreta), para tenerla fuera del sistema: el título y cada dato tras su rótulo; si faltan datos, termina con «Datos pendientes: …» |
+| POST | `/verifactu/probar` | admin | `{entorno?}`: TLS con el certificado contra el servicio de la AEAT (GET, sin enviar registros) |
+| POST | `/verifactu/enviar` | admin | envía ya un lote de la primera cadena que puede enviar, saltándose la espera tras un fallo, pero nunca el `TiempoEsperaEnvio` de la AEAT ni los 60 s que siguen a un SOAP Fault → `{resultado, vista}` |
+| GET | `/invoices/:id/verifactu` | admin | registros de la factura con todos sus campos de la AEAT, huellas, QR y estado de remisión |
+| POST | `/invoices/:id/verifactu/subsanar` | admin | subsana el último registro rechazado o aceptado con errores: alta nueva con `Subsanacion=S` (y `RechazoPrevio=X` si la AEAT no tiene ningún alta de la factura, `S` si se rechazó una subsanación) o repite la anulación rechazada; tras un 2001 (NIF no censado) con NIF de persona física, el cliente va como no censado (`IDOtro`, `IDType 07`); 409 si no hay nada que subsanar |
+
+- **Cuándo se generan.** El alta, dentro de la transacción que numera la factura
+  (`performEmission`), solo en la primera emisión; la anulación, dentro de la que la
+  anula, aunque el modo esté ya desactivado (la AEAT tiene el alta).
+- **Comprobaciones antes de encadenar** (art. 7.i de la Orden; FAQ de
+  desarrolladores, 15.1 a 15.3). Se recalcula la huella del último registro de la
+  cadena, se comprueba que solo el primero lleva `PrimerRegistro=S` y que el último
+  apunta al anterior por `seq`. Una anomalía no detiene la facturación: se anota el
+  evento `anomalia_cadena`, se abre una alerta crítica `verifactu_cadena` y el
+  registro nuevo se encadena igual. Lo único que bloquea es el reloj: si el último
+  registro va más de un minuto por delante de la hora del servidor, no se emite ni
+  se anula (409).
+- **Fecha de expedición.** Al emitir se congela `issued_date` (`aaaa-mm-dd`, hora
+  peninsular): de ella salen el año de la serie, la `FechaExpedicionFactura` del
+  registro, el PDF y el CSV de Contabilidad. Las facturas anteriores a la columna
+  siguen con la fecha UTC de `issued_at`.
+- **Comprobaciones al emitir.** En la emisión deliberada (no en el cobro por
+  webhook ni en la subsanación), un dato que la AEAT rechazaría deshace la emisión
+  con 409 sin gastar número: moneda distinta del euro; país del cliente fuera de la
+  lista de la AEAT (`paises.ts`; UK se lee como GB y EL como GR); NIF del cliente
+  no válido o igual al del emisor; NIF-IVA sin la estructura de su país cuando el
+  régimen lo exige (entrega intracomunitaria exenta, o inversión del sujeto pasivo
+  o no sujeción con cliente extranjero); tipo de IVA no vigente en la fecha de la
+  operación (0, 4, 10 y 21 %; 5 % entre el 1-7-2022 y el 30-9-2024; 2 y 7,5 % solo
+  en el cuarto trimestre de 2024); fecha de operación posterior a la expedición;
+  NIF no válido del emisor de la factura rectificada; cliente sin NIF español en
+  una `R3`, o sin NIF ni NIF-IVA en una `R2`. Un IVA al 0 % va como `S1` al 0 %.
+  Detalle en VERIFACTU.md §4.
+- **Cadenas.** Una por NIF del emisor y entorno: el de pruebas no tiene efectos
+  fiscales y la cadena de producción empieza con `PrimerRegistro=S`.
+- **Remisión.** Bucle cada 10 s (`startRemisionVerifactu`), más un aviso al generar
+  un registro. Cada cadena es una cola independiente (`estadocola.ts`, ajuste
+  `verifactuRemision`) con su espera de la AEAT, sus reintentos y su contador de
+  fallos: una cadena que falla no frena a las demás. En cada paso sale un lote de
+  la primera cadena que puede enviar (la del registro pendiente más antiguo
+  primero): hasta 1000 registros con la misma marca de incidencia, en orden y con
+  uno por factura. Tras cada respuesta, la cadena espera el `TiempoEsperaEnvio`
+  (60 s si no viene) salvo que tenga un lote completo de 1000. Si la AEAT rechaza
+  el envío entero (SOAP Fault) con un código que causa un registro (4102, 4103,
+  4106, 4119, 4136, 4137, 4138), los siguientes envíos de la cadena van de uno en
+  uno: el registro que lo provoca queda `incorrecto`, con su alerta, y el resto
+  sigue. Sin conexión, con error HTTP o con otro Fault, los registros siguen en
+  cola y la cadena reintenta a los 1, 2, 5, 15, 30 y 60 minutos (una hora si el
+  rechazo es de configuración: certificado o NIF). Tras cualquier Fault, la
+  cadena espera además 60 s, porque la AEAT sí ha recibido el envío. Un duplicado
+  (3000) toma el estado que ya tenía la AEAT solo si el registro ya se había
+  enviado (respuesta perdida); en el primer envío, el registro queda
+  `incorrecto`. Un registro rechazado o aceptado con errores abre una alerta por
+  factura. Con un certificado de sello se usa el punto de acceso de sello
+  (`www10`/`prewww10`), también para probar la conexión.
+- **Incidencias** (art. 16.4 de la Orden). Un registro nace con `incidencia` si no
+  hay certificado o su cadena está fallando, y los que esperan en cola pasan a
+  tenerla cuando falta el certificado o falla el envío de su cadena; viajan con
+  `RemisionVoluntaria/Incidencia=S` y un lote nunca mezcla registros con y sin
+  incidencia. Desde el primer fallo, o con registros en cola sin certificado, una
+  alerta dice cuántos faltan por remitir; se resuelve con un envío que la AEAT no
+  rechaza entero, cuando ya no falla ninguna cadena.
+- **Anulaciones.** Con alta, en su cadena y entorno; sin alta (factura emitida antes
+  de activar), solo con el modo activo y con `SinRegistroPrevio=S`.
+- **Modo y entorno.** Activar exige razón social y NIF español válido del emisor.
+  En cuanto hay un registro del entorno de producción, desactivar VERI*FACTU
+  (desde esta ruta o desde `PUT /billing/profile`) o volver a pruebas → 409: la
+  modalidad se mantiene al menos hasta el final del año natural y dejarla exige
+  comunicar la renuncia a la AEAT (`FechaFinVeriFactu`, art. 17 de la Orden), que
+  Skyway no implementa. Al arrancar, una migración única
+  (`migrations:verifactu_modo_v1`) pasa a `desactivado` un `sifMode = 'verifactu'`
+  guardado antes de que existiera esta función, si no hay registros ni evento de
+  activación: nadie queda en VERI*FACTU sin haberlo activado.
+- **QR y leyenda.** El PDF de una factura con registro de alta lleva arriba a la
+  izquierda «QR tributario:», el QR de 35 mm (nivel M, con 6 mm de zona de
+  silencio) con la URL de cotejo de la AEAT del entorno y «VERI*FACTU», las dos
+  leyendas en negrita de 14 pt (no menos que ningún dato de la factura); en pruebas, además, «Registro remitido al entorno
+  de pruebas de la AEAT».
+- **Declaración responsable.** En el panel (campo `declaracion` de `GET /verifactu`)
+  y en texto plano (`GET /verifactu/declaracion.txt`, que descarga el botón
+  «Descargar en texto» de Contabilidad → VERI*FACTU), con los rótulos del modelo
+  de la AEAT.
 
 ### 7.3 Proyectos, variables compartidas y GitHub
 | Método | Ruta | Nivel | Descripción |
@@ -2649,8 +2829,9 @@ distroless), el explorador lo indica y no está disponible.
 | POST | `/system/backups` | admin | crea un snapshot ahora (VACUUM INTO) |
 | GET | `/system/backups/:file/download` | admin + session | descarga un snapshot (.db restaurable). Exige sesión de navegador: lleva en claro los secretos que la API nunca devuelve (token de Cloudflare, de Mailway, de GitHub…) |
 | DELETE | `/system/backups/:file` | admin | borra un snapshot |
-| GET | `/settings` | admin | ajustes (secretos como booleanos) + `traefikAcme: {status: ok/missing/invalid/unknown, email}` (correo real de Traefik) + `defaults.keepImages` |
-| PUT | `/settings` | admin | guarda ajustes (dominio, TLS, token GitHub, alertas, `keepImages` 1–50 o vacío → 400 `invalid_keep_images`); `rootDomain` debe ser un nombre de host válido o vacío; `serverIpv6`, una IPv6 sin identificador de zona (`fe80::1%eth0` da 400: ningún DNS la publica) o vacía |
+| GET | `/settings` | admin | ajustes (secretos como booleanos) + `traefikAcme: {status: ok/missing/invalid/unknown, email}` (correo real de Traefik) + `defaults.keepImages` + `rootDomainAnteriores: [{domain, services}]` (dominios raíz anteriores, del más reciente al más antiguo, con cuántos servicios tienen todavía algún nombre que cuelga de cada uno) |
+| PUT | `/settings` | admin | guarda ajustes (dominio, TLS, token GitHub, alertas, `keepImages` 1–50 o vacío → 400 `invalid_keep_images`); `rootDomain` debe ser un nombre de host válido o vacío; `serverIpv6`, una IPv6 sin identificador de zona (`fe80::1%eth0` da 400: ningún DNS la publica) o vacía. Si `rootDomain` cambia, el anterior (si no estaba vacío) pasa el primero a `rootDomainAnteriores` y el nuevo sale de ella si estaba (volver a uno anterior lo quita): sus subdominios siguen contando como generados (§5.5). Con 10 dominios raíz anteriores, un cambio que añadiría otro responde 400 `too_many_previous_root_domains` sin guardar ningún ajuste. Audita `settings_updated` y, si cambia el dominio raíz, `root_domain_changed` (`anterior → nuevo`) |
+| DELETE | `/settings/previous-root-domains/:domain` | admin | quita un dominio raíz anterior de la lista (validado como dominio; 404 `not_found` si no está) → `{ok, rootDomainAnteriores}`. Sus subdominios dejan de contar como generados: en un servicio que también tenga un dominio propio, uno de ellos puede pasar a ser el dominio principal en el siguiente despliegue. Audita `previous_root_domain_removed` |
 | POST | `/settings/github/test` | admin | valida el token de GitHub |
 | DELETE | `/settings/github` | admin | borra el token de GitHub |
 | POST | `/settings/alerts/test` | admin | envía notificación de prueba |
@@ -2674,7 +2855,7 @@ distroless), el explorador lo indica y no está disponible.
 | Método | Ruta | Nivel | Descripción |
 | --- | --- | --- | --- |
 | GET | `/domains/server-ip` | auth | `{ip, source, ipv6}`: IP del servidor (configurada o detectada) y la IPv6 de Ajustes (`null` si no se ha indicado) |
-| GET | `/domains/config` | auth | `{rootDomain, tls, tlsBlocked}`: lo que necesita el editor de dominios de cualquier usuario (los ajustes completos siguen siendo solo admin). `tls` es el TLS efectivo; `tlsBlocked`, que está activado en el panel pero Traefik tiene un correo que Let's Encrypt rechaza (vacío no cuenta) |
+| GET | `/domains/config` | auth | `{rootDomain, rootDomainAnteriores, tls, tlsBlocked}`: lo que necesita el editor de dominios de cualquier usuario (los ajustes completos siguen siendo solo admin). `rootDomainAnteriores` (lista de dominios) permite al editor y a las tarjetas aplicar la misma regla del dominio principal que el servidor. `tls` es el TLS efectivo; `tlsBlocked`, que está activado en el panel pero Traefik tiene un correo que Let's Encrypt rechaza (vacío no cuenta) |
 | GET | `/projects/:id/github/needs` | +access | dependencias del repo antes de crearlo (`repo`, `branch`, `rootDir?`, `source?`, `name?`): `needs`, `suggestions`, `missing`, `mail`, `manifest`, `envFile` (§5.5) y `plan`, el plan de integraciones sin efectos (§5.7) |
 | POST | `/domains/check` | auth | verifica DNS de un dominio (`{domain}`) → `{check: {domain, status, resolvedIps, resolvedIpv6, expectedIp, zone, name, caa, message, viaCloudflare?}}`; `status`: `ok`, `wrong_ip` (el A no es el del servidor, hay **otro A además del suyo** —el del hosting anterior, que un importador de zona no sustituye— o, sin el proxy de Cloudflare, un **AAAA que no es la IPv6 del servidor**: los visitantes con IPv6 y Let's Encrypt irían allí), `cloudflare_proxy` (resuelve solo a IP del proxy de Cloudflare y no se ha podido ver a dónde lleva), `cloudflare_flexible` (con el proxy apunta aquí, pero Cloudflare entra en el bucle de redirecciones del modo SSL/TLS «Flexible»), `caa` (apunta aquí, pero el CAA más cercano —el del nombre o el de su padre más próximo que tenga— no autoriza a `letsencrypt.org`; solo con HTTPS configurado; `caa = {name, issuers}` y el mensaje da el registro exacto, `0 issue "letsencrypt.org"`; un CAA que no se pudo consultar no lo impide), `no_record` o `unknown`; `message` es siempre una sola frase. `zone`/`name`: la zona del dominio y el nombre del registro según la lista de sufijos públicos (`www.panaderia.com.es` → zona `panaderia.com.es`, nombre `www`; `@` para el propio dominio; `null` si no se sabe); el editor los usa en las instrucciones. Solo para el administrador, un nombre con el proxy se comprueba con la API de Cloudflare (solo lectura, `verificarEnCloudflare`: sigue un CNAME hasta tres saltos y el comodín más cercano) y, si apunta aquí, sale `ok` con `viaCloudflare: true` (o `cloudflare_flexible`, si con HTTPS la portada pedida a través de Cloudflare redirige a sí misma); si apunta a otro sitio, `wrong_ip`. La API manda sobre el proxy mientras el DNS público se pone al día: un nombre que aún resuelve a la IP del servidor pero ya tiene el proxy sale con `viaCloudflare: true`, y uno que aún resuelve a Cloudflare pero ya no lo tiene, `ok` sin él. Para cualquier otro no sale ninguna petición a Cloudflare ni a la web; 30 por minuto y usuario, después 429 (el editor repite sola la comprobación de los dominios pendientes por debajo de ese tope) |
 | GET | `/public/status/:token` | público | página de estado pública (cacheada) |
@@ -2714,7 +2895,7 @@ traspasan). «manage» = administrador o propietario de la cuenta del proyecto.
 | POST | `/mailway/disconnect` | admin + session | borra dirección, token, servicio, plan predeterminado y hosts, **retira las rutas de Mailway de Traefik** (y su copia guardada) y libera los nombres de marca blanca reservados. Los hosts de la instancia (y el de la URL) pasan a `previousHosts`: su DNS sigue apuntando aquí. Los vínculos de los proyectos se conservan. Audita `mailway_disconnected` |
 | GET | `/mailway/plans` | admin | `{plans, defaultPlanId}` para elegir el plan predeterminado |
 | POST | `/mailway/test` | admin | `{baseUrl?, token?, serviceId?}` opcionales (probar sin guardar) → `{ok, info:{version, brandName, mailHostname, webmailUrl, panelUrl, role, email, features}, warnings}`; avisa si el token no es de administrador. Las URLs que no son http(s) llegan como `null`. 12/min |
-| GET | `/projects/:id/mail` | auth + access | `{moduleEnabled, configured, canManage, isAdmin, accountSuspended, linked, notice?, panelUrl, features, link?, summary?, account?, suggestedDomains, renewals?}`. Recupera el vínculo si Mailway tiene un cliente con la referencia propia del proyecto (con la de su cuenta no: la comparten todos sus proyectos); si el cliente ya no existe o ya no lleva exactamente esa referencia, `notice` lo explica (sin `summary`) y se puede desactivar. `summary.apiKeys[]` incluye `senderMailboxId` y `createdBySkyway`; `summary.appPasswords[]`, `invalidatedAt` (la invalidó un cambio de motor de Mailway; `null` si no o con un Mailway anterior). `renewals` = `{[serviceId]: {status:'renewed'\|'waiting'\|'failed', reason, renewedAt, mailbox, deployment:{id, status}\|null}}`: renovaciones automáticas de las contraseñas de aplicación de sus servicios (ver «Correo (Mailway)»). Si quien la pide gestiona el proyecto, antes renueva las invalidadas de los servicios del proyecto (espera como mucho 8 s; si Mailway tarda, sigue en segundo plano) y devuelve el resumen de después; un intento fallido no se repite en esta ruta hasta pasado un minuto. `features.webmailAutomatico` = interruptor global del webmail automático de Mailway (`null` si no lo tiene) y `summary.webmail` = `{automatico, domains:[{hostname, status, detail, automatico, isPrimary, url, conflict}]}` (`null` con un Mailway sin la función; solo nombres que cuelgan de un dominio del cliente, sin identificadores de Mailway; `url` solo en servicio y sin conflicto). En un proyecto de una cuenta, `account` = `{workspaceName, shared, projects, ownClient}`: si el cliente es el de la cuenta, los otros proyectos de la cuenta que lo usan (solo los que el usuario puede ver) y, si el proyecto conserva su propio cliente porque la cuenta ya tenía otro, `ownClient.workspaceClientName`; al leerlo, el vínculo de antes pasa al cliente de la cuenta y el nombre del cliente se alinea con el de la cuenta (ver «Correo (Mailway)»). `suggestedDomains` (máx. 8): dominios registrables de los dominios de los servicios del proyecto según la lista de sufijos públicos (`api.empresa.com` → `empresa.com`; nada bajo sufijos privados como `github.io`), sin los que ya tiene el cliente, el origen de un cambio de dominio con correo que no esté cancelado (§6.1) ni los de la plataforma (registrables de `SKYWAY_DOMAIN`, del `rootDomain` y de los hosts de Mailway); `[]` sin módulo, sin Mailway o con `notice` |
+| GET | `/projects/:id/mail` | auth + access | `{moduleEnabled, configured, canManage, isAdmin, accountSuspended, linked, notice?, panelUrl, features, link?, summary?, account?, suggestedDomains, renewals?}`. Recupera el vínculo si Mailway tiene un cliente con la referencia propia del proyecto (con la de su cuenta no: la comparten todos sus proyectos); si el cliente ya no existe o ya no lleva exactamente esa referencia, `notice` lo explica (sin `summary`) y se puede desactivar. `summary.apiKeys[]` incluye `senderMailboxId` y `createdBySkyway`; `summary.appPasswords[]`, `invalidatedAt` (la invalidó un cambio de motor de Mailway; `null` si no o con un Mailway anterior). `renewals` = `{[serviceId]: {status:'renewed'\|'waiting'\|'failed', reason, renewedAt, mailbox, deployment:{id, status}\|null}}`: renovaciones automáticas de las contraseñas de aplicación de sus servicios (ver «Correo (Mailway)»). Si quien la pide gestiona el proyecto, antes renueva las invalidadas de los servicios del proyecto (espera como mucho 8 s; si Mailway tarda, sigue en segundo plano) y devuelve el resumen de después; un intento fallido no se repite en esta ruta hasta pasado un minuto. `features.webmailAutomatico` = interruptor global del webmail automático de Mailway (`null` si no lo tiene) y `summary.webmail` = `{automatico, domains:[{hostname, status, detail, automatico, isPrimary, url, conflict}]}` (`null` con un Mailway sin la función; solo nombres que cuelgan de un dominio del cliente, sin identificadores de Mailway; `url` solo en servicio y sin conflicto). En un proyecto de una cuenta, `account` = `{workspaceName, shared, projects, ownClient}`: si el cliente es el de la cuenta, los otros proyectos de la cuenta que lo usan (solo los que el usuario puede ver) y, si el proyecto conserva su propio cliente porque la cuenta ya tenía otro, `ownClient.workspaceClientName`; al leerlo, el vínculo de antes pasa al cliente de la cuenta y el nombre del cliente se alinea con el de la cuenta (ver «Correo (Mailway)»). `suggestedDomains` (máx. 8): dominios registrables de los dominios de los servicios del proyecto según la lista de sufijos públicos (`api.empresa.com` → `empresa.com`; nada bajo sufijos privados como `github.io`), sin los que ya tiene el cliente, el origen de un cambio de dominio con correo que no esté cancelado (§6.1) ni los de la plataforma (registrables de `SKYWAY_DOMAIN`, del `rootDomain`, de los dominios raíz anteriores y de los hosts de Mailway); `[]` sin módulo, sin Mailway o con `notice` |
 | GET | `/projects/:id/mail/options` | manage | `{plans, clients, defaultPlanId, canChoosePlan, defaultName, previous, workspace}`: el administrador ve todos los planes y los clientes (con `available`/`linkedTo`: no se puede elegir uno vinculado a un proyecto de otra cuenta ni con la referencia de otro proyecto, otra cuenta u otra integración); el propietario, solo el plan que se le asignará. `previous` = `{clientName, available, reason}` del cliente anterior del proyecto. En un proyecto de una cuenta, `workspace` = `{name, client}`: `defaultName` es el nombre de la cuenta y, si la cuenta ya tiene cliente (`client` = `{name, planName}`), no hay clientes que elegir, ni plan, ni cliente anterior |
 | POST | `/projects/:id/mail/link` | manage | `{mode:'create', name?(2-80), planId?, contactEmail?}` (ensure por referencia externa; `planId` distinto del predeterminado → 403 salvo admin; sin nombre, el del proyecto o «Proyecto X» si tiene 1 carácter), `{mode:'previous'}` (recupera el cliente anterior si su referencia está libre; 409 si otra integración lo tiene) o `{mode:'existing', clientId}` (solo admin; 409 si está vinculado a un proyecto de otra cuenta o lleva la referencia de otro proyecto, otra cuenta u otra integración). En un proyecto de una cuenta: si la cuenta ya tiene cliente (`skyway:workspace:<id>`), el proyecto se vincula a él (`created: false`, sin crear nada; otro `clientId` o cliente anterior → 409); si no, el cliente creado, recuperado o vinculado pasa a ser el de la cuenta (referencia de la cuenta con `PUT …/link` y nombre de la cuenta; el `name` del cuerpo no cuenta). Si otro cliente ya tiene la referencia de la cuenta, el `409 external_ref_in_use` de Mailway se traslada con su mensaje. 403 con la cuenta suspendida |
 | DELETE | `/projects/:id/mail/link` | manage | retira solo el vínculo de este proyecto → `{ok, released, workspaceClient}`. El cliente de una cuenta conserva la referencia de la cuenta (`workspaceClient: true`), aunque fuera el último proyecto: al volver a activar el correo, el proyecto se vincula al mismo cliente. Un cliente propio, como siempre: suelta su referencia en Mailway **solo si todavía la lleva** (si es de otra integración no se toca) y se recuerda para recuperarlo. Skyway deja de renovar las contraseñas de aplicación de sus servicios: olvida lo anotado y resuelve sus avisos. 409 `migration_open` con un cambio de dominio abierto que incluye el correo (§6.1) |
@@ -2868,7 +3049,8 @@ Encrypt seguirían llegando allí); el A nuevo sigue la regla del DNS automátic
 (con el proxy de Cloudflare si la plataforma tiene HTTPS y el certificado
 gratuito de Cloudflare cubre el nombre; la revisión lo dice en `proxied`) y la
 revisión avisa si el anterior tenía el proxy y el nuevo no lo llevará. Nunca se reemplazan el
-dominio del panel (`SKYWAY_DOMAIN`), el `rootDomain`, los nombres de Mailway
+dominio del panel (`SKYWAY_DOMAIN`), el `rootDomain` ni un dominio raíz anterior
+mientras siga en la lista, los nombres de Mailway
 (actuales, anteriores, publicados o de marca blanca) ni un nombre reservado a
 otro proyecto; nunca MX, TXT ni otros nombres. Lo borrado se guarda en
 `cloudflare_dns_records.replaced` (tipo, contenido, proxy, TTL y comentario);
@@ -2894,7 +3076,7 @@ desplegar: 409 `migration_services_pending`.
 | --- | --- | --- |
 | POST | `/plan` | `{fromDomain, toDomain, soloWeb?, hosts?, excluidas?}` → `PlanSkyway {hosts[{serviceId, from, to, modo, serviceName, error}], dnsWeb, correoDisponible: si/no_vinculado/sin_dominio/mailway_antiguo, correo, variables{cambios, notas, wordpress, huella}, servicios[{serviceId, nombre, reinicio, motivos}], webhooks, avisos, bloqueos, expect}`. `motivos` ⊂ `dominios`, `variables`, `compartidas`, `remitente`, `referencias`; `reinicio` = se despliega con una sola copia. `webhooks` = `WebhookEnRiesgo[]` (`{serviceId, serviceName, proveedores, evidencias, hosts[{serviceId, from, to}]}`; proveedores `telegram`, `discord`, `slack`, `whatsapp`, `twilio`, `stripe` o `webhook`): servicios con webhooks en nombres que redirigen; «Servir también» vuelve a pedir el plan con esos nombres en `hosts` con `modo: 'servir'`. Con un Mailway que lo informa, cada buzón de `correo` trae `appsManuales`. Sin efectos. 30/min |
 | POST | `/projects/:id/domain-migrations` | `{fromDomain, toDomain, soloWeb?, hosts, excluidas, expect}` → 201 `MigracionSkyway` (+ `dns` del DNS automático), o 200 si ya estaba abierto con el mismo origen y destino. 409 `plan_changed` si `expect` no es la huella del plan, `migration_blocked` con el primer bloqueo, `migration_exists` con otro cambio abierto (también si Mailway devuelve uno que no abrió este proyecto) |
-| GET | `/projects/:id/domain-migrations` | `{abierta, anteriores (últimas 5), dominios}`; `?ligera=1` sin consultar a Mailway (el aviso de la página del proyecto) |
+| GET | `/projects/:id/domain-migrations` | `{abierta, anteriores (últimas 5), dominios, propuestas}`; `?ligera=1` sin consultar a Mailway (el aviso de la página del proyecto). `dominios`: los que se proponen como dominio actual, primero los dominios raíz anteriores que usa el proyecto; `propuestas`: `{<dominio raíz anterior>: <dominio raíz actual>}`, el dominio nuevo que se propone para cada uno (§6.1) |
 | GET | `/:mid` | `MigracionSkyway {estado, paso, error, hosts[{…, dns, certificado}], compuertas[dns_web, certificados, correo], servicios[{despliegue, estado, error}], redirecciones, correo (vista de Mailway en vivo, caché de 10 s), variables (antes de pasar), alPasar (con `motivos`), webhooks, usuariosSinGestionar, appsManuales, ipServidor, avisos, puede*, fechas}`. `webhooks` como en el plan (en `preparando` y `lista`; en `pasada`, solo los nombres que siguen redirigiendo). `usuariosSinGestionar` (en `pasada` y `dando_de_baja`; vacío en el resto) = `[{mailboxId, email, login, pendiente, usos[{ambito: 'service'\|'project', serviceId, serviceName, key, usuario, estado: 'cambiara'\|'no_entra'}]}]`. `appsManuales` = `[{mailboxId, email, apps, usadoEnProyecto}]`: buzones pendientes con contraseñas de aplicación creadas a mano; `usadoEnProyecto` si además lo usa algún servicio del proyecto (§6.1). El error de un servicio cuyo despliegue de correo ha fallado dos veces lo explica (alerta `mail_login_deploy_failed`) |
 | POST | `/:mid/check` | vuelve a medir (DNS, certificados y correo) y deja `lista` o `preparando`; con un alta en Mailway sin confirmar, la busca y la vincula. 60/min |
 | POST | `/:mid/mx` | cambia el MX del dominio nuevo a este servidor en su zona de Cloudflare (Mailway `POST /:id/mx`, con `soloCliente` fuera de la administración). Solo en `preparando`/`lista`, con la pre-recepción hecha (409 `migration_state`) y la zona en Cloudflare (400 `cloudflare_unavailable`). 10/min |
@@ -2929,7 +3111,9 @@ desplegar: 409 `migration_services_pending`.
 | `SKYWAY_DOMAIN_EXTRA` | — | nombres adicionales del panel, separados por comas (p. ej. el anterior mientras se cambia de dominio). Mismas reservas que `SKYWAY_DOMAIN`; sus routers (HTTP con redirección y HTTPS con certificado propio, hacia `skyway@docker`) los publica Skyway en el proveedor dinámico que Traefik ya lee (`/api/traefik/mailway`) |
 | `SKYWAY_TRAEFIK_CONTAINER` | `skyway-traefik` | contenedor de Traefik del que se lee el correo de Let's Encrypt (`tls.ts`) |
 
-Ajustes en la UI (tabla `settings`, solo admin): `rootDomain`, `letsencryptEmail`,
+Ajustes en la UI (tabla `settings`, solo admin): `rootDomain` (con la lista de
+dominios raíz anteriores, `rootDomainAnteriores`, que se rellena sola al
+cambiarlo y en la que solo se quitan entradas), `letsencryptEmail`,
 `serverIp`, `githubToken`, umbrales de alerta y canales (Discord/Telegram/webhook)
 y `keepImages` (versiones por servicio cuya imagen se conserva, 1–50; por
 defecto 5). `letsencryptEmail` solo activa las etiquetas HTTPS: los certificados

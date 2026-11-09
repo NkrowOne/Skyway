@@ -105,14 +105,14 @@ describe('regla pura', () => {
   });
 
   it('completa cada dominio propio, en el orden del dominio principal, y aplicarla otra vez no cambia nada', () => {
-    const r = completarParejasWww(['bufete.es', 'www.tienda.com', 'app.bufete.es', `web.${ROOT}`], { rootDomain: ROOT });
+    const r = completarParejasWww(['bufete.es', 'www.tienda.com', 'app.bufete.es', `web.${ROOT}`], { raices: ROOT });
     // Cada pareja hereda el puesto de su dominio: la del primero va delante.
     expect(r.domains).toEqual(['www.bufete.es', 'www.tienda.com', 'bufete.es', 'tienda.com', 'app.bufete.es', `web.${ROOT}`]);
     expect(r.anadidos).toEqual(['www.bufete.es', 'tienda.com']);
-    const otra = completarParejasWww(r.domains, { rootDomain: ROOT });
+    const otra = completarParejasWww(r.domains, { raices: ROOT });
     expect(otra).toEqual({ domains: r.domains, anadidos: [] });
     // La pareja ya presente (en otra forma) no se repite.
-    expect(completarParejasWww(['bufete.es', 'WWW.Bufete.es.'], { rootDomain: ROOT })).toEqual({
+    expect(completarParejasWww(['bufete.es', 'WWW.Bufete.es.'], { raices: ROOT })).toEqual({
       domains: ['www.bufete.es', 'bufete.es'],
       anadidos: [],
     });
