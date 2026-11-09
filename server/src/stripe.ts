@@ -114,6 +114,38 @@ export async function retrieveStripeCheckout(secretKey: string, sessionId: strin
 }
 
 /**
+ * Caduca una Checkout Session abierta. Se usa al anular una factura o marcarla
+ * pagada por otra vía: una pestaña de Stripe que el cliente dejó abierta seguiría
+ * admitiendo el pago durante horas, y ese cobro habría que devolverlo a mano.
+ * Devuelve false si la sesión ya no estaba abierta (pagada, caducada o
+ * desconocida): no hay nada que cerrar.
+ */
+export async function expireStripeCheckout(secretKey: string, sessionId: string): Promise<boolean> {
+  if (!secretKey) throw new StripeError('No hay ninguna clave secreta de Stripe configurada.');
+  if (!/^[A-Za-z0-9_]+$/.test(sessionId)) throw new StripeError('Identificador de sesión de Stripe no válido.');
+  let res: Response;
+  try {
+    res = await fetch(`${STRIPE_API}/checkout/sessions/${encodeURIComponent(sessionId)}/expire`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${secretKey}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: '',
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch (err: any) {
+    throw new StripeError(`No se pudo conectar con Stripe: ${err?.message || 'error de red'}`);
+  }
+  const body: any = await res.json().catch(() => ({}));
+  if (res.status === 401) throw new StripeError('Stripe rechazó la clave secreta (401).');
+  // Stripe responde 400 si la sesión ya no está abierta y 404 si no la conoce.
+  if (res.status === 400 || res.status === 404) return false;
+  if (!res.ok) throw new StripeError(body?.error?.message || `Stripe respondió HTTP ${res.status}`);
+  return body?.status === 'expired';
+}
+
+/**
  * Verifica la firma de un webhook de Stripe (cabecera `Stripe-Signature`, formato
  * `t=<ts>,v1=<hmac>`): HMAC-SHA256 de `${t}.${rawBody}` con el secreto del
  * endpoint, comparado en tiempo constante, y con tolerancia de tiempo (anti-replay).

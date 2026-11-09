@@ -434,6 +434,8 @@ export interface Invoice {
   client_country?: string | null;
   payment_method: PaymentMethod | null;
   stripe_url: string | null;
+  /** Hay un enlace de pago público permanente activo para esta factura. */
+  pay_link?: boolean;
   issued_at: number | null;
   paid_at: number | null;
   locked: number;

@@ -9,12 +9,14 @@ import {
   deleteInvoice,
   getInvoice,
   getInvoiceByStripeSession,
+  getInvoicePayLink,
   getPlan,
   getProduct,
   getWorkspace,
   invoiceExistsForCycle,
   listBillableSubscriptions,
   listInvoices,
+  listPayLinkInvoiceIds,
   listPendingCharges,
   listPlanPeriodsInRange,
   listRectificationsOf,
@@ -37,7 +39,9 @@ import { MailError, sendMail } from '../mailer';
 import { getBillingAutomation } from '../billingsettings';
 import { priceTiers } from '../pricing';
 import { reactivateWorkspaceIfCurrent } from '../billingauto';
-import { StripeError, createStripeCheckout, retrieveStripeCheckout, stripeAmount } from '../stripe';
+import { asegurarTokenPago, baseUrlPublica, revocarTokenPago, rotarTokenPago, urlEnlacePago } from '../enlacepago';
+import { panelBaseUrl } from '../paneldomain';
+import { StripeError, createStripeCheckout, expireStripeCheckout, retrieveStripeCheckout, stripeAmount } from '../stripe';
 import { BillingProfile, InvoiceLine, InvoiceRow, InvoiceStatus, IssuerSnapshot, PlanRow, TaxBreakdownEntry, VatRegime, WorkspaceRow } from '../types';
 import { safeParse } from '../util';
 
@@ -443,11 +447,43 @@ async function invoicePdf(inv: InvoiceRow): Promise<Buffer> {
 }
 
 /**
+ * Enlace para pagar con tarjeta que lleva el correo de la factura. Con Stripe
+ * configurado es el enlace público y permanente (`/pagar/<token>`), nunca la
+ * sesión de Checkout guardada: esa caduca a las 24 h, y una factura emitida por
+ * la automatización del ciclo llegaba sin enlace o con uno que dejaba de
+ * funcionar al día siguiente. Solo una factura pendiente y con importe invita a
+ * pagar: el correo de una ya pagada o de un abono no lleva enlace.
+ */
+function enlaceTarjetaCorreo(inv: InvoiceRow, base: string | null | undefined): string | null {
+  if (inv.status !== 'issued' || inv.total_cents <= 0) return null;
+  // Sin Stripe configurado no hay cobro con tarjeta que ofrecer: lo de siempre.
+  if (!getStripeSecretKey()) return inv.stripe_url;
+  const numero = inv.number ?? inv.id;
+  const raiz = base ?? baseUrlPublica();
+  if (!raiz) {
+    // Un enlace a un túnel (`localhost`) o a una IP no lo abre el cliente.
+    auditSystem('invoice_pay_link_unavailable', `${numero}: el correo sale sin enlace de pago porque el panel no tiene dominio público (SKYWAY_DOMAIN)`, {
+      type: 'invoice',
+      id: inv.id,
+    });
+    return null;
+  }
+  const t = asegurarTokenPago(inv);
+  if (!t) return null;
+  if (t.creado) auditSystem('invoice_pay_link_created', numero, { type: 'invoice', id: inv.id });
+  return urlEnlacePago(raiz, t.token);
+}
+
+/**
  * Envía la factura al cliente con el PDF adjunto. Best-effort y aislado: un fallo
  * del correo NUNCA debe tumbar la emisión, que ya es un hecho legal consumado; se
  * audita y se alerta para que el operador la reenvíe a mano.
+ *
+ * `base` es la raíz pública del enlace de pago cuando el envío lo pide una
+ * persona desde el panel (`baseUrlPublica(req)`); la automatización no la pasa
+ * y se usa el dominio del panel.
  */
-export async function sendInvoiceEmail(inv: InvoiceRow, opts: { manual?: boolean } = {}): Promise<{ ok: boolean; error?: string }> {
+export async function sendInvoiceEmail(inv: InvoiceRow, opts: { manual?: boolean; base?: string | null } = {}): Promise<{ ok: boolean; error?: string }> {
   const smtp = getSmtpSettings();
   const ws = getWorkspace(inv.workspace_id);
   const destino = ws?.billing_email?.trim();
@@ -478,6 +514,9 @@ export async function sendInvoiceEmail(inv: InvoiceRow, opts: { manual?: boolean
   const profile = getBillingProfile();
   const importe = `${(inv.total_cents / 100).toFixed(2)} ${inv.currency}`;
   try {
+    // Dentro del try: un fallo inesperado al preparar el enlace sigue el mismo
+    // camino de fallo (auditado y con alerta) que el del propio envío.
+    const tarjeta = enlaceTarjetaCorreo(inv, opts.base);
     await sendMail(smtp, {
       to: destino,
       replyTo: profile.email || undefined,
@@ -486,7 +525,7 @@ export async function sendInvoiceEmail(inv: InvoiceRow, opts: { manual?: boolean
         `Hola:\n\nAdjuntamos la factura ${numero} por ${importe}.\n` +
         (profile.paymentTermsDays > 0 ? `Vencimiento: ${profile.paymentTermsDays} días desde la fecha de expedición.\n` : '') +
         (profile.iban ? `\nPuedes pagarla por transferencia a ${profile.iban}${profile.bankName ? ` (${profile.bankName})` : ''}.\n` : '') +
-        (inv.stripe_url ? `\nO pagarla con tarjeta aquí: ${inv.stripe_url}\n` : '') +
+        (tarjeta ? `\n${profile.iban ? 'O pagarla' : 'Puedes pagarla'} con tarjeta en este enlace: ${tarjeta}\n` : '') +
         `\nUn saludo,\n${profile.companyName || 'Skyway'}\n`,
       attachments: [{ filename: invoiceFilename(inv), contentType: 'application/pdf', content: await invoicePdf(inv) }],
     });
@@ -509,7 +548,12 @@ function issuerSnapshot(profile: BillingProfile): IssuerSnapshot {
   };
 }
 
-function publicInvoice(inv: InvoiceRow) {
+/**
+ * Factura tal como la devuelve la API. `conEnlace` evita una consulta por factura
+ * en los listados; sin él se mira el enlace de esta. Del enlace de pago solo sale
+ * si existe: el token no se guarda y su hash no se expone.
+ */
+function publicInvoice(inv: InvoiceRow, conEnlace?: boolean) {
   return {
     id: inv.id,
     workspace_id: inv.workspace_id,
@@ -541,6 +585,7 @@ function publicInvoice(inv: InvoiceRow) {
     client_country: inv.client_country,
     payment_method: inv.payment_method,
     stripe_url: inv.stripe_url,
+    pay_link: conEnlace ?? !!getInvoicePayLink(inv.id),
     issued_at: inv.issued_at,
     // Vencimiento congelado al emitir: es el que imprime el PDF y el que usa la
     // morosidad; sin exponerlo el panel no podía mostrar cuándo vence.
@@ -1123,8 +1168,187 @@ export function generateCycleDraft(ws: WorkspaceRow, cycle = currentCycle(ws)): 
   });
 }
 
-/** Facturas cuyo enlace de Stripe se está creando ahora mismo (guarda contra el doble clic). */
-const stripeLinkEnCurso = new Set<string>();
+/**
+ * Desenlace de preparar el cobro de una factura con Stripe. Lo comparten
+ * «Cobrar» del panel (`POST /invoices/:id/stripe-link`) y el enlace público
+ * (`GET /pagar/<token>`, `routes/paylink.ts`), para que los dos sigan la misma
+ * lógica y los mismos cerrojos; cada ruta traduce el desenlace a su respuesta.
+ */
+export type CobroStripe =
+  | { ok: true; url: string; reutilizada: boolean }
+  | {
+      ok: false;
+      motivo: 'no_existe' | 'pagada' | 'anulada' | 'sin_importe' | 'sin_stripe' | 'en_curso' | 'fiscal' | 'stripe' | 'cambio_estado';
+      mensaje: string;
+    };
+
+type MotivoCobroFallido = Extract<CobroStripe, { ok: false }>['motivo'];
+
+/** Quién pide el cobro: la raíz de las URLs de vuelta de Stripe y cómo se audita. */
+export interface ContextoCobro {
+  /** Raíz pública del panel (`panelBaseUrl`): la vuelta de Stripe va a la página del enlace. */
+  base: string;
+  /** Audita una acción sobre la factura con el actor de la petición. */
+  auditar: (accion: string, detalle: string) => void;
+  /**
+   * Token con el que se ha abierto el enlace público. La vuelta de Stripe usa
+   * ESE enlace: el que el cliente tiene en el correo, que así nunca se rota por
+   * abrirlo (aunque el servidor ya no pudiera recalcularlo).
+   */
+  token?: string;
+}
+
+const CAMBIO_ESTADO = 'La factura ha cambiado de estado mientras se creaba el enlace; recarga la página.';
+
+function cobroFallido(motivo: MotivoCobroFallido, mensaje: string): CobroStripe {
+  return { ok: false, motivo, mensaje };
+}
+
+/**
+ * Cobros que se están preparando, por factura: el cerrojo contra dos peticiones
+ * a la vez. Antes era un Set y la segunda petición recibía un 409; se guarda la
+ * promesa para que el enlace público pueda ESPERAR a la que ya está en marcha y
+ * redirigir a la misma sesión. Así no se crea otra sesión ni se enseña un error
+ * al cliente porque el antivirus de su correo abrió el enlace un instante antes.
+ */
+const cobrosEnCurso = new Map<string, Promise<CobroStripe>>();
+
+/**
+ * Caduca en Stripe una sesión de Checkout que ha quedado abierta, sin esperar
+ * (best-effort): al anular la factura o cobrarla por otra vía, una pestaña de
+ * pago abierta seguiría admitiendo el cobro durante horas y habría que
+ * devolverlo a mano. Un fallo solo se audita: el webhook sigue avisando de un
+ * cobro sobre una factura anulada o ya saldada.
+ */
+function cerrarSesionStripe(sessionId: string | null, numero: string, motivo: string): void {
+  const secret = getStripeSecretKey();
+  if (!secret || !sessionId) return;
+  void expireStripeCheckout(secret, sessionId).then(
+    (cerrada) => {
+      if (cerrada) auditSystem('invoice_stripe_session_expired', `${numero} · ${sessionId} · ${motivo}`);
+    },
+    (err: unknown) => {
+      auditSystem('invoice_stripe_session_expire_failed', `${numero} · ${sessionId}: ${(err instanceof Error ? err.message : String(err)).slice(0, 200)}`);
+    },
+  );
+}
+
+/**
+ * Prepara el cobro con Stripe: reutiliza la sesión de Checkout abierta o crea
+ * otra, emitiendo antes la factura si aún es borrador. `siEnCurso` decide qué
+ * hacer si ya hay un cobro de esa factura en preparación: el panel lo rechaza
+ * (409, como siempre) y el enlace público espera a ese mismo cobro.
+ */
+export async function cobrarConStripe(invoiceId: string, ctx: ContextoCobro, siEnCurso: 'rechazar' | 'esperar'): Promise<CobroStripe> {
+  const inv = getInvoice(invoiceId);
+  if (!inv) return cobroFallido('no_existe', 'Factura no encontrada');
+  if (inv.status === 'paid') return cobroFallido('pagada', 'La factura ya está pagada.');
+  if (inv.status === 'void') return cobroFallido('anulada', 'La factura está anulada.');
+  // Se comprueba ANTES de emitir: Stripe rechaza un importe no positivo, y
+  // emitir primero dejaba una factura numerada y bloqueada como efecto
+  // secundario de un enlace que nunca llegó a crearse.
+  if (inv.total_cents <= 0) {
+    return cobroFallido('sin_importe', 'La factura no tiene importe a cobrar: un enlace de pago exige un total positivo.');
+  }
+  const secret = getStripeSecretKey();
+  if (!secret) return cobroFallido('sin_stripe', 'Configura primero la clave de Stripe en Contabilidad.');
+  // Dos peticiones seguidas entraban a la vez: mientras la primera esperaba a
+  // Stripe, la segunda creaba otra sesión y la última escritura pisaba a la
+  // primera. Entre la consulta y el registro no hay ningún `await`.
+  const enCurso = cobrosEnCurso.get(invoiceId);
+  if (enCurso) {
+    if (siEnCurso === 'rechazar') return cobroFallido('en_curso', 'Ya se está generando el enlace de pago de esta factura.');
+    return enCurso;
+  }
+  const cobro = prepararCobro(inv, secret, ctx).finally(() => cobrosEnCurso.delete(invoiceId));
+  cobrosEnCurso.set(invoiceId, cobro);
+  return cobro;
+}
+
+async function prepararCobro(inv: InvoiceRow, secret: string, ctx: ContextoCobro): Promise<CobroStripe> {
+  const id = inv.id;
+  // Reutilizar el enlace vigente en vez de crear otra sesión: cada sesión nueva
+  // sobrescribía `stripe_session_id` y el cobro hecho con el enlace anterior
+  // quedaba sin factura a la que imputarse. (El webhook concilia además por el
+  // id de factura, así que un enlace viejo tampoco se pierde.) Pero una sesión
+  // de Checkout CADUCA (24 h por defecto): reutilizar a ciegas devolvía para
+  // siempre un enlace muerto, así que se pregunta a Stripe si sigue abierta y,
+  // si no, se crea otra. Si Stripe no responde se devuelve el enlace guardado.
+  if (inv.stripe_url && inv.stripe_session_id) {
+    let abierta = true;
+    try {
+      abierta = (await retrieveStripeCheckout(secret, inv.stripe_session_id)).status === 'open';
+    } catch (err) {
+      if (!(err instanceof StripeError)) throw err;
+    }
+    if (abierta) {
+      // Mientras se consultaba a Stripe pudo llegar el cobro o la anulación.
+      const actual = getInvoice(id);
+      if (!actual || actual.status === 'paid' || actual.status === 'void') return cobroFallido('cambio_estado', CAMBIO_ESTADO);
+      return { ok: true, url: inv.stripe_url, reutilizada: true };
+    }
+    ctx.auditar('invoice_stripe_link_expired', inv.stripe_session_id);
+  }
+
+  // Emitir la factura antes de cobrar (alta antes del pago): asigna número/serie
+  // y la congela. Si ya estaba emitida, no reasigna nada.
+  let issued = inv;
+  if (inv.status === 'draft') {
+    try {
+      issued = performEmission(inv, 'issued', {}, { requireFiscalData: true });
+    } catch (err) {
+      if (err instanceof BillingError) return cobroFallido('fiscal', err.message);
+      throw err;
+    }
+    ctx.auditar('invoice_issued', `${issued.number ?? id} · emitida para cobrarla con Stripe`);
+  }
+  const number = issued.number ?? issued.id;
+  // La vuelta de Stripe va a la página pública del enlace, no al panel: quien
+  // paga puede no tener cuenta en él, y la página dice si el cobro ya consta.
+  const enlace = ctx.token ? { token: ctx.token, creado: false } : asegurarTokenPago(issued);
+  if (enlace?.creado) ctx.auditar('invoice_pay_link_created', number);
+  const vuelta = enlace ? urlEnlacePago(ctx.base, enlace.token) : null;
+  const ws = getWorkspace(issued.workspace_id);
+  let session: { id: string; url: string };
+  try {
+    session = await createStripeCheckout(secret, {
+      amountCents: issued.total_cents,
+      currency: issued.currency,
+      invoiceNumber: number,
+      invoiceId: issued.id,
+      successUrl: vuelta ? `${vuelta}?estado=pagado` : `${ctx.base}/workspaces/${issued.workspace_id}?paid=1`,
+      cancelUrl: vuelta ? `${vuelta}?estado=cancelado` : `${ctx.base}/workspaces/${issued.workspace_id}`,
+      customerEmail: ws?.billing_email ?? null,
+    });
+  } catch (err) {
+    if (err instanceof StripeError) return cobroFallido('stripe', err.message);
+    throw err;
+  }
+  // Si el webhook la ha cobrado (o se ha anulado) mientras se creaba la sesión,
+  // no se pisa el cobro real con un enlace que ya no sirve, y la sesión recién
+  // creada se cierra para que nadie la pague.
+  const actual = getInvoice(id);
+  if (!actual || actual.status === 'paid' || actual.status === 'void') {
+    cerrarSesionStripe(session.id, number, 'la factura cambió de estado mientras se creaba la sesión');
+    return cobroFallido('cambio_estado', CAMBIO_ESTADO);
+  }
+  updateInvoice(id, { stripe_session_id: session.id, stripe_url: session.url, payment_method: 'stripe' });
+  ctx.auditar('invoice_stripe_link', `${number} · ${session.id}`);
+  return { ok: true, url: session.url, reutilizada: false };
+}
+
+/** Código HTTP de cada desenlace fallido en la ruta del panel (los de siempre). */
+const CODIGO_COBRO: Record<MotivoCobroFallido, number> = {
+  no_existe: 404,
+  pagada: 400,
+  anulada: 400,
+  sin_importe: 400,
+  sin_stripe: 400,
+  en_curso: 409,
+  fiscal: 409,
+  stripe: 502,
+  cambio_estado: 409,
+};
 
 export async function billingRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', requireAuth);
@@ -1135,8 +1359,9 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
     const ws = getWorkspace(id);
     if (!ws) return reply.code(404).send({ error: 'Workspace no encontrado' });
     if (!assertWorkspaceAccess(req, reply, id)) return reply;
+    const conEnlace = listPayLinkInvoiceIds(id);
     return {
-      invoices: listInvoices(id).map(publicInvoice),
+      invoices: listInvoices(id).map((inv) => publicInvoice(inv, conEnlace.has(inv.id))),
       issuer: getBillingProfile(),
       client: {
         name: ws.name,
@@ -1327,6 +1552,9 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
       if (target === 'void' && inv.status !== 'void') {
         reopenChargesForInvoice(id);
         rewindAnchorIfLast(inv);
+        // El enlace público que llevaba el correo deja de funcionar: sus cargos
+        // vuelven a pendientes y se facturarán en otra factura, con otro enlace.
+        if (rotarTokenPago(id)) audit(req, 'invoice_pay_link_rotated', { type: 'invoice', id, detail: inv.number ?? id });
       }
     }
     // Cobro manual: levanta el corte por impago si la cuenta ya no debe nada.
@@ -1334,6 +1562,8 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
     // se anula (o se sustituye por una rectificativa) dejaba al cliente cortado.
     if ((target === 'paid' && inv.status !== 'paid') || (target === 'void' && inv.status !== 'void')) {
       reactivateWorkspaceIfCurrent(inv.workspace_id);
+      // La factura ya no admite pagos: una pestaña de Stripe abierta tampoco.
+      cerrarSesionStripe(inv.stripe_session_id, inv.number ?? id, target === 'void' ? 'factura anulada' : 'factura marcada como pagada');
     }
     // Envío al cliente al emitir, si el operador lo ha activado. No se espera al
     // correo para responder: la emisión ya está hecha y un SMTP lento no debe
@@ -1343,7 +1573,7 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
       // Los fallos normales ya los audita sendInvoiceEmail; el `.catch` evita que un
       // rechazo inesperado quede como promesa sin capturar tras responder.
       if (emitida) {
-        void sendInvoiceEmail(emitida).catch((err: unknown) =>
+        void sendInvoiceEmail(emitida, { base: baseUrlPublica(req) }).catch((err: unknown) =>
           req.log.warn({ err, invoice: emitida.id }, 'fallo inesperado enviando la factura por correo'),
         );
       }
@@ -1387,7 +1617,7 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
     if (inv.status === 'draft') {
       return reply.code(409).send({ error: 'Es un borrador: emítela antes de enviarla al cliente.' });
     }
-    const res = await sendInvoiceEmail(inv, { manual: true });
+    const res = await sendInvoiceEmail(inv, { manual: true, base: baseUrlPublica(req) });
     if (!res.ok) return reply.code(502).send({ error: res.error });
     audit(req, 'invoice_emailed', { type: 'invoice', id, detail: inv.number ?? id });
     return { ok: true };
@@ -1474,80 +1704,50 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // Crea (o reutiliza) un enlace de pago con Stripe para la factura. Solo admin.
+  // La lógica y el cerrojo son los de `cobrarConStripe`, compartidos con el
+  // enlace público; aquí una segunda petición simultánea sigue recibiendo 409.
   app.post('/api/invoices/:id/stripe-link', { preHandler: requireAdmin }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const base = panelBaseUrl(req);
+    const auditar = (accion: string, detalle: string): void => audit(req, accion, { type: 'invoice', id, detail: detalle });
+    const res = await cobrarConStripe(id, { base, auditar }, 'rechazar');
+    if (!res.ok) return reply.code(CODIGO_COBRO[res.motivo]).send({ error: res.mensaje });
+    const inv = getInvoice(id)!;
+    // Junto a la sesión (que caduca a las 24 h), el enlace permanente: es el que
+    // conviene enviar al cliente, y el que lleva el correo de la factura.
+    const enlace = asegurarTokenPago(inv);
+    if (enlace?.creado) auditar('invoice_pay_link_created', inv.number ?? id);
+    return {
+      url: res.url,
+      invoice: publicInvoice(inv),
+      payUrl: enlace ? urlEnlacePago(base, enlace.token) : null,
+      ...(res.reutilizada ? { reused: true } : {}),
+    };
+  });
+
+  // Enlace público y permanente de pago (`/pagar/<token>`), el mismo que lleva el
+  // correo de la factura: se crea la primera vez y después se devuelve siempre el
+  // mismo, hasta que se revoca o se anula la factura.
+  app.post('/api/invoices/:id/pay-link', { preHandler: requireAdmin }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const inv = getInvoice(id);
     if (!inv) return reply.code(404).send({ error: 'Factura no encontrada' });
-    if (inv.status === 'paid') return reply.code(400).send({ error: 'La factura ya está pagada.' });
-    if (inv.status === 'void') return reply.code(400).send({ error: 'La factura está anulada.' });
-    // Se comprueba ANTES de emitir: Stripe rechaza un importe no positivo, y
-    // emitir primero dejaba una factura numerada y bloqueada como efecto
-    // secundario de un enlace que nunca llegó a crearse.
-    if (inv.total_cents <= 0) return reply.code(400).send({ error: 'La factura no tiene importe a cobrar: un enlace de pago exige un total positivo.' });
-    const secret = getStripeSecretKey();
-    if (!secret) return reply.code(400).send({ error: 'Configura primero la clave de Stripe en Contabilidad.' });
-    // Dos clics seguidos entraban a la vez: mientras el primero esperaba a Stripe,
-    // el segundo creaba otra sesión y la última escritura pisaba a la primera.
-    if (stripeLinkEnCurso.has(id)) return reply.code(409).send({ error: 'Ya se está generando el enlace de pago de esta factura.' });
-    stripeLinkEnCurso.add(id);
-    try {
-      const ws = getWorkspace(inv.workspace_id);
-      const origin = `${req.protocol}://${req.headers.host}`;
+    if (!getStripeSecretKey()) return reply.code(400).send({ error: 'Configura primero la clave de Stripe en Contabilidad.' });
+    // Un borrador no tiene enlace: abrirlo lo emitiría (ver `asegurarTokenPago`).
+    const enlace = asegurarTokenPago(inv);
+    if (!enlace) return reply.code(409).send({ error: 'Emite la factura antes de compartir su enlace de pago.' });
+    if (enlace.creado) audit(req, 'invoice_pay_link_created', { type: 'invoice', id, detail: inv.number ?? id });
+    return { url: urlEnlacePago(panelBaseUrl(req), enlace.token), created: enlace.creado };
+  });
 
-      // Reutilizar el enlace vigente en vez de crear otra sesión: cada sesión nueva
-      // sobrescribía `stripe_session_id` y el cobro hecho con el enlace anterior
-      // quedaba sin factura a la que imputarse. (El webhook concilia además por el
-      // id de factura, así que un enlace viejo tampoco se pierde.) Pero una sesión
-      // de Checkout CADUCA (24 h por defecto): reutilizar a ciegas devolvía para
-      // siempre un enlace muerto, así que se pregunta a Stripe si sigue abierta y,
-      // si no, se crea otra. Si Stripe no responde se devuelve el enlace guardado.
-      if (inv.stripe_url && inv.stripe_session_id) {
-        let abierta = true;
-        try {
-          abierta = (await retrieveStripeCheckout(secret, inv.stripe_session_id)).status === 'open';
-        } catch (err) {
-          if (!(err instanceof StripeError)) throw err;
-        }
-        if (abierta) return { url: inv.stripe_url, invoice: publicInvoice(inv), reused: true };
-        audit(req, 'invoice_stripe_link_expired', { type: 'invoice', id, detail: inv.stripe_session_id });
-      }
-
-      // Emitir la factura antes de cobrar (alta antes del pago): asigna número/serie
-      // y la congela. Si ya estaba emitida, no reasigna nada.
-      let issued: InvoiceRow;
-      try {
-        issued = inv.status === 'draft' ? performEmission(inv, 'issued', {}, { requireFiscalData: true }) : inv;
-      } catch (err) {
-        if (err instanceof BillingError) return reply.code(409).send({ error: err.message });
-        throw err;
-      }
-      const number = issued.number ?? issued.id;
-
-      try {
-        const session = await createStripeCheckout(secret, {
-          amountCents: issued.total_cents,
-          currency: issued.currency,
-          invoiceNumber: number,
-          invoiceId: issued.id,
-          successUrl: `${origin}/workspaces/${issued.workspace_id}?paid=1`,
-          cancelUrl: `${origin}/workspaces/${issued.workspace_id}`,
-          customerEmail: ws?.billing_email ?? null,
-        });
-        // Si el webhook la ha cobrado mientras se creaba la sesión, no se pisa el
-        // cobro real con un enlace que ya no sirve.
-        const actual = getInvoice(id);
-        if (!actual || actual.status === 'paid' || actual.status === 'void') {
-          return reply.code(409).send({ error: 'La factura ha cambiado de estado mientras se creaba el enlace; recarga la página.' });
-        }
-        updateInvoice(id, { stripe_session_id: session.id, stripe_url: session.url, payment_method: 'stripe' });
-        audit(req, 'invoice_stripe_link', { type: 'invoice', id, detail: number });
-        return { url: session.url, invoice: publicInvoice(getInvoice(id)!) };
-      } catch (err: any) {
-        if (err instanceof StripeError) return reply.code(502).send({ error: err.message });
-        throw err;
-      }
-    } finally {
-      stripeLinkEnCurso.delete(id);
-    }
+  // Revoca el enlace público: deja de funcionar en el acto, y el próximo envío
+  // de la factura (o la ruta anterior) crea uno nuevo.
+  app.delete('/api/invoices/:id/pay-link', { preHandler: requireAdmin }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const inv = getInvoice(id);
+    if (!inv) return reply.code(404).send({ error: 'Factura no encontrada' });
+    const revoked = revocarTokenPago(id);
+    if (revoked) audit(req, 'invoice_pay_link_revoked', { type: 'invoice', id, detail: inv.number ?? id });
+    return { ok: true, revoked };
   });
 }

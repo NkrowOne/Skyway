@@ -129,6 +129,9 @@ descartar un hallazgo que no se sostenía:
   importes negativos legítimos.
 - **Firma del webhook**: es la de Stripe (`t=…,v1=…` sobre el cuerpo crudo), con
   comparación en tiempo constante y tolerancia anti-*replay* de 300 s.
+- **Enlace público de pago** (séptima tanda): la única ruta de facturación sin
+  sesión busca la factura solo por el hash exacto del token y enseña el estado
+  de esa factura y los datos del emisor, nunca los del destinatario.
 
 ---
 
@@ -250,6 +253,71 @@ la empuja al fin del ciclo: el plan y el consumo de ese mes no se facturan
 nunca. Arreglarlo exige decidir si `origin='manual'` cuenta como factura del
 ciclo (hoy es la vía para desatascar un ciclo bloqueado) o si el panel deja de
 usar el ciclo como periodo por defecto.
+
+### Séptima tanda: enlace público y permanente de pago
+
+La facturación a clientes sale de Skyway por correo, y el cliente no tenía una
+forma estable de pagar con tarjeta desde él: el correo llevaba la sesión de
+Stripe Checkout guardada, que caduca a las 24 h, y la factura que emite la
+automatización del ciclo salía sin enlace. Ahora cada factura tiene un enlace
+público y permanente, `GET /pagar/<token>` (`enlacepago.ts`, `paginapago.ts`,
+`routes/paylink.ts`).
+
+| # | Hallazgo | Corrección |
+| --- | --- | --- |
+| 75 | **El cliente no podía pagar con tarjeta desde el correo de forma estable.** Solo un admin creaba el enlace (`stripe-link`), la sesión caducaba a las 24 h y el correo de la automatización salía sin enlace o con uno que dejaba de funcionar al día siguiente. | Enlace público y permanente por factura. Con la factura pendiente, abrirlo reutiliza la sesión de Checkout abierta o crea otra, con la misma lógica y el mismo cerrojo que «Cobrar» (`cobrarConStripe`, ahora compartida) y emitiendo antes un borrador, como hasta ahora; pagada o anulada, una página mínima lo dice. El correo, manual y automático, lleva este enlace en vez de `stripe_url` cuando Stripe está configurado, y el reenvío lleva el mismo. |
+| 76 | **La vuelta de Stripe llevaba al panel** (`/workspaces/:id?paid=1`), que exige sesión: quien pagaba sin cuenta en el panel acababa en la pantalla de inicio de sesión. | La vuelta va a la página del enlace (`?estado=pagado` / `?estado=cancelado`), que no vuelve a redirigir a Checkout: tras pagar, el webhook puede tardar unos segundos y redirigir invitaría a pagar dos veces. |
+| 77 | **Una sesión de Checkout abierta seguía admitiendo el pago** de una factura anulada o cobrada por otra vía: una pestaña que el cliente dejó abierta generaba un cobro que había que devolver a mano. | Al anular o marcar pagada, la sesión se caduca en Stripe (`expireStripeCheckout`, best-effort y auditado). También la que se acaba de crear cuando la factura cambia de estado mientras tanto. |
+| 78 | **El correo de una factura ya pagada o de un abono invitaba a pagarla** con el enlace de Stripe guardado. | Solo lleva enlace una factura pendiente con importe positivo. |
+| 79 | **Dos aperturas simultáneas**: con el cerrojo anterior (un `Set`), la segunda recibía un error. Desde el enlace público, eso es un cliente al que el antivirus de su correo se adelantó un instante. | El cerrojo guarda la promesa: el panel sigue respondiendo 409 y el enlace público espera a la misma sesión. |
+
+Decisiones de diseño del enlace, y las trampas que evitan:
+
+- **Hash en la base, como los tokens de API.** `invoice_pay_links` guarda el
+  sha256 del token y la ruta busca solo por el hash exacto, nunca por id ni por
+  prefijo: un token no lleva a otra factura ni a otro cliente. A diferencia de un
+  token de API, el servidor puede recalcularlo (HMAC-SHA256 del secreto
+  `payLinkKey` con el id de la factura y un nonce propio): sin eso, cada reenvío
+  del correo tendría que generar otro y el enlace del primer correo dejaría de
+  funcionar. El secreto vive en `settings`, como el de las sesiones cuando no se
+  define `JWT_SECRET`, y es propio para que cerrar todas las sesiones no anule
+  los enlaces enviados. Quien lea la base entera ya ve los datos que el enlace
+  enseña.
+- **Ningún borrador tiene enlace.** Abrirlo lo emitiría (numera y bloquea), y
+  bastaría con que la vista previa de un chat o el antivirus de un correo
+  siguiera el enlace. El correo y el panel solo crean enlaces de facturas
+  emitidas; la ruta pública conserva la emisión previa de `stripe-link` por si
+  algún día llegara un borrador.
+- **Rotado al anular**: el enlace del correo deja de funcionar (404); el nuevo,
+  que da el panel, dice «Factura anulada». **Revocable** desde el panel o con
+  `DELETE /invoices/:id/pay-link`; el siguiente envío lleva otro.
+- **Abrir el enlace nunca lo rota**: la vuelta de Stripe usa el mismo token con
+  el que se abrió, aunque el servidor ya no pudiera recalcularlo.
+- **Un `HEAD` no tiene efectos**: los comprobadores de enlaces y las vistas
+  previas no crean sesiones ni emiten.
+- **Sin filtraciones**: la página no muestra datos del destinatario, líneas ni
+  identificadores internos, y un token no válido da siempre la misma 404.
+  `Cache-Control: no-store`, `noindex` y la CSP general, sin scripts. Límite de
+  30 peticiones cada 10 minutos por IP.
+- **Auditoría**: sesión creada (`invoice_stripe_link`, con su id), sesión
+  caducada (`invoice_stripe_link_expired`), emisión para cobrar
+  (`invoice_issued`), enlace creado, rotado y revocado, y los fallos
+  (`invoice_pay_link_failed`, que además alerta al operador). Las acciones del
+  enlace público llevan el actor «enlace público de pago» y la IP.
+- **Página de vuelta**: el perfil de facturación no tiene ningún ajuste de página
+  de vuelta tras pagar (`paymentReturnUrl` o similar), así que no había nada que
+  respetar: la vuelta es la página del enlace.
+- **Raíz del enlace**: `https://SKYWAY_DOMAIN` o el dominio por el que se usa el
+  panel. Sin dominio público (túnel `localhost` o IP), el correo sale sin enlace
+  y se audita (`invoice_pay_link_unavailable`).
+
+Verificado en `server/test/enlace-pago.test.ts`, con Stripe y el correo
+simulados: token válido (sesión creada, auditada y reutilizada), sesión
+caducada, factura pagada, anulada (rotación y cierre de la sesión), token
+inexistente o mal formado, borrador (se emite antes), dos aperturas a la vez,
+Stripe caído, Stripe sin configurar, abono, revocación, límite por IP, y el
+enlace en el correo manual, en el de la emisión y en el de la facturación
+automática.
 
 ### Sigue pendiente
 
@@ -397,3 +465,9 @@ en verde:
 | Envío de la factura | PDF adjunto válido y descodificable en el correo |
 | Inyección de un CRLF en el remitente o el destinatario | rechazada antes del sobre SMTP |
 | Credenciales SMTP rechazadas | error accionable, sin filtrar la contraseña |
+| Correo de una factura pendiente con Stripe configurado | enlace `/pagar/<token>`, no la sesión de Checkout; el reenvío lleva el mismo |
+| Enlace de una factura pendiente | 303 a Stripe; la sesión abierta se reutiliza y la caducada se renueva |
+| Enlace de una factura pagada o anulada | página pública con el emisor, sin datos del destinatario |
+| Token inexistente, revocado o mal formado | la misma página 404 |
+| Anular una factura con enlace | el enlace anterior deja de valer y la sesión abierta se caduca en Stripe |
+| 31 aperturas del enlace en 10 minutos desde una IP | 429 |

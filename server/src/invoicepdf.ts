@@ -211,7 +211,7 @@ function fmtCentimos(cents: number): string {
 }
 
 /** Céntimos → «1.234,56 €» (o el código ISO si la moneda no es el euro). */
-function fmtImporte(cents: number, moneda: string): string {
+export function fmtImporte(cents: number, moneda: string): string {
   return `${fmtCentimos(cents)} ${moneda === 'EUR' ? '€' : moneda}`;
 }
 
@@ -235,7 +235,7 @@ function fmtTipo(rate: number): string {
  * zona horaria del proceso que la genere, igual que hacen las exportaciones
  * contables (`routes/accounting.ts`).
  */
-function fmtFecha(ms: number | null | undefined): string {
+export function fmtFecha(ms: number | null | undefined): string {
   if (ms == null || !Number.isFinite(ms)) return '';
   const d = new Date(ms);
   if (Number.isNaN(d.getTime())) return '';

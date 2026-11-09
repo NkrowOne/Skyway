@@ -12,6 +12,7 @@ import {
   HardDrive,
   KeyRound,
   Layers,
+  Link2,
   MemoryStick,
   Ban,
   Pause,
@@ -826,7 +827,7 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
     onError: (err: Error) => toast(err.message, 'err'),
   });
   const stripeLink = useMutation({
-    mutationFn: (id: string) => api.post<{ url: string }>(`/invoices/${id}/stripe-link`),
+    mutationFn: (id: string) => api.post<{ url: string; payUrl: string | null }>(`/invoices/${id}/stripe-link`),
     onSuccess: (res) => {
       // Tras un await ya no hay gesto del usuario y el navegador suele bloquear
       // la pestaña nueva: se intenta, y el aviso lleva el enlace por si no abre.
@@ -1043,7 +1044,18 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
         loading={remove.isPending}
       />
 
-      {viewing && data && <InvoiceView invoice={viewing} issuer={data.issuer} client={data.client} onClose={() => setViewing(null)} />}
+      {/* Se relee la factura de la lista: `viewing` es una copia y no vería el cambio de `pay_link` tras copiar o revocar el enlace. */}
+      {viewing && data && (
+        <InvoiceView
+          invoice={data.invoices.find((i) => i.id === viewing.id) ?? viewing}
+          issuer={data.issuer}
+          client={data.client}
+          isAdmin={isAdmin}
+          stripeEnabled={data.stripeEnabled}
+          onChanged={() => queryClient.invalidateQueries({ queryKey: ['ws-invoices', ws.id] })}
+          onClose={() => setViewing(null)}
+        />
+      )}
       {editing && <InvoiceEditor invoice={editing} workspaceId={ws.id} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); invalidate(); }} />}
       {rectifying && <RectifyModal invoice={rectifying} onClose={() => setRectifying(null)} onSaved={() => { setRectifying(null); invalidate(); }} />}
     </div>
@@ -1126,7 +1138,29 @@ function RectifyModal({ invoice, onClose, onSaved }: { invoice: Invoice; onClose
 }
 
 /** Vista de factura completa: emisor, cliente, líneas, impuestos y método de pago. */
-function InvoiceView({ invoice, issuer, client, onClose }: { invoice: Invoice; issuer: BillingProfile; client: InvoicesResponse['client']; onClose: () => void }) {
+function InvoiceView({ invoice, issuer, client, isAdmin, stripeEnabled, onChanged, onClose }: { invoice: Invoice; issuer: BillingProfile; client: InvoicesResponse['client']; isAdmin: boolean; stripeEnabled: boolean; onChanged: () => void; onClose: () => void }) {
+  const toast = useToast();
+  // Los hooks van antes de cualquier retorno: el bloque de enlace solo se pinta o no, nunca condiciona su orden.
+  const [revoking, setRevoking] = useState(false);
+  const copyPayLink = useMutation({
+    mutationFn: () => api.post<{ url: string; created: boolean }>(`/invoices/${invoice.id}/pay-link`),
+    onSuccess: async (res) => {
+      try {
+        await navigator.clipboard.writeText(res.url);
+        toast('Enlace de pago copiado', 'ok');
+      } catch {
+        // Sin permiso de portapapeles (o contexto no seguro): el aviso lleva el enlace.
+        toast('No se ha podido copiar el enlace', 'err', { action: { label: 'Abrir enlace', onClick: () => window.open(res.url, '_blank', 'noopener') } });
+      }
+      onChanged();
+    },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+  const revokePayLink = useMutation({
+    mutationFn: () => api.del(`/invoices/${invoice.id}/pay-link`),
+    onSuccess: () => { toast('Enlace de pago revocado', 'ok'); setRevoking(false); onChanged(); },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
   // Datos congelados al emitir (si existen); en borrador, los vivos del perfil/cliente.
   const em = invoice.issuer_snapshot ?? { companyName: issuer.companyName, taxId: issuer.taxId, address: issuer.address, email: issuer.email };
   const clientName = invoice.client_name ?? client.name;
@@ -1230,8 +1264,33 @@ function InvoiceView({ invoice, issuer, client, onClose }: { invoice: Invoice; i
             )}
           </div>
         )}
+        {isAdmin && stripeEnabled && invoice.status !== 'draft' && (
+          <div className="rounded-lg border border-line bg-bg p-3.5">
+            <p className="mb-2 eyebrow text-subtle">Enlace de pago</p>
+            <p className="text-xs text-sub">Enlace permanente para pagar con tarjeta. Es el que lleva el correo de la factura y deja de funcionar al anularla o al revocarlo.</p>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <Button size="sm" variant="ghost" loading={copyPayLink.isPending} onClick={() => copyPayLink.mutate()}>
+                <Link2 size={13} /> Copiar enlace
+              </Button>
+              {invoice.pay_link && (
+                <Button size="sm" variant="ghost" onClick={() => setRevoking(true)}>
+                  <Ban size={13} /> Revocar enlace
+                </Button>
+              )}
+            </div>
+          </div>
+        )}
         {issuer.footer && <p className="text-xs leading-snug text-subtle">{issuer.footer}</p>}
       </div>
+      <ConfirmModal
+        open={revoking}
+        onClose={() => setRevoking(false)}
+        onConfirm={() => revokePayLink.mutate()}
+        title="Revocar el enlace de pago"
+        message="El enlace actual dejará de funcionar. El próximo envío de la factura llevará un enlace nuevo."
+        confirmLabel="Revocar"
+        loading={revokePayLink.isPending}
+      />
     </Modal>
   );
 }
@@ -1254,7 +1313,7 @@ function EMPTY_INVOICE(workspaceId: string, currency: string): Invoice {
     tax_breakdown: [], vat_regime: 'general', legal_mentions: null, irpf_rate: 0, irpf_cents: 0, total_cents: 0,
     lines: [{ label: '', kind: 'custom', qty: 1, unitCents: 0, amountCents: 0 }], plan_name: null,
     issuer_snapshot: null, client_name: null, client_tax_id: null, client_address: null,
-    payment_method: null, stripe_url: null, issued_at: null, paid_at: null, locked: 0, notes: null, created_at: Date.now(),
+    payment_method: null, stripe_url: null, pay_link: false, issued_at: null, paid_at: null, locked: 0, notes: null, created_at: Date.now(),
   };
 }
 

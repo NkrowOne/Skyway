@@ -21,6 +21,11 @@ export interface RateLimitOptions {
    * cupo, que es lo que se quiere acotar.
    */
   key?: (req: FastifyRequest) => string;
+  /**
+   * Respuesta al superar el cupo. Por defecto, JSON para la API; una página
+   * pública que se abre en el navegador responde con su propio HTML.
+   */
+  responder?: (reply: FastifyReply, reintentoSeg: number) => void;
 }
 
 /** Tope de claves seguidas por limitador: pasado, se expulsan las más antiguas. */
@@ -79,9 +84,10 @@ export function rateLimit(opts: RateLimitOptions) {
     if (viejas > 0) marcas.splice(0, viejas);
 
     if (marcas.length >= opts.max) {
-      const reintentoMs = marcas[0] + opts.windowMs - ahora;
-      reply.header('Retry-After', String(Math.max(1, Math.ceil(reintentoMs / 1000))));
-      reply.code(429).send({ error: MENSAJE });
+      const reintentoSeg = Math.max(1, Math.ceil((marcas[0] + opts.windowMs - ahora) / 1000));
+      reply.header('Retry-After', String(reintentoSeg));
+      if (opts.responder) opts.responder(reply, reintentoSeg);
+      else reply.code(429).send({ error: MENSAJE });
       return;
     }
     marcas.push(ahora);

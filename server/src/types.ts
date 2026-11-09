@@ -729,6 +729,18 @@ export interface InvoiceRow {
 }
 
 /**
+ * Enlace público y permanente de pago de una factura (`/pagar/<token>`). El token
+ * no se guarda: `token_hash` es lo que se busca y `nonce`, con el secreto del
+ * servidor, permite volver a calcularlo para reenviar el mismo enlace.
+ */
+export interface InvoicePayLinkRow {
+  invoice_id: string;
+  token_hash: string;
+  nonce: string;
+  created_at: number;
+}
+
+/**
  * Serie de numeración correlativa por ejercicio (sustituye el contador global).
  * Las rectificativas usan obligatoriamente una serie propia (kind='rectificativa').
  */

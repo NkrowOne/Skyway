@@ -12,6 +12,7 @@ import {
   GithubConnectorRow,
   GithubInstallationRow,
   HostMetricHour,
+  InvoicePayLinkRow,
   InvoiceRow,
   InvoiceSeriesRow,
   MailwayLinkRow,
@@ -671,6 +672,16 @@ export function initDb(): void {
       mailbox TEXT,
       deployment_id TEXT,
       updated_at INTEGER NOT NULL
+    );
+    -- Enlace público y permanente de pago de cada factura (/pagar/<token>, ver
+    -- enlacepago.ts). El token no se guarda: solo su hash, que es lo que se busca,
+    -- y el nonce con el que el servidor lo vuelve a calcular para reenviarlo. En
+    -- una tabla aparte para que ninguna lectura de facturas (SELECT *) lo arrastre.
+    CREATE TABLE IF NOT EXISTS invoice_pay_links (
+      invoice_id TEXT PRIMARY KEY REFERENCES workspace_invoices(id) ON DELETE CASCADE,
+      token_hash TEXT NOT NULL UNIQUE,
+      nonce TEXT NOT NULL,
+      created_at INTEGER NOT NULL
     );
   `);
 
@@ -3774,6 +3785,38 @@ export function deleteInvoice(invoiceId: string): void {
 
 export function getInvoiceByStripeSession(sessionId: string): InvoiceRow | undefined {
   return stmt('SELECT * FROM workspace_invoices WHERE stripe_session_id = ?').get(sessionId) as InvoiceRow | undefined;
+}
+
+// ---------- enlaces públicos de pago (ver enlacepago.ts) ----------
+export function getInvoicePayLink(invoiceId: string): InvoicePayLinkRow | undefined {
+  return stmt('SELECT * FROM invoice_pay_links WHERE invoice_id = ?').get(invoiceId) as InvoicePayLinkRow | undefined;
+}
+
+/** Crea o sustituye el enlace de la factura: el anterior deja de valer en el acto. */
+export function setInvoicePayLink(invoiceId: string, tokenHash: string, nonce: string): void {
+  stmt(
+    `INSERT INTO invoice_pay_links (invoice_id, token_hash, nonce, created_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT(invoice_id) DO UPDATE SET token_hash = excluded.token_hash, nonce = excluded.nonce, created_at = excluded.created_at`,
+  ).run(invoiceId, tokenHash, nonce, now());
+}
+
+export function deleteInvoicePayLink(invoiceId: string): boolean {
+  return stmt('DELETE FROM invoice_pay_links WHERE invoice_id = ?').run(invoiceId).changes > 0;
+}
+
+/** La única búsqueda pública: por el hash exacto del token, nunca por id ni por prefijo. */
+export function getInvoiceByPayTokenHash(tokenHash: string): InvoiceRow | undefined {
+  return stmt(
+    'SELECT i.* FROM invoice_pay_links l JOIN workspace_invoices i ON i.id = l.invoice_id WHERE l.token_hash = ?',
+  ).get(tokenHash) as InvoiceRow | undefined;
+}
+
+/** Facturas de la cuenta que tienen un enlace de pago activo (para el panel). */
+export function listPayLinkInvoiceIds(workspaceId: string): Set<string> {
+  const rows = stmt(
+    'SELECT l.invoice_id FROM invoice_pay_links l JOIN workspace_invoices i ON i.id = l.invoice_id WHERE i.workspace_id = ?',
+  ).all(workspaceId) as { invoice_id: string }[];
+  return new Set(rows.map((r) => r.invoice_id));
 }
 
 /** ¿Tiene el workspace facturas (opcionalmente solo las que ya no son borrador)? */

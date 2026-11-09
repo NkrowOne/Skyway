@@ -504,8 +504,8 @@ export const FAQ: FaqEntry[] = [
     question: '¿Dónde veo mi plan, mi consumo y mis facturas?',
     answer:
       'En **Cuentas y clientes** (si eres propietario), accede a tu cuenta: se muestra el **plan** contratado con sus usos incluidos, los **medidores de cuota** en tiempo real (CPU, RAM, disco, proyectos, servicios, usuarios), el consumo del ciclo y la lista de **facturas** con descarga en PDF.\n\n' +
-      'Las facturas se emiten por ciclo según el plan y los servicios adicionales contratados; si el pago con tarjeta está activado, encontrarás el enlace de pago en la propia factura. Las cuestiones sobre el plan (ampliar cuota, cambiar de plan, datos fiscales) las gestiona el administrador de la plataforma.',
-    keywords: ['factura', 'facturas', 'facturacion', 'plan', 'precio', 'pago', 'pagar', 'tarjeta', 'stripe', 'consumo', 'cuota', 'ampliar', 'iva', 'pdf'],
+      'Las facturas se emiten por ciclo según el plan y los servicios adicionales contratados. Si el pago con tarjeta está activado, el correo con el que se envía cada factura incluye un enlace permanente para pagarla, que deja de funcionar cuando la factura se anula. Las cuestiones sobre el plan (ampliar cuota, cambiar de plan, datos fiscales) las gestiona el administrador de la plataforma.',
+    keywords: ['factura', 'facturas', 'facturacion', 'plan', 'precio', 'pago', 'pagar', 'tarjeta', 'stripe', 'enlace', 'consumo', 'cuota', 'ampliar', 'iva', 'pdf'],
     links: [{ label: 'Cuentas y clientes', to: '/workspaces' }],
   },
   {

@@ -38,6 +38,7 @@ import { fileRoutes } from './routes/files';
 import { monitorRoutes } from './routes/monitor';
 import { metricsRoutes } from './routes/metrics';
 import { statusRoutes } from './routes/status';
+import { payLinkRoutes } from './routes/paylink';
 import { websiteRoutes } from './routes/websites';
 import { helpRoutes } from './routes/help';
 import { mailwayRoutes } from './routes/mailway';
@@ -260,6 +261,8 @@ export function buildApp(): FastifyInstance {
   app.register(monitorRoutes);
   app.register(metricsRoutes);
   app.register(statusRoutes);
+  // Enlace público de pago de las facturas (`/pagar/<token>`): sin sesión.
+  app.register(payLinkRoutes);
   app.register(websiteRoutes);
   app.register(helpRoutes);
   app.register(mailwayRoutes);
