@@ -2399,7 +2399,7 @@ booleanos, igual que el token de GitHub).
 | GET·PUT | `/billing/automation` | admin | automatización: `autoGenerate` (generar el borrador del ciclo), `autoIssue` (emitirlo automáticamente; opt-in, off por defecto) y umbrales de morosidad (`dunningGraceDays` ≤ `dunningCancelDays`) |
 | GET | `/accounting/summary?months=` | admin | totales (facturado/cobrado/pendiente/borrador/anulado), serie mensual de ingresos y desglose por cliente |
 | GET | `/accounting/invoices?status=` | admin | todas las facturas de todos los clientes (nº, tipo, NIF, base, IVA, IRPF y estado de VERI*FACTU) |
-| GET | `/accounting/export.csv` | admin | libro registro de facturas emitidas en CSV (nº, tipo, NIF receptor, fecha de expedición —la que imprime la factura—, base, IVA, IRPF, total; guardas anti-inyección de fórmulas) |
+| GET | `/accounting/export.csv` | admin | libro registro de facturas emitidas en CSV (nº, tipo, NIF receptor, fecha de expedición —la que imprime la factura—, base, IVA, IRPF, total y fecha de cobro, en la misma zona que la de expedición; guardas anti-inyección de fórmulas) |
 
 **Página de vuelta tras pagar (`paymentReturnUrl`).** Es la página pública a la
 que Stripe devuelve al cliente al pagar o al cancelar, por ejemplo una página de

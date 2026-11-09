@@ -4012,8 +4012,14 @@ export function actualizarRemisionRegistro(registroId: string, campos: CamposRem
   );
 }
 
-/** Registros en cola que no se pudieron remitir a su hora (con incidencia): los del aviso del art. 16.4. */
-export function contarPendientesConIncidencia(): number {
+/**
+ * Registros en cola que no se pudieron remitir a su hora (con incidencia): los
+ * del aviso del art. 16.4. Con `entorno`, solo los de ese entorno.
+ */
+export function contarPendientesConIncidencia(entorno?: string): number {
+  if (entorno) {
+    return (stmt("SELECT COUNT(*) AS n FROM invoice_ledger WHERE estado_remision = 'pendiente' AND incidencia = 1 AND entorno = ?").get(entorno) as { n: number }).n;
+  }
   return (stmt("SELECT COUNT(*) AS n FROM invoice_ledger WHERE estado_remision = 'pendiente' AND incidencia = 1").get() as { n: number }).n;
 }
 

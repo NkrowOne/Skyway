@@ -18,7 +18,8 @@ import { BillingProfile, InvoiceRow } from '../types';
 import { anotarEvento } from '../verifactu/eventos';
 import { motivoCambioNoPermitido } from '../verifactu/modo';
 import { resumenRegistros } from '../verifactu/registro';
-import { fechaExpedicionIso } from '../verifactu/formato';
+import { fechaExpedicionIso, fechaLocal } from '../verifactu/formato';
+import { cerrarAvisoSiProcede } from '../verifactu/remision';
 
 /**
  * La página de vuelta la abre el navegador del cliente al salir de Stripe. Solo
@@ -173,7 +174,11 @@ export async function accountingRoutes(app: FastifyInstance): Promise<void> {
     const motivo = motivoCambioNoPermitido(current, next);
     if (motivo) return reply.code(409).send({ error: motivo });
     setBillingProfile(next);
-    if (next.sifMode !== current.sifMode) anotarEvento(next.sifMode === 'verifactu' ? 'activacion' : 'desactivacion', 'Desde los datos de la empresa');
+    if (next.sifMode !== current.sifMode) {
+      anotarEvento(next.sifMode === 'verifactu' ? 'activacion' : 'desactivacion', 'Desde los datos de la empresa');
+      // Al desactivar, lo que quede en cola de pruebas deja de ser una incidencia.
+      cerrarAvisoSiProcede();
+    }
     // Claves de Stripe: se actualizan solo si se envían; '' las borra.
     if (body.stripeSecretKey !== undefined) setSetting('stripeSecretKey', body.stripeSecretKey || null);
     if (body.stripeWebhookSecret !== undefined) setSetting('stripeWebhookSecret', body.stripeWebhookSecret || null);
@@ -365,7 +370,9 @@ export async function accountingRoutes(app: FastifyInstance): Promise<void> {
           money(i.total_cents),
           i.currency,
           i.payment_method ?? '',
-          iso(i.paid_at),
+          // En la misma zona que la fecha de expedición: con la de cobro en UTC,
+          // una factura cobrada de madrugada constaría cobrada antes de expedirse.
+          i.paid_at == null ? '' : i.issued_date ? fechaLocal(i.paid_at) : iso(i.paid_at),
         ]
           .map(csvEscape)
           .join(','),

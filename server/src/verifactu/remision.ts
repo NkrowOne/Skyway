@@ -40,7 +40,7 @@ import {
 } from '../db';
 import type { EntornoVerifactu, EstadoRemision, IssuerSnapshot, RegistroFacturacionRow } from '../types';
 import { safeParse } from '../util';
-import { URL_ENVIO, URL_ENVIO_SELLO } from './ajustes';
+import { URL_ENVIO, URL_ENVIO_SELLO, verifactuActivo } from './ajustes';
 import { credencialesCertificado, infoCertificado } from './certificado';
 import { claveCadena, estadoCadena, EstadoCola, getEstadoCola, guardarEstadoCola } from './estadocola';
 import { anotarEvento } from './eventos';
@@ -149,7 +149,7 @@ export function urlServicio(entorno: EntornoVerifactu): string {
  * Contabilidad → VERI*FACTU.
  */
 function avisarIncidencia(motivo: string, explicacion: string): void {
-  const pendientes = contarPendientesConIncidencia();
+  const pendientes = pendientesDelAviso();
   if (pendientes === 0) return;
   fireAlert({
     severity: 'critical',
@@ -161,9 +161,18 @@ function avisarIncidencia(motivo: string, explicacion: string): void {
   });
 }
 
-/** Cierra el aviso de incidencia si ya no queda en cola ningún registro con incidencia. */
-function cerrarAvisoSiProcede(): void {
-  if (contarPendientesConIncidencia() === 0) resolveAlertsByDedupe(ALERTA_CONEXION);
+/**
+ * Registros que cuentan para el aviso de incidencia. Con VERI*FACTU desactivado
+ * (solo se puede sin registros de producción), lo que quede en cola de pruebas
+ * no tiene efectos fiscales ni se remite: no es una incidencia.
+ */
+export function pendientesDelAviso(): number {
+  return contarPendientesConIncidencia(verifactuActivo() ? undefined : 'produccion');
+}
+
+/** Cierra el aviso de incidencia si ya no queda en cola ningún registro que cuente. */
+export function cerrarAvisoSiProcede(): void {
+  if (pendientesDelAviso() === 0) resolveAlertsByDedupe(ALERTA_CONEXION);
 }
 
 /** Espera de la AEAT entre envíos para la cadena: la última que indicó, o 60 s. */
@@ -297,7 +306,10 @@ export async function remisionTick(opts: { ahora?: number; transporte?: Transpor
 
 async function paso(opts: { ahora?: number; transporte?: Transporte; forzar?: boolean; ca?: Buffer }): Promise<ResultadoRemision> {
   const ahora = opts.ahora ?? Date.now();
-  const cadenas = cadenasConPendientes();
+  // Con VERI*FACTU desactivado, la cola de pruebas se queda quieta: se remitirá
+  // si se vuelve a activar. (Con registros de producción no se puede desactivar.)
+  const activo = verifactuActivo();
+  const cadenas = cadenasConPendientes().filter((c) => activo || c.entorno === 'produccion');
   if (cadenas.length === 0) return { enviado: false, motivo: 'sin_pendientes' };
   const cert = credencialesCertificado();
   if (!cert) {

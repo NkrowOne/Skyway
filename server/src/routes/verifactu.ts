@@ -9,7 +9,7 @@ import { z } from 'zod';
 import { audit } from '../audit';
 import { requireAdmin, requireAuth, requireSession } from '../auth';
 import { getBillingProfile, setBillingProfile } from '../company';
-import { contarPendientesConIncidencia, getInvoice, listarEventosSif, listarRegistrosFacturacion, recuentoRegistrosFacturacion, registrosDeFactura, transaction } from '../db';
+import { getInvoice, listarEventosSif, listarRegistrosFacturacion, recuentoRegistrosFacturacion, registrosDeFactura, transaction } from '../db';
 import { getAjustesVerifactu, ID_SISTEMA, NOMBRE_SISTEMA, numeroInstalacion, productorEfectivo, setAjustesVerifactu } from '../verifactu/ajustes';
 import { ErrorCertificado, guardarCertificado, infoCertificado, MAX_BYTES_PFX, quitarCertificado } from '../verifactu/certificado';
 import { declaracionEnTexto, declaracionResponsable } from '../verifactu/declaracion';
@@ -17,7 +17,7 @@ import { anotarEvento, cadenaEventosIntegra } from '../verifactu/eventos';
 import { nifValido, normalizarNif } from '../verifactu/formato';
 import { motivoCambioNoPermitido } from '../verifactu/modo';
 import { ErrorVerifactu, subsanarRegistro } from '../verifactu/registro';
-import { avisarRemision, getEstadoCola, probarConexion, remisionTick, urlServicio } from '../verifactu/remision';
+import { avisarRemision, cerrarAvisoSiProcede, getEstadoCola, pendientesDelAviso, probarConexion, remisionTick, urlServicio } from '../verifactu/remision';
 import { levantarReintentos } from '../verifactu/estadocola';
 import { config } from '../config';
 import { safeParse } from '../util';
@@ -47,7 +47,7 @@ function avisos(): { tipo: string; texto: string }[] {
   // Aviso de incidencia (art. 16.4 de la Orden): mientras haya registros que no
   // se han podido remitir a su hora (los que llevan la marca de incidencia),
   // cuántos faltan.
-  const pendientes = contarPendientesConIncidencia();
+  const pendientes = pendientesDelAviso();
   const cola = getEstadoCola();
   if (pendientes > 0) {
     out.push({
@@ -162,6 +162,8 @@ export async function verifactuRoutes(app: FastifyInstance): Promise<void> {
       }
       setAjustesVerifactu(siguiente);
     });
+    // Al desactivar, lo que quede en cola de pruebas deja de ser una incidencia.
+    cerrarAvisoSiProcede();
     audit(req, 'verifactu_updated', { type: 'system', id: 'verifactu', detail: `${siguientePerfil.sifMode} · ${siguiente.entorno}` });
     return vista();
   });

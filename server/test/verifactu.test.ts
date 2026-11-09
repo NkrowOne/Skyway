@@ -595,6 +595,22 @@ describe('validaciones antes de emitir', () => {
     expect(r.status, JSON.stringify(r.json)).toBe(200);
     expect(alta(id)).toMatchObject({ TipoFactura: 'R3', Destinatarios: [{ NIF: NIF_CLIENTE }] });
   });
+
+  it('con VERI*FACTU desactivado, los registros de pruebas que quedan en cola no son una incidencia', async () => {
+    // Hay registros de pruebas en cola y no hay certificado: con el modo activo, es una incidencia.
+    expect(await remisionTick({ ahora: Date.now() })).toEqual({ enviado: false, motivo: 'sin_certificado' });
+    expect(await alertasAbiertas('verifactu_remision')).toHaveLength(1);
+    let r = await call('PUT', '/api/verifactu', { modo: 'desactivado' });
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    expect(r.json.avisos.map((a: Json) => a.tipo)).not.toContain('incidencia');
+    expect(await alertasAbiertas('verifactu_remision')).toHaveLength(0);
+    // La cola de pruebas se queda quieta y la alerta no vuelve a abrirse.
+    expect(await remisionTick({ ahora: Date.now() })).toEqual({ enviado: false, motivo: 'sin_pendientes' });
+    expect(await alertasAbiertas('verifactu_remision')).toHaveLength(0);
+    r = await call('PUT', '/api/verifactu', { modo: 'verifactu' });
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    expect(r.json.avisos.map((a: Json) => a.tipo)).toContain('incidencia');
+  });
 });
 
 describe.skipIf(!hayOpenssl)('certificado y remisión a una AEAT simulada', () => {

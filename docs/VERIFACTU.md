@@ -23,7 +23,9 @@
   modalidad (`FechaFinVeriFactu`, §12).
 - **Modo desactivado**: sin registros, como antes. Solo vale hasta que el emisor
   esté obligado (§2), y no se puede volver a él una vez hay registros del entorno
-  de producción (§3).
+  de producción (§3). Si al desactivarlo quedan registros de pruebas en cola, se
+  quedan quietos (se remitirán si se vuelve a activar) y no cuentan como
+  incidencia: no tienen efectos fiscales.
 
 ## 2. Plazos
 

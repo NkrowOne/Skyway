@@ -251,6 +251,16 @@ describe('fecha de expedición en hora peninsular', () => {
     const fila = filas.find((f) => f[0] === 'FV-2027-0001');
     expect(fila?.[cabecera.indexOf('fecha_expedicion')]).toBe('2027-01-01');
   });
+
+  it('cobrada en el mismo instante, la exportación no la da por cobrada antes de expedirse', async () => {
+    const p = await call('PATCH', `/api/invoices/${facturaVerifactu}`, { status: 'paid', paymentMethod: 'cash' });
+    expect(p.status, JSON.stringify(p.json)).toBe(200);
+    const r = await app.inject({ method: 'GET', url: '/api/accounting/export.csv', headers });
+    const [cabecera, ...filas] = r.body.split('\n').map((l) => l.split(','));
+    const fila = filas.find((f) => f[0] === 'FV-2027-0001');
+    // Con la fecha de cobro en UTC saldría el 31-12-2026, antes de la de expedición.
+    expect(fila?.[cabecera.indexOf('pagada')]).toBe('2027-01-01');
+  });
 });
 
 describe('leyendas del QR tributario', () => {
