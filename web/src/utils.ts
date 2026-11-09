@@ -105,6 +105,19 @@ export function fmtDate(ts: number): string {
   return dateFmt({ day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(ts));
 }
 
+/**
+ * Fecha de calendario `aaaa-mm-dd` (la de expedición de una factura) con el
+ * formato de `fmtDate`. Es un día, no un instante: se formatea en UTC sobre la
+ * medianoche UTC de ese día, porque con la zona del navegador, al oeste de
+ * Greenwich, saldría el día anterior. Un texto que no tenga esa forma se
+ * devuelve tal cual.
+ */
+export function fmtIsoDate(iso: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  if (!m) return iso;
+  return dateFmt({ day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' }).format(new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]))));
+}
+
 /** Fecha+hora completa para tooltips del histórico. */
 export function fmtStamp(ts: number, hours: number): string {
   const d = new Date(ts);
@@ -281,6 +294,7 @@ export const ALERT_TYPE_LABEL: Record<string, string> = {
   stripe_pago_factura_anulada: 'Cobro sobre una factura anulada',
   stripe_pago_huerfano: 'Cobro de Stripe sin factura asociada',
   verifactu_registro: 'Registro de facturación rechazado o con errores en la AEAT',
+  verifactu_cadena: 'Anomalía en la cadena de registros de facturación',
   verifactu_remision: 'Registros de facturación pendientes de remitir a la AEAT',
 };
 

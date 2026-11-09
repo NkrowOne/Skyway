@@ -55,7 +55,7 @@ import {
   WorkspaceProject,
   WorkspaceUsage,
 } from '../types';
-import { cx, fmtAxisTime, fmtDate, fmtMb, fmtMoney, timeAgo } from '../utils';
+import { cx, fmtAxisTime, fmtDate, fmtIsoDate, fmtMb, fmtMoney, timeAgo } from '../utils';
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -1199,6 +1199,10 @@ function InvoiceView({ invoice, issuer, client, onClose }: { invoice: Invoice; i
   const clientTaxId = invoice.client_tax_id ?? client.billing_tax_id;
   const clientAddress = invoice.client_address ?? client.billing_address;
   const clientCountry = countryName(invoice.client_country ?? client.billing_country);
+  // La fecha de expedición que imprime el PDF (congelada al emitir, en hora
+  // peninsular). Sin ella, la del instante de emisión en la zona del navegador,
+  // que de madrugada puede ser otro día.
+  const expedida = invoice.issued_date ? fmtIsoDate(invoice.issued_date) : invoice.issued_at ? fmtDate(invoice.issued_at) : null;
   const title = invoice.invoice_type === 'rectificativa' ? 'Factura rectificativa' : invoice.invoice_type === 'simplificada' ? 'Factura simplificada' : 'Factura';
   // Desglose de IVA; para facturas antiguas sin desglose, se sintetiza uno con el tipo único.
   const breakdown = invoice.tax_breakdown.length > 0
@@ -1225,8 +1229,10 @@ function InvoiceView({ invoice, issuer, client, onClose }: { invoice: Invoice; i
             <p className="text-subtle">{clientCountry}</p>
             {!clientTaxId && <p className="text-xs text-warn">Falta el NIF del cliente para una factura completa.</p>}
             <p className="mt-2 text-subtle">
-              {invoice.issued_at ? `Expedida ${fmtDate(invoice.issued_at)}` : 'Sin emitir'}
-              {invoice.operation_date ? ` · operación ${fmtDate(invoice.operation_date)}` : ''}
+              {expedida ? `Expedida ${expedida}` : 'Sin emitir'}
+              {/* La fecha de operación es un día (medianoche UTC del día elegido): en
+                  la zona del navegador, al oeste de Greenwich, saldría el anterior. */}
+              {invoice.operation_date ? ` · operación ${fmtIsoDate(new Date(invoice.operation_date).toISOString().slice(0, 10))}` : ''}
             </p>
             <p className="text-xs text-subtle">Periodo {fmtDate(invoice.period_start)} – {fmtDate(invoice.period_end)}</p>
             <StatusBadge tone={INV_TONE[invoice.status]} label={INV_LABEL[invoice.status]} dot={false} className="mt-1 text-micro" />
@@ -1320,7 +1326,7 @@ function EMPTY_INVOICE(workspaceId: string, currency: string): Invoice {
     tax_breakdown: [], vat_regime: 'general', legal_mentions: null, irpf_rate: 0, irpf_cents: 0, total_cents: 0,
     lines: [{ label: '', kind: 'custom', qty: 1, unitCents: 0, amountCents: 0 }], plan_name: null,
     issuer_snapshot: null, client_name: null, client_tax_id: null, client_address: null,
-    payment_method: null, stripe_url: null, issued_at: null, paid_at: null, locked: 0, notes: null, created_at: Date.now(),
+    payment_method: null, stripe_url: null, issued_at: null, issued_date: null, paid_at: null, locked: 0, notes: null, created_at: Date.now(),
     rectify_code: null, verifactu: null,
   };
 }

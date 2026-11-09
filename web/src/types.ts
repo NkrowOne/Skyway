@@ -435,6 +435,13 @@ export interface Invoice {
   payment_method: PaymentMethod | null;
   stripe_url: string | null;
   issued_at: number | null;
+  /**
+   * Fecha de expedición (aaaa-mm-dd), la que imprime la factura: en hora
+   * peninsular y congelada al emitir. Es un día, no un instante, así que no se
+   * pasa a la zona del navegador. null en los borradores; si una emitida llega
+   * sin ella, se muestra la de `issued_at`.
+   */
+  issued_date: string | null;
   paid_at: number | null;
   locked: number;
   notes: string | null;
@@ -600,7 +607,7 @@ export interface VerifactuFactura {
 
 export interface VerifactuAjustes {
   entorno: EntornoVerifactu;
-  /** Vacíos = los de la empresa emisora. */
+  /** Razón social y NIF van juntos; los dos vacíos = la empresa emisora. */
   productorNombre: string;
   productorNif: string;
   productorDireccion: string;
@@ -677,8 +684,12 @@ export interface VerifactuEvento {
 export interface VerifactuVista {
   modo: ModoVerifactu;
   ajustes: VerifactuAjustes;
-  /** Productor efectivo: el de los ajustes o, si están vacíos, la empresa emisora. */
-  productor: { nombre: string; nif: string; direccion: string };
+  /**
+   * Productor efectivo: el de los ajustes (razón social y NIF juntos) o, si no
+   * hay, la empresa emisora (`esEmisor`). La dirección de un productor propio
+   * es la suya: no se toma de la empresa emisora.
+   */
+  productor: { nombre: string; nif: string; direccion: string; esEmisor: boolean };
   sistema: { nombre: string; id: string; version: string; numeroInstalacion: string };
   /** URL del servicio de la AEAT del entorno elegido. */
   servicio: string;
@@ -691,8 +702,9 @@ export interface VerifactuVista {
   eventosIntegros: boolean;
   /**
    * Declaración responsable (art. 15.1 de la Orden HAC/1177/2024): empieza por
-   * `titulo` y sus apartados van en el orden a) a l), cada dato precedido de su
-   * rótulo. Se pinta tal cual, sin reordenar.
+   * `titulo` y sus apartados van en el orden de la Orden (1.a a 1.l, y el
+   * anexo), cada dato precedido de su rótulo. Se pinta tal cual, sin reordenar.
+   * La misma, en texto plano, en GET /verifactu/declaracion.txt.
    */
   declaracion: { titulo: string; completa: boolean; pendientes: string[]; apartados: { letra: string; titulo: string; texto: string }[] };
   /** `incidencia` (registros pendientes de remitir) tiene que verse mientras dure (art. 16.4 de la Orden). */

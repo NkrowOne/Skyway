@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { QueryClient, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ChevronRight, CircleAlert, FileText, History, Info, KeyRound, PlugZap, Send, Server, ShieldCheck, Stamp, Trash2, TriangleAlert, Upload } from 'lucide-react';
+import { ChevronRight, CircleAlert, Download, FileText, History, Info, KeyRound, PlugZap, Send, Server, ShieldCheck, Stamp, Trash2, TriangleAlert, Upload } from 'lucide-react';
 import { api } from '../api';
 import {
   EntornoVerifactu,
@@ -61,6 +61,7 @@ const EVENTO: Record<string, { label: string; tone: Tone }> = {
   envio_rechazado: { label: 'Envío rechazado', tone: 'err' },
   error_conexion: { label: 'Error de conexión', tone: 'err' },
   subsanacion: { label: 'Subsanación', tone: 'info' },
+  anomalia_cadena: { label: 'Anomalía en la cadena de registros', tone: 'err' },
 };
 
 /**
@@ -319,8 +320,10 @@ export default function VerifactuSettings() {
 
 /**
  * Modo y entorno se aplican al momento. Activar y pasar a producción se
- * confirman: en producción, en cuanto se remite un registro, la modalidad ya
- * no se puede abandonar hasta que acabe el año natural.
+ * confirman: con el primer registro de producción, VERI*FACTU ya no se puede
+ * desactivar ni volver a pruebas. La modalidad dura al menos hasta el final del
+ * año y dejarla exige comunicar la renuncia a la AEAT (art. 17 de la Orden
+ * HAC/1177/2024), que Skyway no hace.
  */
 function ModoYEntorno({ vista }: { vista: VerifactuVista }) {
   const toast = useToast();
@@ -344,8 +347,8 @@ function ModoYEntorno({ vista }: { vista: VerifactuVista }) {
         'ok',
       );
     },
-    // 409: el cambio no está permitido (falta el NIF del emisor, ya se ha
-    // remitido a producción este año…). El motivo lo explica el servidor.
+    // 409: el cambio no está permitido (falta el NIF del emisor, ya hay
+    // registros de producción…). El motivo lo explica el servidor.
     onError: (err: Error) => toast(err.message, 'err'),
     onSettled: () => setConfirmar(null),
   });
@@ -395,7 +398,7 @@ function ModoYEntorno({ vista }: { vista: VerifactuVista }) {
         />
         <p className="mt-2 text-xs leading-5 text-subtle">
           {entorno === 'produccion'
-            ? 'Entorno real de la AEAT, con efectos fiscales. Una vez remitidos registros, VERI*FACTU no se puede desactivar hasta el final del año natural.'
+            ? 'Entorno real de la AEAT, con efectos fiscales. Con el primer registro de producción, VERI*FACTU ya no se puede desactivar ni volver a pruebas.'
             : 'Entorno de pruebas de la AEAT: sirve para comprobar la configuración y no tiene efectos fiscales.'}
         </p>
         <p className="mt-1 break-all font-mono text-micro text-subtle" title="Servicio de remisión de la AEAT">
@@ -411,7 +414,7 @@ function ModoYEntorno({ vista }: { vista: VerifactuVista }) {
         title="Activar VERI*FACTU"
         message={
           entorno === 'produccion'
-            ? 'A partir de ahora, cada factura que se emita o se anule generará un registro de facturación que se remitirá al entorno de producción de la AEAT, con efectos fiscales. Una vez remitidos registros a producción, VERI*FACTU no se podrá desactivar hasta el final del año natural.'
+            ? 'A partir de ahora, cada factura que se emita o se anule generará un registro de facturación que se remitirá al entorno de producción de la AEAT, con efectos fiscales. Con el primer registro de producción, VERI*FACTU ya no se podrá desactivar ni volver a pruebas.'
             : 'A partir de ahora, cada factura que se emita o se anule generará un registro de facturación que se remitirá al entorno de pruebas de la AEAT, sin efectos fiscales.'
         }
         confirmLabel="Activar VERI*FACTU"
@@ -430,7 +433,7 @@ function ModoYEntorno({ vista }: { vista: VerifactuVista }) {
         onConfirm={() => cambiar.mutate({ entorno: 'produccion' })}
         loading={cambiar.isPending}
         title="Pasar a producción"
-        message="Los registros nuevos se remitirán al entorno de producción de la AEAT, con efectos fiscales. Una vez remitidos registros a producción, VERI*FACTU no se podrá desactivar hasta el final del año natural. Los registros ya generados conservan su entorno."
+        message="Los registros nuevos se remitirán al entorno de producción de la AEAT, con efectos fiscales. Con el primer registro de producción, VERI*FACTU ya no se podrá desactivar ni volver a pruebas. Los registros ya generados conservan su entorno."
         confirmLabel="Pasar a producción"
         confirmVariant="primary"
       >
@@ -919,7 +922,7 @@ function FilaRegistro({ r, ultimo }: { r: VerifactuRegistro; ultimo: boolean }) 
           </Chip>
           {r.subsanacion && <Chip size="sm">Subsanación</Chip>}
           {r.incidencia && (
-            <Chip size="sm" tone="warn" dot title="No se pudo remitir a su hora (sin certificado o sin conexión) y consta como remitido durante una incidencia">
+            <Chip size="sm" tone="warn" dot title="No se pudo remitir a su hora (sin certificado, sin conexión o con el envío rechazado) y consta como remitido durante una incidencia">
               Incidencia
             </Chip>
           )}
@@ -985,6 +988,13 @@ type DatosDeclaracion = Pick<VerifactuAjustes, 'productorNombre' | 'productorNif
 const CAMPOS_DECLARACION: (keyof DatosDeclaracion)[] = ['productorNombre', 'productorNif', 'productorDireccion', 'declaracionLugar', 'declaracionFecha'];
 
 /**
+ * La declaración en texto se descarga con un enlace y no con `fetch`: la sesión
+ * va en la cookie, que el navegador envía también al seguir el enlace, y así el
+ * nombre del fichero es el que fija el servidor (Content-Disposition).
+ */
+const URL_DECLARACION_TXT = '/api/verifactu/declaracion.txt';
+
+/**
  * Productor del sistema y declaración responsable. Se monta con una clave que
  * cambia al cambiar lo guardado (ver VerifactuSettings): el borrador nace de
  * ahí y no se pisa con cada refresco de la cola.
@@ -992,6 +1002,7 @@ const CAMPOS_DECLARACION: (keyof DatosDeclaracion)[] = ['productorNombre', 'prod
 function ProductorYDeclaracion({ vista }: { vista: VerifactuVista }) {
   const toast = useToast();
   const queryClient = useQueryClient();
+  const idAyudaProductor = useId();
   const guardado = vista.ajustes;
   const [d, setD] = useState<DatosDeclaracion>(() => ({
     productorNombre: guardado.productorNombre,
@@ -1019,11 +1030,22 @@ function ProductorYDeclaracion({ vista }: { vista: VerifactuVista }) {
     onError: (err: Error) => toast(err.message, 'err'),
   });
 
-  // Con el campo guardado vacío, el dato efectivo es el de la empresa emisora y
-  // sirve de ejemplo de lo que se usará si se deja así. Con un productor propio
-  // guardado, el efectivo es ese, así que se describe en vez de mostrarlo.
+  // La razón social y el NIF del productor van juntos: el servidor rechaza uno
+  // sin el otro, porque mezclaría el nombre de uno con el NIF de la empresa
+  // emisora. Se avisa mientras se escribe, sin impedir guardar: si se guarda
+  // así, el servidor explica lo mismo.
+  const nombreProductor = d.productorNombre.trim();
+  const nifProductor = d.productorNif.trim();
+  const faltaDelProductor = !nombreProductor === !nifProductor ? null : nombreProductor ? 'el NIF' : 'la razón social';
+  const productorPropio = !!nombreProductor && !!nifProductor;
+
+  // Con la razón social y el NIF vacíos, el productor es la empresa emisora y
+  // lo que se deje vacío se toma de ella: su dato sirve de ejemplo de lo que se
+  // usará (el efectivo, cuando lo guardado ya es la emisora) o, si no se
+  // conoce, se describe. Con uno de los dos escrito no hay nada que tomar de
+  // la emisora, así que no se sugiere nada.
   const ejemplo = (campo: 'productorNombre' | 'productorNif' | 'productorDireccion', efectivo: string, descripcion: string) =>
-    !guardado[campo] && efectivo ? efectivo : descripcion;
+    nombreProductor || nifProductor ? undefined : !guardado[campo] && vista.productor.esEmisor && efectivo ? efectivo : descripcion;
   const { declaracion } = vista;
 
   return (
@@ -1037,29 +1059,56 @@ function ProductorYDeclaracion({ vista }: { vista: VerifactuVista }) {
           utiliza Skyway para facturar sus propios servicios, el productor es la propia empresa.
         </p>
       </div>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <Field label="Razón social del productor">
-          <input
-            className="input"
-            maxLength={120}
-            value={d.productorNombre}
-            onChange={(e) => set({ productorNombre: e.target.value })}
-            placeholder={ejemplo('productorNombre', vista.productor.nombre, 'La de la empresa emisora')}
-          />
-        </Field>
-        <Field label="NIF del productor">
-          <input
-            className="input font-mono"
-            maxLength={20}
-            autoCapitalize="characters"
-            spellCheck={false}
-            value={d.productorNif}
-            onChange={(e) => set({ productorNif: e.target.value })}
-            placeholder={ejemplo('productorNif', vista.productor.nif, 'El de la empresa emisora')}
-          />
-        </Field>
+      <div>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Razón social del productor">
+            <input
+              className="input"
+              maxLength={120}
+              value={d.productorNombre}
+              onChange={(e) => set({ productorNombre: e.target.value })}
+              placeholder={ejemplo('productorNombre', vista.productor.nombre, 'La de la empresa emisora')}
+              aria-describedby={idAyudaProductor}
+            />
+          </Field>
+          <Field label="NIF del productor">
+            <input
+              className="input font-mono"
+              maxLength={20}
+              autoCapitalize="characters"
+              spellCheck={false}
+              value={d.productorNif}
+              onChange={(e) => set({ productorNif: e.target.value })}
+              placeholder={ejemplo('productorNif', vista.productor.nif, 'El de la empresa emisora')}
+              aria-describedby={idAyudaProductor}
+            />
+          </Field>
+        </div>
+        {/* Una sola ayuda para los dos campos, porque la regla es de la pareja.
+            Cambia de tono en vez de aparecer en rojo bajo un campo: mientras
+            se escribe el primero, que falte el segundo es lo normal. */}
+        {faltaDelProductor ? (
+          <p id={idAyudaProductor} className="mt-1.5 flex items-start gap-1.5 text-xs leading-5 text-warn">
+            <TriangleAlert size={13} className="mt-[3px] shrink-0" aria-hidden />
+            <span className="min-w-0">
+              Falta {faltaDelProductor} del productor. Indica la razón social y el NIF juntos, o deja los dos vacíos para que el productor sea la empresa
+              emisora.
+            </span>
+          </p>
+        ) : (
+          <p id={idAyudaProductor} className="mt-1 text-xs leading-4 text-subtle">
+            Si se dejan vacíos la razón social y el NIF, el productor es la empresa emisora.
+          </p>
+        )}
       </div>
-      <Field label="Dirección postal de contacto" hint="Los datos del productor que se dejen vacíos se toman de la empresa emisora.">
+      <Field
+        label="Dirección postal de contacto"
+        hint={
+          productorPropio
+            ? 'Con un productor distinto de la empresa emisora, la dirección es obligatoria.'
+            : 'Si se deja vacía, se usa la de la empresa emisora.'
+        }
+      >
         <textarea
           className="input min-h-14"
           maxLength={400}
@@ -1105,12 +1154,26 @@ function ProductorYDeclaracion({ vista }: { vista: VerifactuVista }) {
       <details className="group animate-details border-t border-line pt-3">
         <summary className="flex cursor-pointer list-none items-center gap-1.5 text-xs font-medium text-sub hover:text-txt">
           <ChevronRight size={12} className="shrink-0 text-subtle transition-transform group-open:rotate-90" aria-hidden />
-          Ver la declaración responsable
+          Ver o descargar la declaración responsable
         </summary>
-        {/* La Orden (art. 15.1) fija el título, el orden a) a l) y que cada dato
-            vaya precedido de su rótulo: se pinta tal como llega. */}
+        {/* La Orden (art. 15.1) fija el título, el orden de los apartados y que
+            cada dato vaya precedido de su rótulo: se pinta tal como llega. */}
         <div className="details-body mt-3 rounded-lg border border-line bg-bg/40 p-3">
-          <p className="text-xs font-semibold leading-5 text-txt">{declaracion.titulo}</p>
+          {/* La descarga va junto al texto que descarga: el mismo, con los datos
+              guardados. La AEAT pide que la declaración también esté disponible
+              fuera del sistema, y este fichero es lo que se publica. */}
+          <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2">
+            <p className="min-w-0 grow basis-56 text-xs font-semibold leading-5 text-txt">{declaracion.titulo}</p>
+            <a
+              href={URL_DECLARACION_TXT}
+              download
+              className="press inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-line bg-surface2 px-2.5 text-xs font-medium text-txt hover:border-line2 hover:bg-surface3"
+              title="Descargar la declaración responsable en un fichero de texto (.txt)"
+            >
+              <Download size={13} aria-hidden /> Descargar en texto
+            </a>
+          </div>
+          {dirty && <p className="mt-2 text-xs leading-5 text-warn">Hay cambios sin guardar: esta vista y la descarga muestran los datos guardados.</p>}
           <dl className="mt-2 flex flex-col gap-2.5">
             {declaracion.apartados.map((ap) => (
               <div key={ap.letra}>
@@ -1147,7 +1210,7 @@ function RegistroEventos({ vista }: { vista: VerifactuVista }) {
         <EmptyState
           compact
           title="Todavía no hay eventos"
-          description="Se anotan la activación, los cambios de entorno, de productor y de certificado, los envíos y las subsanaciones."
+          description="Se anotan la activación, los cambios de entorno, de productor y de certificado, los envíos, las subsanaciones y las anomalías en la cadena de registros."
         />
       ) : (
         <ul className="max-h-[320px] divide-y divide-line overflow-y-auto">
