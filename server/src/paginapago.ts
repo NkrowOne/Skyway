@@ -4,10 +4,12 @@
  * línea (la CSP admite estilos en línea y ningún script), sin enlaces al panel
  * ni datos de la cuenta. Solo dice el estado de ESA factura y quién la emite.
  *
- * Qué no aparece nunca: el destinatario (nombre, NIF, domicilio, correo), las
- * líneas, identificadores internos ni nada de otras facturas. Si el enlace se
- * reenvía o se filtra, quien lo abra solo ve lo que el propio emisor imprime en
- * cada factura y el estado del pago.
+ * Qué no aparece nunca en esta página: el destinatario (nombre, NIF, domicilio,
+ * correo), las líneas, identificadores internos ni nada de otras facturas. Si el
+ * enlace se reenvía o se filtra, quien lo abra solo ve lo que el propio emisor
+ * imprime en cada factura y el estado del pago. (Con la factura pendiente, la
+ * página de Stripe Checkout a la que se redirige sí muestra el correo de
+ * facturación del cliente: se le pasa para el recibo, como en «Cobrar».)
  */
 import { getBillingProfile } from './company';
 import { fmtFecha, fmtImporte } from './invoicepdf';
@@ -17,8 +19,10 @@ import { safeParse } from './util';
 export type VistaPago =
   | { tipo: 'no_valido' }
   | { tipo: 'demasiadas' }
-  | { tipo: 'pagada' | 'anulada' | 'sin_importe'; factura: InvoiceRow }
-  | { tipo: 'confirmando' | 'cancelado'; factura: InvoiceRow; token: string }
+  | { tipo: 'pagada' | 'anulada' | 'rectificada' | 'sin_importe'; factura: InvoiceRow }
+  /** `recibido`: Stripe ya da el pago por completado; falta solo la confirmación. */
+  | { tipo: 'confirmando'; factura: InvoiceRow; token: string; recibido?: boolean }
+  | { tipo: 'cancelado'; factura: InvoiceRow; token: string }
   | { tipo: 'no_disponible'; factura: InvoiceRow; token: string; motivo: 'pasarela' | 'configuracion' };
 
 function esc(texto: string): string {
@@ -114,6 +118,15 @@ function contenido(vista: VistaPago): Contenido {
         parrafos: ['Esta factura está anulada y no admite pagos. Si tienes alguna duda, ponte en contacto con el emisor.'],
         factura: vista.factura,
       };
+    case 'rectificada':
+      return {
+        titulo: 'Factura rectificada',
+        estado: { texto: 'Rectificada', clase: 'aviso' },
+        parrafos: [
+          'Esta factura se ha corregido con una factura rectificativa y no admite pagos por su importe original. Ponte en contacto con el emisor para conocer el importe pendiente.',
+        ],
+        factura: vista.factura,
+      };
     case 'sin_importe':
       return {
         titulo: 'Sin importe pendiente',
@@ -122,6 +135,17 @@ function contenido(vista: VistaPago): Contenido {
         factura: vista.factura,
       };
     case 'confirmando':
+      if (vista.recibido) {
+        // Stripe ya tiene el pago: sin botón para pagar, que sería pagar dos veces.
+        return {
+          titulo: 'Pago recibido',
+          estado: { texto: 'Pendiente de confirmación', clase: 'neutro' },
+          parrafos: [
+            'El pago de esta factura se ha completado y está pendiente de confirmación. No es necesario volver a pagar: la factura constará como pagada en cuanto se confirme.',
+          ],
+          factura: vista.factura,
+        };
+      }
       return {
         titulo: 'Pago en proceso de confirmación',
         estado: { texto: 'Pendiente de confirmación', clase: 'neutro' },

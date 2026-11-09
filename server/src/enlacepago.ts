@@ -10,22 +10,28 @@
  * El token es una credencial al portador y no se guarda en claro. Como con los
  * tokens de API, la base solo tiene su hash SHA-256, que es por lo que se busca.
  * A diferencia de ellos, el servidor puede volver a calcularlo: es el HMAC de un
- * secreto propio (`settings.payLinkKey`) con el id de la factura y un nonce
- * aleatorio de esa factura. Hace falta para que el reenvío del correo y el panel
- * den el MISMO enlace que el primer envío: si cada envío generase uno nuevo, el
- * enlace del correo anterior dejaría de funcionar y ya no sería permanente.
+ * secreto propio con el id de la factura y un nonce aleatorio de esa factura.
+ * Hace falta para que el reenvío del correo y el panel den el MISMO enlace que el
+ * primer envío: si cada envío generase uno nuevo, el enlace del correo anterior
+ * dejaría de funcionar y ya no sería permanente. El secreto vive en un fichero de
+ * la carpeta de datos y no en la base (ver `claveEnlaces`), así que una copia de
+ * `skyway.db` no basta para recalcular ningún enlace.
  *
  * Revocar es borrar la fila: el enlace deja de valer y el próximo uso crea otro.
  * Rotar es cambiar el nonce: el anterior deja de valer y el nuevo se calcula
  * igual. Se rota al anular la factura.
  */
 import crypto from 'crypto';
-import { deleteInvoicePayLink, getInvoiceByPayTokenHash, getInvoicePayLink, getSetting, setInvoicePayLink, setSetting } from './db';
+import fs from 'fs';
+import path from 'path';
+import { config } from './config';
+import { deleteInvoicePayLink, getInvoiceByPayTokenHash, getInvoicePayLink, setInvoicePayLink } from './db';
 import { isLocalOrIpHost, primaryPanelDomain } from './paneldomain';
 import { InvoiceRow } from './types';
 import { hmacSha256, randomToken, safeEqual } from './util';
 
-const CLAVE_SETTING = 'payLinkKey';
+/** Fichero del secreto, en la carpeta de datos (`DATA_DIR`), junto a `skyway.db`. */
+export const FICHERO_CLAVE_ENLACES = 'enlaces-pago.key';
 
 /** Forma exacta del token (HMAC-SHA256 en hexadecimal): lo que no encaja ni se busca. */
 const TOKEN_RE = /^[a-f0-9]{64}$/;
@@ -35,13 +41,28 @@ let claveCache: string | null = null;
 /**
  * Secreto con el que se calculan los tokens. Propio y no el de las sesiones:
  * rotar el de las sesiones (cerrar todas) no debe matar los enlaces ya enviados.
+ *
+ * En un fichero (`DATA_DIR/enlaces-pago.key`, solo legible por el proceso) y no
+ * en `settings`: con él en la base, quien tuviera una copia de `skyway.db` (las
+ * copias de seguridad del panel son eso) recalcularía todos los enlaces vivos, y
+ * guardar el hash no protegería nada. Si el fichero se pierde, los enlaces ya
+ * enviados siguen abriendo (se buscan por el hash) y el siguiente uso de cada
+ * factura crea uno nuevo (`tokenPagoVigente`).
  */
 function claveEnlaces(): string {
   if (claveCache) return claveCache;
-  let clave = getSetting(CLAVE_SETTING);
-  if (!clave) {
+  const ruta = path.join(config.dataDir, FICHERO_CLAVE_ENLACES);
+  let clave = '';
+  try {
+    clave = fs.readFileSync(ruta, 'utf8').trim();
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
+  if (!/^[a-f0-9]{64}$/.test(clave)) {
     clave = randomToken(32);
-    setSetting(CLAVE_SETTING, clave);
+    fs.writeFileSync(ruta, `${clave}\n`, { mode: 0o600 });
+    // `mode` solo cuenta al crear: uno que ya existía (vacío o dañado) se ajusta aquí.
+    fs.chmodSync(ruta, 0o600);
   }
   claveCache = clave;
   return clave;
@@ -70,7 +91,7 @@ export function tokenPagoVigente(invoiceId: string): string | null {
   const fila = getInvoicePayLink(invoiceId);
   if (!fila) return null;
   const token = derivar(invoiceId, fila.nonce);
-  // Si el secreto ya no es el que calculó el enlace (se borró de `settings`), el
+  // Si el secreto ya no es el que calculó el enlace (se perdió el fichero), el
   // hash guardado sigue abriendo el enlace enviado, pero no hay forma de
   // reproducirlo: se trata como si no hubiera enlace y el siguiente uso lo rota.
   return safeEqual(hashTokenPago(token), fila.token_hash) ? token : null;
@@ -127,4 +148,13 @@ export function baseUrlPublica(req?: { protocol: string; host: string }): string
 
 export function urlEnlacePago(base: string, token: string): string {
   return `${base.replace(/\/+$/, '')}/pagar/${token}`;
+}
+
+/**
+ * La URL de una petición sin el token del enlace de pago, para el registro del
+ * servidor: Fastify anota la URL de cada petición, y el token acabaría en claro
+ * en los logs, que se copian y se comparten con menos cuidado que la base.
+ */
+export function urlSinTokenPago(url: string): string {
+  return url.replace(/^\/pagar\/[^/?#]+/, '/pagar/…');
 }

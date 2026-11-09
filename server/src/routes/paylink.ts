@@ -21,7 +21,7 @@ import { VistaPago, paginaPago } from '../paginapago';
 import { panelBaseUrl } from '../paneldomain';
 import { rateLimit } from '../ratelimit';
 import { InvoiceRow } from '../types';
-import { cobrarConStripe } from './billing';
+import { abonoQueLaRectifica, cobrarConStripe } from './billing';
 
 /** Actor en la auditoría: quien abre el enlace no tiene cuenta (su IP sí consta). */
 const ACTOR = 'enlace público de pago';
@@ -46,6 +46,8 @@ function enviarPagina(reply: FastifyReply, codigo: number, vista: VistaPago): Fa
 function vistaDeEstado(inv: InvoiceRow): VistaPago | null {
   if (inv.status === 'paid') return { tipo: 'pagada', factura: inv };
   if (inv.status === 'void') return { tipo: 'anulada', factura: inv };
+  // Abonada por una rectificativa: pagarla cobraría también lo que el abono devuelve.
+  if (abonoQueLaRectifica(inv)) return { tipo: 'rectificada', factura: inv };
   if (inv.total_cents <= 0) return { tipo: 'sin_importe', factura: inv };
   return null;
 }
@@ -113,11 +115,15 @@ export async function payLinkRoutes(app: FastifyInstance): Promise<void> {
       );
       if (res.ok) return reply.code(303).header('Location', res.url).header('Cache-Control', 'no-store').send();
       if (res.motivo === 'no_existe') return enviarPagina(reply, 404, { tipo: 'no_valido' });
+      // Ya pagada en Stripe a falta de la confirmación: nada de otra sesión.
+      if (res.motivo === 'en_confirmacion') return enviarPagina(reply, 200, { tipo: 'confirmando', factura: inv, token, recibido: true });
       // Pudo cobrarse o anularse mientras tanto: la página dice cómo está ahora.
       const actual = getInvoice(inv.id) ?? inv;
       const ahora = vistaDeEstado(actual);
       if (ahora) return enviarPagina(reply, 200, ahora);
       avisarFallo(req, actual, res.mensaje);
+      // Solo un fallo pasajero de Stripe invita a reintentar; un rechazo (importe
+      // mínimo, moneda, cuenta sin activar) o la falta de configuración, no.
       const pasarela = res.motivo === 'stripe';
       return enviarPagina(reply, pasarela ? 502 : 503, { tipo: 'no_disponible', factura: actual, token, motivo: pasarela ? 'pasarela' : 'configuracion' });
     } catch (err) {

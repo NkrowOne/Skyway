@@ -11,10 +11,23 @@ import { hmacSha256, safeEqual } from './util';
 const STRIPE_API = 'https://api.stripe.com/v1';
 
 export class StripeError extends Error {
-  constructor(message: string) {
+  /**
+   * Fallo pasajero (sin conexión, Stripe caído o limitando: 5xx o 429), que vale
+   * la pena reintentar. Un rechazo (4xx: clave no válida, importe por debajo del
+   * mínimo, moneda no admitida, cuenta sin activar) no cambia por reintentar, y a
+   * quien paga no se le debe invitar a hacerlo.
+   */
+  readonly transitoria: boolean;
+  constructor(message: string, transitoria = false) {
     super(message);
     this.name = 'StripeError';
+    this.transitoria = transitoria;
   }
+}
+
+/** Error de una respuesta de Stripe que no es 2xx: pasajero solo si es 5xx o 429. */
+function errorDeRespuesta(status: number, body: any): StripeError {
+  return new StripeError(body?.error?.message || `Stripe respondió HTTP ${status}`, status >= 500 || status === 429);
 }
 
 export interface StripeCheckoutOpts {
@@ -74,24 +87,37 @@ export async function createStripeCheckout(secretKey: string, opts: StripeChecko
       signal: AbortSignal.timeout(15_000),
     });
   } catch (err: any) {
-    throw new StripeError(`No se pudo conectar con Stripe: ${err?.message || 'error de red'}`);
+    throw new StripeError(`No se pudo conectar con Stripe: ${err?.message || 'error de red'}`, true);
   }
   const body: any = await res.json().catch(() => ({}));
   if (res.status === 401) throw new StripeError('Stripe rechazó la clave secreta (401).');
-  if (!res.ok) throw new StripeError(body?.error?.message || `Stripe respondió HTTP ${res.status}`);
-  if (!body?.id || !body?.url) throw new StripeError('Stripe no devolvió una sesión de pago válida.');
+  if (!res.ok) throw errorDeRespuesta(res.status, body);
+  if (!body?.id || !body?.url) throw new StripeError('Stripe no devolvió una sesión de pago válida.', true);
   return { id: body.id, url: body.url };
 }
 
 /** Estado de una Checkout Session: `open` admite pago; `complete` ya se pagó; `expired` caducó. */
 export type StripeCheckoutStatus = 'open' | 'complete' | 'expired';
 
+export interface StripeCheckoutInfo {
+  id: string;
+  status: StripeCheckoutStatus;
+  url: string | null;
+  /**
+   * `paid`, `unpaid` o `no_payment_required`. Una sesión `complete` puede seguir
+   * `unpaid` días enteros con un método diferido (SEPA): el cliente ya ha pagado.
+   */
+  paymentStatus: string | null;
+  /** URL de vuelta con la que se creó: dice a qué página vuelve el cliente al pagar. */
+  successUrl: string | null;
+}
+
 /**
  * Consulta una Checkout Session existente. Sirve para no reutilizar un enlace
  * caducado: Stripe cierra las sesiones a las 24 h y un enlace guardado más tiempo
  * lleva a una página de error. El id va en la ruta ya codificado.
  */
-export async function retrieveStripeCheckout(secretKey: string, sessionId: string): Promise<{ id: string; status: StripeCheckoutStatus; url: string | null }> {
+export async function retrieveStripeCheckout(secretKey: string, sessionId: string): Promise<StripeCheckoutInfo> {
   if (!secretKey) throw new StripeError('No hay ninguna clave secreta de Stripe configurada.');
   if (!/^[A-Za-z0-9_]+$/.test(sessionId)) throw new StripeError('Identificador de sesión de Stripe no válido.');
   let res: Response;
@@ -101,16 +127,22 @@ export async function retrieveStripeCheckout(secretKey: string, sessionId: strin
       signal: AbortSignal.timeout(15_000),
     });
   } catch (err: any) {
-    throw new StripeError(`No se pudo conectar con Stripe: ${err?.message || 'error de red'}`);
+    throw new StripeError(`No se pudo conectar con Stripe: ${err?.message || 'error de red'}`, true);
   }
   const body: any = await res.json().catch(() => ({}));
   if (res.status === 401) throw new StripeError('Stripe rechazó la clave secreta (401).');
   // Una sesión que Stripe ya no conoce (borrada, otra cuenta) se trata como caducada:
   // el llamante crea una nueva en vez de devolver un enlace que no lleva a nada.
-  if (res.status === 404) return { id: sessionId, status: 'expired', url: null };
-  if (!res.ok) throw new StripeError(body?.error?.message || `Stripe respondió HTTP ${res.status}`);
+  if (res.status === 404) return { id: sessionId, status: 'expired', url: null, paymentStatus: null, successUrl: null };
+  if (!res.ok) throw errorDeRespuesta(res.status, body);
   const status: StripeCheckoutStatus = body?.status === 'open' ? 'open' : body?.status === 'complete' ? 'complete' : 'expired';
-  return { id: String(body?.id ?? sessionId), status, url: typeof body?.url === 'string' ? body.url : null };
+  return {
+    id: String(body?.id ?? sessionId),
+    status,
+    url: typeof body?.url === 'string' ? body.url : null,
+    paymentStatus: typeof body?.payment_status === 'string' ? body.payment_status : null,
+    successUrl: typeof body?.success_url === 'string' ? body.success_url : null,
+  };
 }
 
 /**
@@ -135,13 +167,13 @@ export async function expireStripeCheckout(secretKey: string, sessionId: string)
       signal: AbortSignal.timeout(15_000),
     });
   } catch (err: any) {
-    throw new StripeError(`No se pudo conectar con Stripe: ${err?.message || 'error de red'}`);
+    throw new StripeError(`No se pudo conectar con Stripe: ${err?.message || 'error de red'}`, true);
   }
   const body: any = await res.json().catch(() => ({}));
   if (res.status === 401) throw new StripeError('Stripe rechazó la clave secreta (401).');
   // Stripe responde 400 si la sesión ya no está abierta y 404 si no la conoce.
   if (res.status === 400 || res.status === 404) return false;
-  if (!res.ok) throw new StripeError(body?.error?.message || `Stripe respondió HTTP ${res.status}`);
+  if (!res.ok) throw errorDeRespuesta(res.status, body);
   return body?.status === 'expired';
 }
 

@@ -41,7 +41,7 @@ import { priceTiers } from '../pricing';
 import { reactivateWorkspaceIfCurrent } from '../billingauto';
 import { asegurarTokenPago, baseUrlPublica, revocarTokenPago, rotarTokenPago, urlEnlacePago } from '../enlacepago';
 import { panelBaseUrl } from '../paneldomain';
-import { StripeError, createStripeCheckout, expireStripeCheckout, retrieveStripeCheckout, stripeAmount } from '../stripe';
+import { StripeCheckoutInfo, StripeError, createStripeCheckout, expireStripeCheckout, retrieveStripeCheckout, stripeAmount } from '../stripe';
 import { BillingProfile, InvoiceLine, InvoiceRow, InvoiceStatus, IssuerSnapshot, PlanRow, TaxBreakdownEntry, VatRegime, WorkspaceRow } from '../types';
 import { safeParse } from '../util';
 
@@ -456,17 +456,20 @@ async function invoicePdf(inv: InvoiceRow): Promise<Buffer> {
  */
 function enlaceTarjetaCorreo(inv: InvoiceRow, base: string | null | undefined): string | null {
   if (inv.status !== 'issued' || inv.total_cents <= 0) return null;
+  // Abonada por una rectificativa: no se cobra por su importe original.
+  if (abonoQueLaRectifica(inv)) return null;
   // Sin Stripe configurado no hay cobro con tarjeta que ofrecer: lo de siempre.
   if (!getStripeSecretKey()) return inv.stripe_url;
   const numero = inv.number ?? inv.id;
   const raiz = base ?? baseUrlPublica();
   if (!raiz) {
-    // Un enlace a un túnel (`localhost`) o a una IP no lo abre el cliente.
-    auditSystem('invoice_pay_link_unavailable', `${numero}: el correo sale sin enlace de pago porque el panel no tiene dominio público (SKYWAY_DOMAIN)`, {
+    // Un enlace a un túnel (`localhost`) o a una IP no lo abre el cliente. Se
+    // queda lo de antes (la sesión guardada, si la hay) y consta el motivo.
+    auditSystem('invoice_pay_link_unavailable', `${numero}: el correo sale sin el enlace permanente porque el panel no tiene dominio público (SKYWAY_DOMAIN)`, {
       type: 'invoice',
       id: inv.id,
     });
-    return null;
+    return inv.stripe_url;
   }
   const t = asegurarTokenPago(inv);
   if (!t) return null;
@@ -1178,7 +1181,19 @@ export type CobroStripe =
   | { ok: true; url: string; reutilizada: boolean }
   | {
       ok: false;
-      motivo: 'no_existe' | 'pagada' | 'anulada' | 'sin_importe' | 'sin_stripe' | 'en_curso' | 'fiscal' | 'stripe' | 'cambio_estado';
+      motivo:
+        | 'no_existe'
+        | 'pagada'
+        | 'anulada'
+        | 'rectificada'
+        | 'sin_importe'
+        | 'sin_stripe'
+        | 'en_curso'
+        | 'en_confirmacion'
+        | 'fiscal'
+        | 'stripe'
+        | 'stripe_rechazo'
+        | 'cambio_estado';
       mensaje: string;
     };
 
@@ -1186,13 +1201,13 @@ type MotivoCobroFallido = Extract<CobroStripe, { ok: false }>['motivo'];
 
 /** Quién pide el cobro: la raíz de las URLs de vuelta de Stripe y cómo se audita. */
 export interface ContextoCobro {
-  /** Raíz pública del panel (`panelBaseUrl`): la vuelta de Stripe va a la página del enlace. */
+  /** Raíz pública del panel: la vuelta de Stripe va a la página del enlace. */
   base: string;
   /** Audita una acción sobre la factura con el actor de la petición. */
   auditar: (accion: string, detalle: string) => void;
   /**
-   * Token con el que se ha abierto el enlace público. La vuelta de Stripe usa
-   * ESE enlace: el que el cliente tiene en el correo, que así nunca se rota por
+   * Token con el que se ha abierto el enlace público. Una sesión nueva vuelve a
+   * ESE enlace, el que el cliente tiene en el correo, que así nunca se rota por
    * abrirlo (aunque el servidor ya no pudiera recalcularlo).
    */
   token?: string;
@@ -1202,6 +1217,18 @@ const CAMBIO_ESTADO = 'La factura ha cambiado de estado mientras se creaba el en
 
 function cobroFallido(motivo: MotivoCobroFallido, mensaje: string): CobroStripe {
   return { ok: false, motivo, mensaje };
+}
+
+/**
+ * Rectificativa emitida que ABONA la factura (total negativo: la anula o le
+ * descuenta). Mientras exista, la factura no se cobra por su importe original:
+ * el cliente pagaría también lo que el abono le devuelve. Una rectificativa de
+ * importe cero (corrige un dato) o positivo (la diferencia se paga aparte, con
+ * su propia factura) no la bloquea. Solo cabe una viva por factura (`/rectify`).
+ */
+export function abonoQueLaRectifica(inv: InvoiceRow): InvoiceRow | null {
+  if (inv.invoice_type === 'rectificativa') return null;
+  return listRectificationsOf(inv.id).find((r) => (r.status === 'issued' || r.status === 'paid') && r.total_cents < 0) ?? null;
 }
 
 /**
@@ -1215,10 +1242,11 @@ const cobrosEnCurso = new Map<string, Promise<CobroStripe>>();
 
 /**
  * Caduca en Stripe una sesión de Checkout que ha quedado abierta, sin esperar
- * (best-effort): al anular la factura o cobrarla por otra vía, una pestaña de
- * pago abierta seguiría admitiendo el cobro durante horas y habría que
- * devolverlo a mano. Un fallo solo se audita: el webhook sigue avisando de un
- * cobro sobre una factura anulada o ya saldada.
+ * (best-effort): al anular la factura, cobrarla por otra vía, abonarla con una
+ * rectificativa o revocar su enlace, una pestaña de pago abierta seguiría
+ * admitiendo el cobro durante horas y habría que devolverlo a mano. Un fallo solo
+ * se audita: el webhook sigue avisando de un cobro sobre una factura anulada o
+ * ya saldada.
  */
 function cerrarSesionStripe(sessionId: string | null, numero: string, motivo: string): void {
   const secret = getStripeSecretKey();
@@ -1244,6 +1272,9 @@ export async function cobrarConStripe(invoiceId: string, ctx: ContextoCobro, siE
   if (!inv) return cobroFallido('no_existe', 'Factura no encontrada');
   if (inv.status === 'paid') return cobroFallido('pagada', 'La factura ya está pagada.');
   if (inv.status === 'void') return cobroFallido('anulada', 'La factura está anulada.');
+  if (abonoQueLaRectifica(inv)) {
+    return cobroFallido('rectificada', 'La factura tiene una rectificativa que la abona: no se puede cobrar por su importe original.');
+  }
   // Se comprueba ANTES de emitir: Stripe rechaza un importe no positivo, y
   // emitir primero dejaba una factura numerada y bloqueada como efecto
   // secundario de un enlace que nunca llegó a crearse.
@@ -1265,29 +1296,60 @@ export async function cobrarConStripe(invoiceId: string, ctx: ContextoCobro, siE
   return cobro;
 }
 
+/** La factura ya no admite cobro: se cobró, se anuló o se abonó mientras tanto. */
+function yaNoCobrable(actual: InvoiceRow | undefined): boolean {
+  return !actual || actual.status === 'paid' || actual.status === 'void' || !!abonoQueLaRectifica(actual);
+}
+
 async function prepararCobro(inv: InvoiceRow, secret: string, ctx: ContextoCobro): Promise<CobroStripe> {
   const id = inv.id;
+  /**
+   * Página del enlace a la que vuelve el cliente desde Stripe (null en un
+   * borrador, que aún no tiene enlace). Es la página pública y no el panel:
+   * quien paga puede no tener cuenta en él, y la página dice si el cobro consta.
+   */
+  const enlaceDe = (factura: InvoiceRow): string | null => {
+    const enlace = ctx.token ? { token: ctx.token, creado: false } : asegurarTokenPago(factura);
+    if (enlace?.creado) ctx.auditar('invoice_pay_link_created', factura.number ?? factura.id);
+    return enlace ? urlEnlacePago(ctx.base, enlace.token) : null;
+  };
+
   // Reutilizar el enlace vigente en vez de crear otra sesión: cada sesión nueva
   // sobrescribía `stripe_session_id` y el cobro hecho con el enlace anterior
   // quedaba sin factura a la que imputarse. (El webhook concilia además por el
   // id de factura, así que un enlace viejo tampoco se pierde.) Pero una sesión
   // de Checkout CADUCA (24 h por defecto): reutilizar a ciegas devolvía para
-  // siempre un enlace muerto, así que se pregunta a Stripe si sigue abierta y,
-  // si no, se crea otra. Si Stripe no responde se devuelve el enlace guardado.
+  // siempre un enlace muerto, así que se pregunta a Stripe cómo está. Si Stripe
+  // no responde se devuelve el enlace guardado.
   if (inv.stripe_url && inv.stripe_session_id) {
-    let abierta = true;
+    let sesion: StripeCheckoutInfo | null = null;
     try {
-      abierta = (await retrieveStripeCheckout(secret, inv.stripe_session_id)).status === 'open';
+      sesion = await retrieveStripeCheckout(secret, inv.stripe_session_id);
     } catch (err) {
       if (!(err instanceof StripeError)) throw err;
     }
-    if (abierta) {
-      // Mientras se consultaba a Stripe pudo llegar el cobro o la anulación.
-      const actual = getInvoice(id);
-      if (!actual || actual.status === 'paid' || actual.status === 'void') return cobroFallido('cambio_estado', CAMBIO_ESTADO);
-      return { ok: true, url: inv.stripe_url, reutilizada: true };
+    // Mientras se consultaba a Stripe pudo llegar el cobro, la anulación o el abono.
+    if (yaNoCobrable(getInvoice(id))) return cobroFallido('cambio_estado', CAMBIO_ESTADO);
+    if (!sesion) return { ok: true, url: inv.stripe_url, reutilizada: true };
+    if (sesion.status === 'complete') {
+      // El cliente YA ha pagado con esta sesión y falta la confirmación: el
+      // webhook tarda, no está configurado o el método liquida días después
+      // (SEPA queda `complete` y `unpaid`). Crear otra sesión le invitaba a
+      // pagar dos veces desde un enlace que no caduca.
+      return cobroFallido('en_confirmacion', 'El pago de esta factura ya se ha completado en Stripe y está pendiente de confirmación.');
     }
-    ctx.auditar('invoice_stripe_link_expired', inv.stripe_session_id);
+    if (sesion.status === 'open') {
+      // Solo si vuelve a ESTE enlace. Una sesión creada con un enlace ya
+      // revocado, antes de los enlaces públicos (volvía al panel, que pide
+      // iniciar sesión) o desde otra raíz devolvería al cliente, tras pagar, a
+      // una página que no es la suya: se cierra y se crea otra.
+      const enlace = enlaceDe(inv);
+      if (!enlace || !sesion.successUrl || sesion.successUrl === `${enlace}?estado=pagado`) return { ok: true, url: inv.stripe_url, reutilizada: true };
+      cerrarSesionStripe(sesion.id, inv.number ?? id, 'sustituida por otra que vuelve al enlace vigente');
+      ctx.auditar('invoice_stripe_link_replaced', sesion.id);
+    } else {
+      ctx.auditar('invoice_stripe_link_expired', inv.stripe_session_id);
+    }
   }
 
   // Emitir la factura antes de cobrar (alta antes del pago): asigna número/serie
@@ -1303,11 +1365,7 @@ async function prepararCobro(inv: InvoiceRow, secret: string, ctx: ContextoCobro
     ctx.auditar('invoice_issued', `${issued.number ?? id} · emitida para cobrarla con Stripe`);
   }
   const number = issued.number ?? issued.id;
-  // La vuelta de Stripe va a la página pública del enlace, no al panel: quien
-  // paga puede no tener cuenta en él, y la página dice si el cobro ya consta.
-  const enlace = ctx.token ? { token: ctx.token, creado: false } : asegurarTokenPago(issued);
-  if (enlace?.creado) ctx.auditar('invoice_pay_link_created', number);
-  const vuelta = enlace ? urlEnlacePago(ctx.base, enlace.token) : null;
+  const enlace = enlaceDe(issued);
   const ws = getWorkspace(issued.workspace_id);
   let session: { id: string; url: string };
   try {
@@ -1316,23 +1374,29 @@ async function prepararCobro(inv: InvoiceRow, secret: string, ctx: ContextoCobro
       currency: issued.currency,
       invoiceNumber: number,
       invoiceId: issued.id,
-      successUrl: vuelta ? `${vuelta}?estado=pagado` : `${ctx.base}/workspaces/${issued.workspace_id}?paid=1`,
-      cancelUrl: vuelta ? `${vuelta}?estado=cancelado` : `${ctx.base}/workspaces/${issued.workspace_id}`,
+      successUrl: enlace ? `${enlace}?estado=pagado` : `${ctx.base}/workspaces/${issued.workspace_id}?paid=1`,
+      cancelUrl: enlace ? `${enlace}?estado=cancelado` : `${ctx.base}/workspaces/${issued.workspace_id}`,
       customerEmail: ws?.billing_email ?? null,
     });
   } catch (err) {
-    if (err instanceof StripeError) return cobroFallido('stripe', err.message);
+    // Un rechazo de Stripe (4xx) no es lo mismo que no poder conectar: al
+    // cliente no se le invita a reintentar algo que volverá a fallar.
+    if (err instanceof StripeError) return cobroFallido(err.transitoria ? 'stripe' : 'stripe_rechazo', err.message);
     throw err;
   }
-  // Si el webhook la ha cobrado (o se ha anulado) mientras se creaba la sesión,
-  // no se pisa el cobro real con un enlace que ya no sirve, y la sesión recién
-  // creada se cierra para que nadie la pague.
-  const actual = getInvoice(id);
-  if (!actual || actual.status === 'paid' || actual.status === 'void') {
+  // Si el webhook la ha cobrado (o se ha anulado o abonado) mientras se creaba
+  // la sesión, no se pisa el cobro real con un enlace que ya no sirve, y la
+  // sesión recién creada se cierra para que nadie la pague.
+  if (yaNoCobrable(getInvoice(id))) {
     cerrarSesionStripe(session.id, number, 'la factura cambió de estado mientras se creaba la sesión');
     return cobroFallido('cambio_estado', CAMBIO_ESTADO);
   }
-  updateInvoice(id, { stripe_session_id: session.id, stripe_url: session.url, payment_method: 'stripe' });
+  // Sin `payment_method`: abrir el enlace (o la vista previa que lo sigue) no es
+  // cobrar. Antes quedaba «stripe» aunque el cliente pagara por transferencia y,
+  // si el operador la marcaba pagada sin método, un cobro real con esta sesión
+  // se tomaba por un reenvío del webhook (`ya_pagada`) en vez de avisar de un
+  // cobro duplicado. El webhook lo fija al cobrar.
+  updateInvoice(id, { stripe_session_id: session.id, stripe_url: session.url });
   ctx.auditar('invoice_stripe_link', `${number} · ${session.id}`);
   return { ok: true, url: session.url, reutilizada: false };
 }
@@ -1342,11 +1406,14 @@ const CODIGO_COBRO: Record<MotivoCobroFallido, number> = {
   no_existe: 404,
   pagada: 400,
   anulada: 400,
+  rectificada: 409,
   sin_importe: 400,
   sin_stripe: 400,
   en_curso: 409,
+  en_confirmacion: 409,
   fiscal: 409,
   stripe: 502,
+  stripe_rechazo: 502,
   cambio_estado: 409,
 };
 
@@ -1557,6 +1624,15 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
         if (rotarTokenPago(id)) audit(req, 'invoice_pay_link_rotated', { type: 'invoice', id, detail: inv.number ?? id });
       }
     }
+    // Una rectificativa que abona la original la deja sin importe que cobrar por
+    // su enlace (`abonoQueLaRectifica`): la sesión que tuviera abierta se cierra.
+    if (inv.status === 'draft' && (target === 'issued' || target === 'paid') && inv.invoice_type === 'rectificativa' && inv.rectifies_invoice_id) {
+      const rectificativa = getInvoice(id);
+      const original = getInvoice(inv.rectifies_invoice_id);
+      if (rectificativa && rectificativa.total_cents < 0 && original) {
+        cerrarSesionStripe(original.stripe_session_id, original.number ?? original.id, 'factura abonada por una rectificativa');
+      }
+    }
     // Cobro manual: levanta el corte por impago si la cuenta ya no debe nada.
     // Anular la factura también salda la deuda: sin esto, una factura vencida que
     // se anula (o se sustituye por una rectificativa) dejaba al cliente cortado.
@@ -1708,19 +1784,22 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
   // enlace público; aquí una segunda petición simultánea sigue recibiendo 409.
   app.post('/api/invoices/:id/stripe-link', { preHandler: requireAdmin }, async (req, reply) => {
     const { id } = req.params as { id: string };
-    const base = panelBaseUrl(req);
+    // La raíz pública, como en el correo; por un túnel sin dominio, la de la
+    // petición, que es lo que se hacía antes (ver `baseUrlPublica`).
+    const publica = baseUrlPublica(req);
     const auditar = (accion: string, detalle: string): void => audit(req, accion, { type: 'invoice', id, detail: detalle });
-    const res = await cobrarConStripe(id, { base, auditar }, 'rechazar');
+    const res = await cobrarConStripe(id, { base: publica ?? panelBaseUrl(req), auditar }, 'rechazar');
     if (!res.ok) return reply.code(CODIGO_COBRO[res.motivo]).send({ error: res.mensaje });
     const inv = getInvoice(id)!;
     // Junto a la sesión (que caduca a las 24 h), el enlace permanente: es el que
-    // conviene enviar al cliente, y el que lleva el correo de la factura.
-    const enlace = asegurarTokenPago(inv);
+    // conviene enviar al cliente, y el que lleva el correo de la factura. Sin
+    // raíz pública no hay enlace que el cliente pueda abrir.
+    const enlace = publica ? asegurarTokenPago(inv) : null;
     if (enlace?.creado) auditar('invoice_pay_link_created', inv.number ?? id);
     return {
       url: res.url,
       invoice: publicInvoice(inv),
-      payUrl: enlace ? urlEnlacePago(base, enlace.token) : null,
+      payUrl: publica && enlace ? urlEnlacePago(publica, enlace.token) : null,
       ...(res.reutilizada ? { reused: true } : {}),
     };
   });
@@ -1733,11 +1812,17 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
     const inv = getInvoice(id);
     if (!inv) return reply.code(404).send({ error: 'Factura no encontrada' });
     if (!getStripeSecretKey()) return reply.code(400).send({ error: 'Configura primero la clave de Stripe en Contabilidad.' });
+    // La misma raíz que el correo: por un túnel (`localhost`) o una IP, el
+    // enlace copiado no lo podría abrir el cliente.
+    const base = baseUrlPublica(req);
+    if (!base) {
+      return reply.code(400).send({ error: 'El panel no tiene una dirección pública para el enlace. Define SKYWAY_DOMAIN o entra en el panel por su dominio.' });
+    }
     // Un borrador no tiene enlace: abrirlo lo emitiría (ver `asegurarTokenPago`).
     const enlace = asegurarTokenPago(inv);
     if (!enlace) return reply.code(409).send({ error: 'Emite la factura antes de compartir su enlace de pago.' });
     if (enlace.creado) audit(req, 'invoice_pay_link_created', { type: 'invoice', id, detail: inv.number ?? id });
-    return { url: urlEnlacePago(panelBaseUrl(req), enlace.token), created: enlace.creado };
+    return { url: urlEnlacePago(base, enlace.token), created: enlace.creado };
   });
 
   // Revoca el enlace público: deja de funcionar en el acto, y el próximo envío
@@ -1747,7 +1832,13 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
     const inv = getInvoice(id);
     if (!inv) return reply.code(404).send({ error: 'Factura no encontrada' });
     const revoked = revocarTokenPago(id);
-    if (revoked) audit(req, 'invoice_pay_link_revoked', { type: 'invoice', id, detail: inv.number ?? id });
+    if (revoked) {
+      audit(req, 'invoice_pay_link_revoked', { type: 'invoice', id, detail: inv.number ?? id });
+      // Si se revoca porque el enlace se ha filtrado, la pestaña de pago que se
+      // abrió con él tampoco debe seguir sirviendo; además volvería a una página
+      // que ya no existe.
+      cerrarSesionStripe(inv.stripe_session_id, inv.number ?? id, 'enlace de pago revocado');
+    }
     return { ok: true, revoked };
   });
 }

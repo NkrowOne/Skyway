@@ -7,6 +7,8 @@
  * ve el cliente y qué enlace lleva el correo.
  */
 import type { FastifyInstance } from 'fastify';
+import fs from 'fs';
+import path from 'path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 const m = vi.hoisted(() => ({ correos: [] as { to: string; subject: string; text: string }[] }));
@@ -27,6 +29,7 @@ import {
   createWorkspaceRow,
   getInvoice,
   getInvoicePayLink,
+  getSetting,
   initDb,
   insertApiToken,
   listAudit,
@@ -35,9 +38,10 @@ import {
   recordPlanChange,
   setInvoicePayLink,
   setSetting,
+  updateInvoice,
   updateWorkspace,
 } from '../src/db';
-import { hashTokenPago } from '../src/enlacepago';
+import { FICHERO_CLAVE_ENLACES, hashTokenPago, urlSinTokenPago } from '../src/enlacepago';
 import { markInvoicePaidByStripeSession } from '../src/routes/billing';
 import { hashPassword, randomToken } from '../src/util';
 
@@ -53,6 +57,8 @@ const STRIPE = 'https://api.stripe.com/v1/checkout/sessions';
 interface SesionFalsa {
   id: string;
   status: 'open' | 'complete' | 'expired';
+  /** Por defecto, `paid` si está completa y `unpaid` si no (SEPA: completa y `unpaid`). */
+  paymentStatus?: string;
   url: string;
   params: URLSearchParams;
 }
@@ -63,6 +69,8 @@ const stripe = {
   consultas: [] as string[],
   caducadas: [] as string[],
   caido: false,
+  /** Stripe rechaza la creación (4xx), como con un importe por debajo del mínimo. */
+  rechazo: false,
   /** Si existe, la creación espera a que se resuelva: sirve para probar el cerrojo. */
   pausa: null as Promise<void> | null,
   /** Avisa cuando llega una petición de creación (antes de la pausa). */
@@ -80,6 +88,7 @@ async function fetchFalso(input: string | URL | Request, init?: RequestInit): Pr
   const metodo = init?.method ?? 'GET';
   const resto = url.slice(STRIPE.length);
   if (metodo === 'POST' && resto === '') {
+    if (stripe.rechazo) return respuesta(400, { error: { message: 'Amount must convert to at least 50 cents.' } });
     stripe.alCrear?.();
     if (stripe.pausa) await stripe.pausa;
     const id = `cs_test_${stripe.creadas.length + 1}`;
@@ -102,7 +111,13 @@ async function fetchFalso(input: string | URL | Request, init?: RequestInit): Pr
     stripe.consultas.push(consulta[1]);
     const s = stripe.sesiones.get(consulta[1]);
     if (!s) return respuesta(404, { error: { message: 'No such checkout.session' } });
-    return respuesta(200, { id: s.id, status: s.status, url: s.status === 'open' ? s.url : null });
+    return respuesta(200, {
+      id: s.id,
+      status: s.status,
+      url: s.status === 'open' ? s.url : null,
+      payment_status: s.paymentStatus ?? (s.status === 'complete' ? 'paid' : 'unpaid'),
+      success_url: s.params.get('success_url'),
+    });
   }
   throw new Error(`llamada a Stripe inesperada en la prueba: ${metodo} ${url}`);
 }
@@ -555,5 +570,157 @@ describe('correo automático de la factura', () => {
     expect(r.statusCode).toBe(303);
     expect(stripe.creadas.at(-1)!.params.get('metadata[invoiceId]')).toBe(emitida.id);
     expect(stripe.creadas.at(-1)!.params.get('line_items[0][price_data][unit_amount]')).toBe(String(emitida.total_cents));
+  });
+});
+
+describe('enlace público de pago: revisión adversarial', () => {
+  it('pagada en Stripe y aún sin confirmar: no se crea otra sesión y el panel recibe 409', async () => {
+    const f = await facturaEmitida(5200);
+    const t = await enlaceDelPanel(f.id);
+    expect((await abrir(`/pagar/${t}`)).statusCode).toBe(303);
+    const sesion = stripe.creadas.at(-1)!;
+    // Un método diferido (SEPA) deja la sesión completa y sin liquidar durante días.
+    sesion.status = 'complete';
+    sesion.paymentStatus = 'unpaid';
+    const creadas = stripe.creadas.length;
+    const r = await abrir(`/pagar/${t}`);
+    expect(r.statusCode).toBe(200);
+    expect(r.body).toContain('Pago recibido');
+    expect(r.body, 'sin invitar a pagar otra vez').not.toContain('Pagar con tarjeta');
+    const panel = await call('POST', `/api/invoices/${f.id}/stripe-link`);
+    expect(panel.status).toBe(409);
+    expect(panel.json.error).toMatch(/pendiente de confirmación/);
+    // El botón de la página de vuelta tampoco lleva a pagar dos veces.
+    expect((await abrir(`/pagar/${t}?estado=pagado`)).statusCode).toBe(200);
+    expect((await abrir(`/pagar/${t}`)).body).toContain('Pago recibido');
+    expect(stripe.creadas).toHaveLength(creadas);
+  });
+
+  it('abrir el enlace no cambia el método de pago, y un cobro tras marcarla pagada a mano avisa de duplicado', async () => {
+    let r = await call('POST', `/api/workspaces/${wsId}/invoices`, { lines: [{ label: 'Servicio', unitCents: 6100, taxRate: 21 }], ...periodo() });
+    expect(r.status).toBe(201);
+    const id: string = r.json.invoice.id;
+    r = await call('PATCH', `/api/invoices/${id}`, { status: 'issued', paymentMethod: 'bank_transfer' });
+    expect(r.status).toBe(200);
+    const t = await enlaceDelPanel(id);
+    expect((await abrir(`/pagar/${t}`)).statusCode).toBe(303);
+    expect(getInvoice(id)!.payment_method, 'una vista previa o un antivirus no deciden el método').toBe('bank_transfer');
+    r = await call('PATCH', `/api/invoices/${id}`, { status: 'paid' });
+    expect(r.status).toBe(200);
+    const sesion = stripe.creadas.at(-1)!;
+    const cobro = markInvoicePaidByStripeSession({ id: sesion.id, metadata: { invoiceId: id }, amount_total: getInvoice(id)!.total_cents, currency: 'eur' });
+    expect(cobro.result, 'no se toma por un reenvío del webhook').toBe('cobro_duplicado');
+  });
+
+  it('revocar cierra la sesión abierta, y el enlace nuevo no reutiliza una sesión que vuelve al revocado', async () => {
+    const f = await facturaEmitida(5300);
+    const t1 = await enlaceDelPanel(f.id);
+    expect((await abrir(`/pagar/${t1}`)).statusCode).toBe(303);
+    const s1 = stripe.creadas.at(-1)!;
+    expect((await call('DELETE', `/api/invoices/${f.id}/pay-link`)).json.revoked).toBe(true);
+    await vi.waitFor(() => expect(stripe.caducadas).toContain(s1.id));
+    // Aunque Stripe no la hubiera cerrado, la sesión vuelve al enlace revocado.
+    s1.status = 'open';
+    const t2 = await enlaceDelPanel(f.id);
+    const r = await abrir(`/pagar/${t2}`);
+    expect(r.statusCode).toBe(303);
+    const s2 = stripe.creadas.at(-1)!;
+    expect(s2.id).not.toBe(s1.id);
+    expect(r.headers.location).toBe(s2.url);
+    expect(s2.params.get('success_url')).toBe(`https://panel.ejemplo.test/pagar/${t2}?estado=pagado`);
+    expect(listAudit({ action: 'invoice_stripe_link_replaced' }).some((a) => a.target_id === f.id)).toBe(true);
+  });
+
+  it('una sesión de antes de los enlaces (vuelve al panel) se sustituye en vez de reutilizarse', async () => {
+    const f = await facturaEmitida(5400);
+    const legado: SesionFalsa = {
+      id: 'cs_test_legado',
+      status: 'open',
+      url: 'https://checkout.stripe.com/c/pay/cs_test_legado',
+      params: new URLSearchParams({ success_url: `https://panel.ejemplo.test/workspaces/${wsId}?paid=1` }),
+    };
+    stripe.sesiones.set(legado.id, legado);
+    updateInvoice(f.id, { stripe_session_id: legado.id, stripe_url: legado.url });
+    const t = await enlaceDelPanel(f.id);
+    const r = await abrir(`/pagar/${t}`);
+    expect(r.statusCode).toBe(303);
+    expect(r.headers.location).not.toBe(legado.url);
+    await vi.waitFor(() => expect(stripe.caducadas).toContain(legado.id));
+  });
+
+  it('abonada por una rectificativa: página propia, 409 en el panel, correo sin enlace y la sesión abierta se cierra', async () => {
+    const f = await facturaEmitida(5500);
+    const t = await enlaceDelPanel(f.id);
+    expect((await abrir(`/pagar/${t}`)).statusCode).toBe(303);
+    const sesion = stripe.creadas.at(-1)!;
+    let r = await call('POST', `/api/invoices/${f.id}/rectify`, { reason: 'Anulación por error en el importe' });
+    expect(r.status, JSON.stringify(r.json)).toBe(201);
+    const rect = r.json.invoice;
+    // En borrador la rectificativa aún no abona nada.
+    expect((await abrir(`/pagar/${t}`)).statusCode).toBe(303);
+    r = await call('PATCH', `/api/invoices/${rect.id}`, { status: 'issued' });
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    await vi.waitFor(() => expect(stripe.caducadas).toContain(sesion.id));
+
+    const creadas = stripe.creadas.length;
+    const p = await abrir(`/pagar/${t}`);
+    expect(p.statusCode).toBe(200);
+    expect(p.body).toContain('Factura rectificada');
+    expect(p.body, 'sin datos de la rectificativa, que es otra factura').not.toContain(r.json.invoice.number);
+    expect(stripe.creadas).toHaveLength(creadas);
+    const panel = await call('POST', `/api/invoices/${f.id}/stripe-link`);
+    expect(panel.status).toBe(409);
+    const correo = await call('POST', `/api/invoices/${f.id}/email`);
+    expect(correo.status).toBe(200);
+    expect(m.correos.at(-1)!.text).not.toMatch(ENLACE_RE);
+  });
+
+  it('un rechazo de Stripe (4xx) no se presenta como un fallo de conexión ni invita a reintentar', async () => {
+    const f = await facturaEmitida(5600);
+    const t = await enlaceDelPanel(f.id);
+    stripe.rechazo = true;
+    try {
+      const r = await abrir(`/pagar/${t}`);
+      expect(r.statusCode).toBe(503);
+      expect(r.body).toContain('Pago con tarjeta no disponible');
+      expect(r.body).not.toContain('No se ha podido conectar');
+      expect(r.body).not.toContain(`href="/pagar/${t}"`);
+    } finally {
+      stripe.rechazo = false;
+    }
+    expect(listWorkspaceAlerts(wsId).some((a) => a.type === 'invoice_pay_link_failed' && a.message.includes('at least 50 cents'))).toBe(true);
+  });
+
+  it('el token no se escribe en el registro de peticiones', () => {
+    const t = 'ab'.repeat(32);
+    expect(urlSinTokenPago(`/pagar/${t}`)).toBe('/pagar/…');
+    expect(urlSinTokenPago(`/pagar/${t}?estado=pagado`)).toBe('/pagar/…?estado=pagado');
+    expect(urlSinTokenPago('/api/invoices/x/pay-link')).toBe('/api/invoices/x/pay-link');
+  });
+
+  it('el secreto de los enlaces vive en un fichero propio, fuera de la base', () => {
+    const ruta = path.join(process.env.DATA_DIR!, FICHERO_CLAVE_ENLACES);
+    expect(fs.statSync(ruta).mode & 0o777).toBe(0o600);
+    expect(getSetting('payLinkKey')).toBeNull();
+  });
+
+  it('sin dominio público: el panel no da un enlace que el cliente no podría abrir y el correo deja lo de antes', async () => {
+    const f = await facturaEmitida(5700);
+    const dominio = process.env.SKYWAY_DOMAIN;
+    delete process.env.SKYWAY_DOMAIN;
+    try {
+      const enlace = await call('POST', `/api/invoices/${f.id}/pay-link`);
+      expect(enlace.status).toBe(400);
+      expect(enlace.json.error).toMatch(/SKYWAY_DOMAIN/);
+      const cobrar = await call('POST', `/api/invoices/${f.id}/stripe-link`);
+      expect(cobrar.status, JSON.stringify(cobrar.json)).toBe(200);
+      expect(cobrar.json.payUrl).toBeNull();
+      const correo = await call('POST', `/api/invoices/${f.id}/email`);
+      expect(correo.status).toBe(200);
+      expect(m.correos.at(-1)!.text).toContain(cobrar.json.url);
+      expect(listAudit({ action: 'invoice_pay_link_unavailable' }).some((a) => a.target_id === f.id)).toBe(true);
+    } finally {
+      process.env.SKYWAY_DOMAIN = dominio;
+    }
   });
 });

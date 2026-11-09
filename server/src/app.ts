@@ -45,6 +45,7 @@ import { mailwayRoutes } from './routes/mailway';
 import { cloudflareRoutes } from './routes/cloudflare';
 import { domainMigrationRoutes } from './routes/domainmigrations';
 import { superaTopeElementos } from './topecuerpo';
+import { urlSinTokenPago } from './enlacepago';
 
 const METODOS_SEGUROS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
@@ -122,9 +123,26 @@ function esErrorInterno(err: unknown): boolean {
   return typeof e?.errno === 'number';
 }
 
+/**
+ * Lo que el registro de Fastify anota de cada petición: lo mismo que su
+ * serializador por defecto, salvo el token del enlace público de pago, que va en
+ * la ruta (`/pagar/<token>`) y quedaría en claro en los logs.
+ */
+function serializarPeticion(req: FastifyRequest) {
+  const version = req.headers['accept-version'];
+  return {
+    method: req.method,
+    url: urlSinTokenPago(req.url),
+    version: Array.isArray(version) ? version[0] : version,
+    host: req.host,
+    remoteAddress: req.ip,
+    remotePort: req.socket?.remotePort,
+  };
+}
+
 export function buildApp(): FastifyInstance {
   const app = Fastify({
-    logger: { level: process.env.LOG_LEVEL || 'info' },
+    logger: { level: process.env.LOG_LEVEL || 'info', serializers: { req: serializarPeticion } },
     // Solo se confía en cabeceras de proxy de rangos privados/loopback por
     // defecto (ver config.trustProxy): impide falsear la IP del cliente. Con
     // Fastify 5 (desde 5.8.3), X-Forwarded-Host y X-Forwarded-Proto también

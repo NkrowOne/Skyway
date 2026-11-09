@@ -703,7 +703,7 @@ del servicio, **lo que está saliendo va por encima del activo**.
 | `workspace_plan_periods` | historial de plan **por tramos**: `id`, `workspace_id`, `plan_id` (null = sin plan en ese intervalo), `from_ms`, `to_ms` (null = tramo vigente), y una copia congelada de la tarifa (`plan_name`, `price_cents`, `currency`, `interval`) que solo se usa si el plan se borró del catálogo. Se abre en el alta y se parte en cada cambio de plan, en la misma transacción que `workspaces.plan_id`: el ciclo factura **cada tramo a su precio**, prorrateado por los días servidos |
 | `workspace_invoices` | `id`, `workspace_id`, `series_id` (FK `invoice_series`), `number` (nº correlativo por serie/ejercicio, p. ej. `FRA-2026-0001`), `invoice_type` (`normal`/`simplificada`/`rectificativa`), `rectifies_invoice_id`+`rectify_reason` (si rectificativa), `period_start/end`, `operation_date` (fecha de operación si difiere de la expedición), `status` (`draft`/`issued`/`paid`/`void`), `currency`, `subtotal_cents` (base imponible), `tax_cents`, `tax_rate` (tipo por defecto), `tax_breakdown` (JSON: bases y cuotas **por tipo de IVA**), `vat_regime` (general/exento/inversión SP…), `legal_mentions`, `irpf_rate`+`irpf_cents` (retención), `total_cents`, `lines` (JSON, con `taxRate` por línea), `plan_name`, `issuer_snapshot` (datos fiscales del emisor congelados al emitir), `client_name`+`client_tax_id`+`client_address` (destinatario congelado al emitir), `payment_method` (`bank_transfer`/`stripe`/`card`/`cash`/`other`), `stripe_session_id`, `stripe_url`, `issued_at`, `paid_at`, `locked` (1 = emitida, inmutable), `notes` |
 | `invoice_series` | `id`, `code`, `year` (ejercicio; reinicio anual), `prefix`, `padding`, `next_seq` (incremento atómico al emitir), `kind` (`ordinaria`/`rectificativa`/`simplificada`), `UNIQUE(code, year)`. Sustituye al contador global; las rectificativas usan serie propia |
-| `invoice_pay_links` | enlace público de pago de una factura (§7.2.1): `invoice_id` (PK, FK con borrado en cascada), `token_hash` (sha256 del token, único: es lo único por lo que se busca), `nonce` (con el secreto `payLinkKey` de `settings`, el servidor recalcula el mismo token para reenviarlo), `created_at`. El token nunca se guarda en claro; tabla aparte para que ninguna lectura de facturas lo arrastre |
+| `invoice_pay_links` | enlace público de pago de una factura (§7.2.1): `invoice_id` (PK, FK con borrado en cascada), `token_hash` (sha256 del token, único: es lo único por lo que se busca), `nonce` (con el secreto del fichero `DATA_DIR/enlaces-pago.key`, fuera de la base, el servidor recalcula el mismo token para reenviarlo), `created_at`. El token nunca se guarda en claro; tabla aparte para que ninguna lectura de facturas lo arrastre |
 | `catalog_products` | catálogo multimodular: `id`, `name`, `slug`, `category` (`web`/`ia`/`app`/`hosting`/`bbdd`/`dominio`/`soporte`/`custom`), `billing_model` (`flat_one_off`/`subscription`/`metered`/`tiered`), `price_cents`, `currency`, `interval`, `unit`, `unit_size` (nº de unidades del medidor por unidad de precio; p. ej. 1000000 → precio por 1M tokens con céntimos enteros), `meter` (medidor de uso), `tier_mode` (`graduated`/`volume`), `tax_rate`, `irpf_rate`, `tax_exempt`, `modules` (JSON), `description`, `active`, `archived` |
 | `catalog_price_tiers` | tramos de precio de un producto `tiered`: `id`, `product_id`, `up_to` (null = último), `unit_cents`, `flat_cents`, `sort` |
 | `workspace_subscriptions` | suscripciones/add-ons por cuenta: `id`, `workspace_id`, `product_id`, `service_id` (opcional), `qty`, `unit_cents` (congelado al contratar; null = sigue catálogo), `currency`, `interval`, `status` (`active`/`paused`/`cancelled`), `anchor_day`, `started_at`, `cancelled_at` |
@@ -716,7 +716,7 @@ del servicio, **lo que está saliendo va por encima del activo**.
 | `ai_model_prices` | coste del operador por modelo y margen objetivo: `model` (PK), `cost_micros_in`/`cost_micros_cache`/`cost_micros_out` (micro-céntimos por millón de tokens), `margin_pct` (margen objetivo s/ venta, guía el PVP sugerido), `currency`, `source` (`auto` = lo mantiene la sincronización con la tarifa de Google, `manual` = fijado por el operador y respetado), `synced_at`, `updated_at`. Informativo; no interviene en la factura |
 | `passkeys` | credencial WebAuthn: `credential_id`, `public_key`, `counter`, `rp_id`… |
 | `api_tokens` | `token_hash` (sha256 hex), `prefix`, `expires_at` — tokens `sky_…` |
-| `settings` | pares clave/valor: `jwtSecret`, `githubToken`, `rootDomain`, `letsencryptEmail`, `serverIp`, `serverIpv6` (opcional: sin ella, cualquier AAAA de un dominio cuenta como ajeno), canales de alerta, `importReport:<projectId>`, `billingProfile` (perfil fiscal del emisor, JSON: razón social, NIF, domicilio, IVA por defecto, `defaultIrpfRate`, `sifMode` veri/no-veri, IBAN…), claves de Stripe (`stripeSecretKey`, `stripeWebhookSecret`, `stripePublishableKey` — las secretas nunca se devuelven), `payLinkKey` (secreto con el que se calculan los tokens de los enlaces públicos de pago; nunca se devuelve), gateway de IA (`ai.geminiApiKey` — clave del operador, nunca devuelta; `ai.allowedModels`, `ai.geminiBaseUrl`), autoactualización de la tarifa de IA (`ai.prices.auto` por defecto activada, `ai.prices.url` fuente propia, `ai.prices.currency` por defecto EUR, `ai.prices.fx`/`ai.prices.fxAt` cambio USD→moneda, `ai.prices.defaultMarginPct`, `ai.prices.autoAllow`, `ai.prices.lastAt`/`ai.prices.last` resultado del último pase), dunning (`billing.dunningGraceDays` por defecto 14, `billing.dunningCancelDays` por defecto 44), Mailway (`mailway.baseUrl`, `mailway.serviceId`, `mailway.token` — token de gestión, nunca devuelto —, `mailway.traefikToken` y `mailway.traefikCache`, última configuración de Traefik saneada; `mailway.defaultPlanId`, plan con el que se crea el cliente si no lo elige un administrador; `mailway.hosts`, hosts públicos que anuncia la instancia; `mailway.containerHosts`, hosts de las reglas `Host(…)` de las etiquetas de Traefik de los contenedores `mailway-mail`, `mailway-webmail` y `mailway-panel`; `mailway.previousHosts`, nombres que fueron de la instancia (`[{host, lastSeen}]`) y siguen reservados hasta que el administrador los libera; `mailway.whitelabelHosts`, última lista buena de nombres de marca blanca de todos los clientes en cualquier estado, reservados para los servicios; `mailway.previousClient:<projectId>`, cliente que tenía el proyecto antes de desactivar el correo)… |
+| `settings` | pares clave/valor: `jwtSecret`, `githubToken`, `rootDomain`, `letsencryptEmail`, `serverIp`, `serverIpv6` (opcional: sin ella, cualquier AAAA de un dominio cuenta como ajeno), canales de alerta, `importReport:<projectId>`, `billingProfile` (perfil fiscal del emisor, JSON: razón social, NIF, domicilio, IVA por defecto, `defaultIrpfRate`, `sifMode` veri/no-veri, IBAN…), claves de Stripe (`stripeSecretKey`, `stripeWebhookSecret`, `stripePublishableKey` — las secretas nunca se devuelven), gateway de IA (`ai.geminiApiKey` — clave del operador, nunca devuelta; `ai.allowedModels`, `ai.geminiBaseUrl`), autoactualización de la tarifa de IA (`ai.prices.auto` por defecto activada, `ai.prices.url` fuente propia, `ai.prices.currency` por defecto EUR, `ai.prices.fx`/`ai.prices.fxAt` cambio USD→moneda, `ai.prices.defaultMarginPct`, `ai.prices.autoAllow`, `ai.prices.lastAt`/`ai.prices.last` resultado del último pase), dunning (`billing.dunningGraceDays` por defecto 14, `billing.dunningCancelDays` por defecto 44), Mailway (`mailway.baseUrl`, `mailway.serviceId`, `mailway.token` — token de gestión, nunca devuelto —, `mailway.traefikToken` y `mailway.traefikCache`, última configuración de Traefik saneada; `mailway.defaultPlanId`, plan con el que se crea el cliente si no lo elige un administrador; `mailway.hosts`, hosts públicos que anuncia la instancia; `mailway.containerHosts`, hosts de las reglas `Host(…)` de las etiquetas de Traefik de los contenedores `mailway-mail`, `mailway-webmail` y `mailway-panel`; `mailway.previousHosts`, nombres que fueron de la instancia (`[{host, lastSeen}]`) y siguen reservados hasta que el administrador los libera; `mailway.whitelabelHosts`, última lista buena de nombres de marca blanca de todos los clientes en cualquier estado, reservados para los servicios; `mailway.previousClient:<projectId>`, cliente que tenía el proyecto antes de desactivar el correo)… |
 | `projects` | `id`, `name`, `slug` (único), `workspace_id` (cuenta de cliente), `client` (reflejo denormalizado del nombre del workspace para la UI), página de estado (`status_token`, `status_enabled`, `status_notice`) |
 | `services` | `id`, `project_id`, `name`, `slug`, `type` (`git`/`database`/`image`), `config` (JSON), `config_rev` (revisión de la configuración: sube con cada cambio guardado que exige redesplegar) |
 | `env_vars` | `(service_id, key)` → `value` — variables por servicio |
@@ -967,6 +967,9 @@ huérfanos).
   minutos por IP (después, 429), `Cache-Control: no-store`, `noindex` y la CSP
   general (sin scripts). Un `HEAD` no crea sesiones ni emite nada. La creación de
   sesiones de Checkout se audita con el actor «enlace público de pago» y la IP.
+  El token no aparece en el registro de peticiones (`/pagar/…`) y el secreto
+  con el que el servidor lo recalcula está en `DATA_DIR/enlaces-pago.key`,
+  fuera de la base.
 - **Consola de BBDD y explorador de archivos**: todo corre **dentro** del
   contenedor con exec; las consultas/rutas viajan como variables de entorno del
   exec, **nunca interpoladas en el shell**. La consola tiene modo solo-lectura
@@ -2301,12 +2304,12 @@ Niveles: **manage** = admin o propietario del workspace del recurso; **admin** =
 | GET | `/workspaces/:id/invoices` | manage | facturas de la cuenta (con `due_at`, el vencimiento congelado, y `pay_link`, si tiene enlace público de pago; nunca el token ni su hash) + datos del emisor (perfil fiscal), del cliente y si Stripe está activo |
 | POST | `/workspaces/:id/invoices/generate` | admin | genera la factura del ciclo (plan + uso) con el IVA del perfil |
 | POST | `/workspaces/:id/invoices` | admin | crea un borrador a medida (`{lines[], taxRate?, irpfRate?, vatRegime?, operationDate?, notes?}`); cada línea admite su propio `taxRate`; 400 si `periodEnd ≤ periodStart` |
-| PATCH | `/invoices/:id` | admin | edita el borrador o transiciona el estado. **El contenido fiscal solo es editable en borrador**; una factura emitida es inmutable (409). Al emitir (`issued`/`paid`) congela emisor y destinatario, asigna nº de serie del ejercicio y bloquea (`locked`). Transiciones válidas: `draft→issued→paid`, `→void`; nunca vuelve a borrador. Anular una factura con rectificativa viva → 409 (sería un doble abono). Al anular, el enlace público de pago se **rota** (el del correo deja de valer); al anular o marcar pagada, la sesión de Checkout que siguiera abierta se caduca en Stripe (best-effort, `invoice_stripe_session_expired`) |
+| PATCH | `/invoices/:id` | admin | edita el borrador o transiciona el estado. **El contenido fiscal solo es editable en borrador**; una factura emitida es inmutable (409). Al emitir (`issued`/`paid`) congela emisor y destinatario, asigna nº de serie del ejercicio y bloquea (`locked`). Transiciones válidas: `draft→issued→paid`, `→void`; nunca vuelve a borrador. Anular una factura con rectificativa viva → 409 (sería un doble abono). Al anular, el enlace público de pago se **rota** (el del correo deja de valer); al anular o marcar pagada, la sesión de Checkout que siguiera abierta se caduca en Stripe (best-effort, `invoice_stripe_session_expired`), y al emitir una rectificativa que abona la original, la de la original |
 | DELETE | `/invoices/:id` | admin | **solo borradores**; una factura emitida se conserva (409): debe anularse o rectificarse, nunca borrarse |
 | POST | `/invoices/:id/rectify` | admin | crea una **factura rectificativa** (borrador, serie REC) que corrige una emitida (`{reason, lines?, operationDate?}`); sin `lines` es anulación total, con `lines` correctas factura la diferencia; enlaza por `rectifies_invoice_id` |
-| POST | `/invoices/:id/stripe-link` | admin | emite la factura (alta antes del cobro) y crea/reutiliza la sesión de Stripe Checkout (`url`); 400 si el total es ≤ 0 (antes de emitir), 409 si ya se está generando; la sesión guardada se renueva si Stripe la da por caducada (`reused: true` solo si sigue abierta). Devuelve además `payUrl`, el enlace público y permanente de la factura, y la vuelta de Stripe va a su página (`?estado=pagado` / `?estado=cancelado`), no al panel. Misma lógica y mismo cerrojo que el enlace público (`cobrarConStripe`) |
-| POST | `/invoices/:id/pay-link` | admin | enlace público y permanente de pago (`{url, created}`): lo crea la primera vez y después devuelve siempre el mismo. 409 en un borrador (abrirlo lo emitiría), 400 sin Stripe configurado. Auditado como `invoice_pay_link_created` al crearse |
-| DELETE | `/invoices/:id/pay-link` | admin | revoca el enlace (`{ok, revoked}`): deja de funcionar en el acto y el próximo envío de la factura lleva uno nuevo. Auditado como `invoice_pay_link_revoked` |
+| POST | `/invoices/:id/stripe-link` | admin | emite la factura (alta antes del cobro) y crea/reutiliza la sesión de Stripe Checkout (`url`); 400 si el total es ≤ 0 (antes de emitir), 409 si ya se está generando, si el pago ya está completado en Stripe a falta de confirmación o si una rectificativa la abona; 502 si Stripe falla o la rechaza. La sesión guardada se renueva si Stripe la da por caducada o si vuelve a otro enlace (`reused: true` solo si se reutiliza). Devuelve además `payUrl`, el enlace público y permanente de la factura (`null` sin dominio público), y la vuelta de Stripe va a su página (`?estado=pagado` / `?estado=cancelado`), no al panel. Ya no fija `payment_method`: lo hace el webhook al cobrar. Misma lógica y mismo cerrojo que el enlace público (`cobrarConStripe`) |
+| POST | `/invoices/:id/pay-link` | admin | enlace público y permanente de pago (`{url, created}`): lo crea la primera vez y después devuelve siempre el mismo. 409 en un borrador (abrirlo lo emitiría); 400 sin Stripe configurado o sin dominio público (`SKYWAY_DOMAIN`, o el panel abierto por su dominio: por un túnel el cliente no podría abrirlo). Auditado como `invoice_pay_link_created` al crearse |
+| DELETE | `/invoices/:id/pay-link` | admin | revoca el enlace (`{ok, revoked}`): deja de funcionar en el acto, la sesión de Checkout abierta se cierra en Stripe y el próximo envío de la factura lleva uno nuevo. Auditado como `invoice_pay_link_revoked` |
 
 **Motor de factura conforme (RD 1619/2012).** El total se recomputa siempre en
 servidor: la cuota de IVA se agrupa por tipo y se redondea **una vez por base de
@@ -2339,36 +2342,59 @@ caduca a las 24 h. Al abrirlo:
 - **Pendiente** (`issued`, o borrador, que se emite antes como en «Cobrar»):
   reutiliza la sesión de Checkout abierta o crea otra (la misma lógica y el
   mismo cerrojo que `stripe-link`; dos aperturas a la vez esperan a la misma
-  sesión) y redirige a Stripe con 303. La vuelta de Stripe (`?estado=pagado` /
-  `?estado=cancelado`) enseña una página y no redirige otra vez a pagar.
+  sesión) y redirige a Stripe con 303. Solo se reutiliza una sesión que vuelve a
+  este enlace: la creada con un enlace revocado, antes de los enlaces públicos
+  (volvía al panel) o desde otra raíz se cierra en Stripe y se crea otra
+  (`invoice_stripe_link_replaced`). Crear la sesión no cambia el método de pago
+  de la factura: lo fija el webhook al cobrar. La vuelta de Stripe
+  (`?estado=pagado` / `?estado=cancelado`) enseña una página y no redirige otra
+  vez a pagar.
+- **Pago ya completado en Stripe y sin confirmar** (el webhook tarda, no está
+  configurado o el método liquida después, como SEPA): página «Pago recibido»,
+  sin crear otra sesión ni ofrecer pagar de nuevo; «Cobrar» del panel → 409.
 - **Pagada** o **anulada**: página pública mínima que lo dice, con número,
   importe, fechas y datos del emisor (los congelados al emitir), sin nada del
   panel ni del destinatario. Sin importe pendiente (un abono), lo mismo.
-- **Pago no disponible**: sin Stripe configurado, o con la emisión bloqueada
-  por un dato fiscal, 503; si Stripe no responde, 502. La página ofrece la
-  transferencia (IBAN del perfil) y se avisa al operador con una alerta de la
-  cuenta (`invoice_pay_link_failed`).
+- **Abonada por una rectificativa** (emitida y con total negativo): página
+  «Factura rectificada», sin cobro por el importe original; «Cobrar» → 409 y el
+  correo de la factura ya no lleva enlace. Al emitir esa rectificativa, la
+  sesión de Checkout que la original tuviera abierta se cierra en Stripe. Una
+  rectificativa de importe cero o positivo no la bloquea.
+- **Pago no disponible**: sin Stripe configurado, con la emisión bloqueada por
+  un dato fiscal o con un rechazo de Stripe (4xx: importe por debajo del mínimo,
+  moneda no admitida, cuenta sin activar), 503 sin invitar a reintentar; si
+  Stripe no responde (red, 5xx, 429), 502 con «Volver a intentarlo». La página
+  ofrece la transferencia (IBAN del perfil) y se avisa al operador con una
+  alerta de la cuenta (`invoice_pay_link_failed`).
 - **Token inexistente, revocado o mal formado** (también `/pagar` y
   `/pagar/…/…`): la misma página 404.
 
 El token no se guarda: la base solo tiene su hash (`invoice_pay_links`), como
 los tokens de API. A diferencia de ellos, el servidor puede recalcularlo (HMAC
-del secreto `payLinkKey` con el id de la factura y un nonce propio), para que el
-reenvío del correo y el panel den **el mismo enlace** que el primer envío. Se
-crea al enviar el correo de una factura pendiente o desde el panel, nunca en un
-borrador (abrirlo lo emitiría, y una vista previa de un chat o el antivirus de
-un correo bastaría para numerarlo). Se **rota al anular** la factura y se
-**revoca** con `DELETE /invoices/:id/pay-link`. La raíz del enlace es
-`https://SKYWAY_DOMAIN` o, sin él, el dominio por el que se usa el panel; un
-túnel (`localhost`) o una IP no sirven, y entonces el correo sale sin enlace
+de un secreto propio con el id de la factura y un nonce propio), para que el
+reenvío del correo y el panel den **el mismo enlace** que el primer envío. El
+secreto está en el fichero `DATA_DIR/enlaces-pago.key` (permisos 0600), no en
+la base: una copia de `skyway.db` no basta para recalcular ningún enlace. Si el
+fichero se pierde, los enlaces enviados siguen abriendo (se buscan por el hash)
+y el siguiente envío de cada factura lleva uno nuevo. El registro de peticiones
+del servidor anota `/pagar/…` sin el token. El enlace se crea al enviar el
+correo de una factura pendiente o desde el panel, nunca en un borrador (abrirlo
+lo emitiría, y una vista previa de un chat o el antivirus de un correo
+bastaría para numerarlo). Se **rota al anular** la factura (el enlace del
+correo deja de funcionar: anular es también la salida cuando una factura se ha
+enviado a quien no debía) y se **revoca** con `DELETE /invoices/:id/pay-link`,
+que además cierra la sesión de Checkout abierta. La raíz del enlace, en el
+correo y en el panel, es `https://SKYWAY_DOMAIN` o, sin él, el dominio por el
+que se usa el panel; un túnel (`localhost`) o una IP no sirven: el panel no da
+enlace (400) y el correo conserva lo de antes, la sesión guardada si la hay
 (auditado como `invoice_pay_link_unavailable`). La facturación automática no
 tiene petición y solo usa `SKYWAY_DOMAIN`. Con Stripe sin configurar, el correo
 conserva el comportamiento anterior. Solo invita a pagar el correo de una
-factura pendiente con importe: el de una pagada o el de un abono no lleva
-enlace. No existe un ajuste de página de vuelta en el perfil de facturación:
-la vuelta de Stripe es siempre la página del enlace. En el panel, la vista de
-una factura emitida tiene, para el administrador y con Stripe configurado, el
-bloque «Enlace de pago» con «Copiar enlace» y «Revocar enlace».
+factura pendiente con importe: el de una pagada, una abonada o un abono no
+lleva enlace. No existe un ajuste de página de vuelta en el perfil de
+facturación: la vuelta de Stripe es siempre la página del enlace. En el panel,
+la vista de una factura emitida tiene, para el administrador y con Stripe
+configurado, el bloque «Enlace de pago» con «Copiar enlace» y «Revocar enlace».
 
 ### 7.2.1 Contabilidad de la empresa y facturación (nosotros como emisor)
 Perfil fiscal, resumen contable y cobros con Stripe. **Solo admin.** Las claves
@@ -2972,7 +2998,7 @@ desplegar: 409 `migration_services_pending`.
 | --- | --- | --- |
 | `PORT` | `4000` | puerto de la UI/API (un valor no numérico cae a 4000) |
 | `HOST` | `0.0.0.0` | interfaz de escucha |
-| `DATA_DIR` | `./data` | SQLite, builds y backups |
+| `DATA_DIR` | `./data` | SQLite, builds, backups y `enlaces-pago.key` (secreto de los enlaces públicos de pago; al mover el panel a otro servidor, cópialo junto a `skyway.db`) |
 | `WEB_DIST` | `web/dist` | web compilada a servir |
 | `JWT_SECRET` | generado | secreto de firma de sesiones (si no, se genera y persiste) |
 | `BUILD_CONCURRENCY` | núcleos − 1, en [2, 4] | builds simultáneos |
