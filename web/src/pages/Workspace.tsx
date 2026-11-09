@@ -1,6 +1,6 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useEffect, useId, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   ArrowLeft,
   ArrowRightLeft,
@@ -30,10 +30,12 @@ import { api } from '../api';
 import { COUNTRY_OPTIONS, DEFAULT_COUNTRY, countryName } from '../countries';
 import { Button, Chip, ConfirmModal, CopyButton, EditorBar, EmptyState, ErrorState, Field, Modal, NumberInput, Segmented, Skeleton, StatusBadge, Tabs, useToast } from '../components/ui';
 import { QuotaMeter } from '../components/QuotaMeter';
+import { VerifactuIncidencia, VerifactuMarca } from '../components/Verifactu';
 // Gráficos de la pestaña «Uso» (no es la pestaña por defecto): carga diferida.
 const UsageBars = lazy(() => import('../components/BillingCharts').then((m) => ({ default: m.UsageBars })));
 import {
   BillingProfile,
+  CausaRectificacion,
   Invoice,
   InvoicesResponse,
   Me,
@@ -919,14 +921,20 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
         ) : (
           data!.invoices.map((inv, i) => (
             <div key={inv.id} className={cx('flex flex-wrap items-center gap-3 px-4 py-3', i > 0 && 'border-t border-line')}>
-              <button onClick={() => setViewing(inv)} className="min-w-0 flex-1 text-left">
+              {/* Base propia (no `flex-1`, de base 0): en móvil las acciones bajan
+                  de línea en vez de estrechar el resumen hasta una palabra por línea. */}
+              <button onClick={() => setViewing(inv)} className="min-w-0 grow basis-56 text-left">
                 <div className="flex flex-wrap items-center gap-2">
                   {inv.number && <span className="font-mono text-xs text-subtle">{inv.number}</span>}
                   <span className="text-sm font-semibold tnum">{fmtMoney(inv.total_cents, inv.currency)}</span>
                   <StatusBadge tone={INV_TONE[inv.status]} label={INV_LABEL[inv.status]} dot={false} className="text-micro" />
+                  {/* La remisión a la AEAT es trámite del emisor: el cliente no
+                      puede subsanar nada (la ruta es de administrador) y su
+                      factura ya lleva el QR para cotejarla. */}
+                  {isAdmin && inv.verifactu && <VerifactuMarca v={inv.verifactu} />}
                 </div>
                 <p className="mt-0.5 text-xs text-subtle">
-                  {inv.invoice_type === 'rectificativa' ? 'Rectificativa · ' : ''}
+                  {inv.invoice_type === 'rectificativa' ? `Rectificativa${inv.rectify_code ? ` (${inv.rectify_code})` : ''} · ` : ''}
                   {fmtDate(inv.period_start)} – {fmtDate(inv.period_end)}
                   {/* !== 0: en una rectificativa el IVA y el IRPF son NEGATIVOS y
                       con «> 0» desaparecían de la línea. */}
@@ -997,6 +1005,9 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
                   )}
                 </div>
               )}
+              {/* Fuera del botón de la fila (no se anidan botones) y en su propia
+                  línea: el error de la AEAT es largo y lleva su acción. */}
+              {isAdmin && inv.verifactu && <VerifactuIncidencia invoiceId={inv.id} numero={inv.number} v={inv.verifactu} className="w-full" />}
             </div>
           ))
         )}
@@ -1051,19 +1062,38 @@ function FacturacionTab({ detail, isAdmin, onSaved }: { detail: Detail; isAdmin:
 }
 
 /**
+ * Causas de rectificación con las claves de VERI*FACTU (y del art. 80 de la Ley
+ * del IVA). La clave va al registro de la AEAT, así que cada una dice en qué
+ * caso se usa: elegirla mal es un dato fiscal incorrecto.
+ */
+const CAUSAS_RECTIFICACION: { key: CausaRectificacion; titulo: string; texto: string }[] = [
+  {
+    key: 'R1',
+    titulo: 'Descuentos, devoluciones u operaciones anuladas',
+    texto: 'Descuentos, devoluciones y operaciones anuladas o resueltas (art. 80.Uno, Dos y Seis de la Ley del IVA), o error fundado en derecho.',
+  },
+  { key: 'R2', titulo: 'Concurso de acreedores', texto: 'El cliente ha sido declarado en concurso de acreedores (art. 80.Tres de la Ley del IVA).' },
+  { key: 'R3', titulo: 'Créditos incobrables', texto: 'Créditos total o parcialmente incobrables (art. 80.Cuatro de la Ley del IVA).' },
+  { key: 'R4', titulo: 'Otros errores', texto: 'Cualquier otro error de la factura.' },
+];
+
+/**
  * Emite una factura rectificativa sobre una factura ya emitida (inmutable). Por
  * defecto anula la original por completo; si se corrigen los importes, el sistema
  * factura la diferencia (revierte la original y aplica las líneas correctas).
  */
 function RectifyModal({ invoice, onClose, onSaved }: { invoice: Invoice; onClose: () => void; onSaved: () => void }) {
   const toast = useToast();
+  const radioName = useId();
   const [reason, setReason] = useState('');
+  // R1 es también lo que aplica el servidor si no llega la causa.
+  const [cause, setCause] = useState<CausaRectificacion>('R1');
   const [correct, setCorrect] = useState(false);
   const [lines, setLines] = useState(invoice.lines.map((l) => ({ uid: lineUid(), label: l.label, qty: l.qty, unit: l.unitCents / 100, taxRate: l.taxRate ?? invoice.tax_rate, irpfRate: l.irpfRate ?? 0 })));
 
   const rectify = useMutation({
     mutationFn: () => {
-      const payload: Record<string, unknown> = { reason: reason.trim() };
+      const payload: Record<string, unknown> = { reason: reason.trim(), cause };
       if (correct) {
         payload.lines = lines
           .filter((l) => l.label.trim())
@@ -1083,6 +1113,42 @@ function RectifyModal({ invoice, onClose, onSaved }: { invoice: Invoice; onClose
         <p className="text-xs text-sub">
           La factura emitida es inmutable. Se creará una <strong>factura rectificativa</strong> (serie REC) enlazada a la original; se crea en borrador para que pueda revisarse antes de emitirla.
         </p>
+        <Field
+          label="Causa de la rectificación"
+          group
+          hint={
+            invoice.invoice_type === 'simplificada'
+              ? 'La factura original es simplificada: el registro de VERI*FACTU la identifica con la clave R5, la de las rectificativas de facturas simplificadas.'
+              : undefined
+          }
+        >
+          <div className="flex flex-col gap-1.5">
+            {CAUSAS_RECTIFICACION.map((c) => (
+              <label
+                key={c.key}
+                className={cx(
+                  'flex cursor-pointer items-start gap-2.5 rounded-lg border px-3 py-2 transition-colors',
+                  cause === c.key ? 'border-acc/50 bg-acc/[.08]' : 'border-line hover:border-line2',
+                )}
+              >
+                <input
+                  type="radio"
+                  name={radioName}
+                  value={c.key}
+                  checked={cause === c.key}
+                  onChange={() => setCause(c.key)}
+                  className="mt-0.5 h-4 w-4 shrink-0 accent-acc"
+                />
+                <span className="min-w-0">
+                  <span className="block text-sm font-medium">
+                    <span className="font-mono text-xs text-subtle">{c.key}</span> · {c.titulo}
+                  </span>
+                  <span className="mt-0.5 block text-xs leading-4 text-subtle">{c.texto}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+        </Field>
         <Field label="Motivo de la rectificación" hint="Obligatorio; se muestra en la factura">
           <input className="input" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Por ejemplo: error en el importe, descuento acordado, pedido cancelado" />
         </Field>
@@ -1255,6 +1321,7 @@ function EMPTY_INVOICE(workspaceId: string, currency: string): Invoice {
     lines: [{ label: '', kind: 'custom', qty: 1, unitCents: 0, amountCents: 0 }], plan_name: null,
     issuer_snapshot: null, client_name: null, client_tax_id: null, client_address: null,
     payment_method: null, stripe_url: null, issued_at: null, paid_at: null, locked: 0, notes: null, created_at: Date.now(),
+    rectify_code: null, verifactu: null,
   };
 }
 
@@ -1894,12 +1961,26 @@ function BillingSettings({ detail, onSaved }: { detail: Detail; onSaved: () => v
 
 // ---------------- Página ----------------
 
+const TABS = [
+  { key: 'resumen', label: 'Resumen y cuota' },
+  { key: 'facturacion', label: 'Facturación' },
+  { key: 'uso', label: 'Uso' },
+  { key: 'usuarios', label: 'Usuarios' },
+  { key: 'modulos', label: 'Módulos' },
+];
+
 export default function WorkspacePage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const toast = useToast();
   const queryClient = useQueryClient();
-  const [tab, setTab] = useState('resumen');
+  const [searchParams] = useSearchParams();
+  // `?tab=` abre la cuenta en esa pestaña (los registros de VERI*FACTU de
+  // Contabilidad enlazan a «Facturación»). Solo se lee al montar.
+  const [tab, setTab] = useState(() => {
+    const pedida = searchParams.get('tab');
+    return pedida && TABS.some((t) => t.key === pedida) ? pedida : 'resumen';
+  });
   const [toDelete, setToDelete] = useState(false);
 
   const me = useQuery({ queryKey: ['me'], queryFn: () => api.get<Me>('/auth/me'), staleTime: 60_000 });
@@ -1958,14 +2039,6 @@ export default function WorkspacePage() {
   const ws = d.workspace;
   const suspended = ws.status === 'suspended';
 
-  const tabs = [
-    { key: 'resumen', label: 'Resumen y cuota' },
-    { key: 'facturacion', label: 'Facturación' },
-    { key: 'uso', label: 'Uso' },
-    { key: 'usuarios', label: 'Usuarios' },
-    { key: 'modulos', label: 'Módulos' },
-  ];
-
   return (
     <div className="mx-auto max-w-[900px] px-4 py-7 sm:px-6 sm:py-9">
       <Link to="/workspaces" className="mb-4 inline-flex items-center gap-1.5 text-xs text-subtle hover:text-txt max-sm:-mt-2 max-sm:mb-2 max-sm:py-2">
@@ -2005,7 +2078,7 @@ export default function WorkspacePage() {
         </div>
       )}
 
-      <Tabs tabs={tabs} active={tab} onChange={setTab} className="mb-5" />
+      <Tabs tabs={TABS} active={tab} onChange={setTab} className="mb-5" />
       {/* La clave incluye el id: al cambiar de cuenta se remonta el contenido y
           se reinicia el estado derivado (cuota editable, módulos, borradores). */}
       <div key={`${ws.id}:${tab}`} className="tab-in">
