@@ -6,6 +6,7 @@ import { docker, dockerQuery } from './client';
 import { baselineFrom, CpuBaseline, cpuPercentFromBaseline, cpuPercentFromDocker, DockerStatsSample } from './cpu';
 import { countStrictlyBefore } from './logcursor';
 import { EDGE_NETWORK, projectNetworkName } from './networks';
+import { cubiertoPorComodin, dominioComodin } from '../comodin';
 import { tlsEnabled } from '../tls';
 import { ContainerState, ProjectRow, ServiceRow, ServiceRuntime, ServiceStats } from '../types';
 import { lineSplitter } from '../util';
@@ -611,13 +612,35 @@ export function traefikServiceName(project: ProjectRow, service: ServiceRow): st
  * hosts distintos, routers distintos que conviven. Por eso la regla se escribe
  * también con los hosts ordenados: el mismo conjunto en otro orden no puede
  * dar dos definiciones distintas del mismo router.
+ *
+ * `comodin` añade `-comodin` al nombre: el router de los subdominios generados
+ * con el certificado comodín (ver `traefikLabels`). Con los mismos hosts, la
+ * versión que pide su certificado con `le` y la que usa el comodín no son la
+ * misma definición, y al activar o desactivar el comodín convivirían durante
+ * el relevo con el mismo nombre.
  */
-export function traefikRouter(project: ProjectRow, service: ServiceRow, domains: string[]): { router: string; hosts: string[] } {
+export function traefikRouter(
+  project: ProjectRow,
+  service: ServiceRow,
+  domains: string[],
+  opts: { comodin?: boolean } = {},
+): { router: string; hosts: string[] } {
   const hosts = [...new Set(domains.map((d) => d.trim().toLowerCase()).filter(Boolean))].sort();
   const huella = crypto.createHash('sha256').update(hosts.join(',')).digest('hex').slice(0, 8);
-  return { router: `${traefikServiceName(project, service)}-${huella}`, hosts };
+  return { router: `${traefikServiceName(project, service)}-${huella}${opts.comodin ? '-comodin' : ''}`, hosts };
 }
 
+/**
+ * Etiquetas de Traefik del contenedor de un servicio.
+ *
+ * Con el certificado comodín del dominio raíz en uso (comodin.ts), los
+ * subdominios generados (`<slug>.<raíz>`) van en un router aparte, con TLS y
+ * sin resolutor: se sirven con el comodín y no piden un certificado por nombre.
+ * Los demás (dominios propios, `www.<raíz>`, la raíz y lo que cuelga a más de
+ * un nivel) siguen pidiendo el suyo a `le` por HTTP-01. Cada router lleva la
+ * huella de sus hosts (`traefikRouter`). Sin el comodín, un solo router con
+ * todos los hosts, como siempre: las etiquetas no cambian.
+ */
 export function traefikLabels(
   project: ProjectRow,
   service: ServiceRow,
@@ -625,48 +648,62 @@ export function traefikLabels(
   port: number,
 ): Record<string, string> {
   const labels: Record<string, string> = {};
-  const { router, hosts } = traefikRouter(project, service, domains);
+  const { hosts } = traefikRouter(project, service, domains);
   if (hosts.length === 0) return labels;
   // Servicio y middlewares conservan el nombre base (ver `traefikServiceName`);
   // solo los routers llevan la huella de sus hosts.
   const base = traefikServiceName(project, service);
-  const rule = hosts.map((d) => `Host(\`${d}\`)`).join(' || ');
   // TLS efectivo: el ajuste del panel y un correo válido en Traefik. Sin lo
   // segundo no se emite ningún certificado, y redirigir a https dejaba el
   // dominio sirviendo el certificado por defecto de Traefik (ver tls.ts).
   const tls = tlsEnabled();
+  const raizComodin = tls ? dominioComodin() : null;
+  const grupos = [
+    { hosts: hosts.filter((h) => !cubiertoPorComodin(h, raizComodin)), comodin: false },
+    { hosts: hosts.filter((h) => cubiertoPorComodin(h, raizComodin)), comodin: true },
+  ].filter((g) => g.hosts.length > 0);
   labels['traefik.enable'] = 'true';
   labels['traefik.docker.network'] = EDGE_NETWORK;
-  // Router HTTP (puerto 80). Con TLS activo se añade un segundo router HTTPS:
-  // un único router con tls=true rechazaría las conexiones en claro del puerto 80.
-  // El servicio va explícito: con el nombre del router distinto del del
-  // servicio, Traefik ya no los empareja por nombre.
-  labels[`traefik.http.routers.${router}.rule`] = rule;
-  labels[`traefik.http.routers.${router}.entrypoints`] = 'web';
-  labels[`traefik.http.routers.${router}.service`] = base;
+  for (const grupo of grupos) {
+    const { router } = traefikRouter(project, service, grupo.hosts, { comodin: grupo.comodin });
+    const rule = grupo.hosts.map((d) => `Host(\`${d}\`)`).join(' || ');
+    // Router HTTP (puerto 80). Con TLS activo se añade un segundo router HTTPS:
+    // un único router con tls=true rechazaría las conexiones en claro del puerto 80.
+    // El servicio va explícito: con el nombre del router distinto del del
+    // servicio, Traefik ya no los empareja por nombre.
+    labels[`traefik.http.routers.${router}.rule`] = rule;
+    labels[`traefik.http.routers.${router}.entrypoints`] = 'web';
+    labels[`traefik.http.routers.${router}.service`] = base;
+    if (tls) {
+      labels[`traefik.http.routers.${router}-secure.rule`] = rule;
+      labels[`traefik.http.routers.${router}-secure.entrypoints`] = 'websecure';
+      // Sin resolutor, Traefik elige por SNI el certificado del almacén que
+      // encaja (el comodín) y no pide ninguno: con `le`, mientras el comodín
+      // se emite, pediría uno por nombre (ver comodin.ts).
+      if (grupo.comodin) labels[`traefik.http.routers.${router}-secure.tls`] = 'true';
+      else labels[`traefik.http.routers.${router}-secure.tls.certresolver`] = 'le';
+      labels[`traefik.http.routers.${router}-secure.service`] = base;
+      // Con HTTPS disponible, el router de texto en claro deja de servir contenido
+      // y solo redirige: si no, el puerto 80 seguiría entregando la web —y con
+      // ella cookies de sesión o claves de API— sin cifrar, para siempre. El reto
+      // HTTP-01 de Let's Encrypt no se ve afectado: Traefik lo atiende en un
+      // router interno propio, con prioridad por encima de este.
+      labels[`traefik.http.routers.${router}.middlewares`] = `${base}-https`;
+    }
+    // Durante un intercambio la versión nueva entra en el balanceo en cuanto
+    // nace, aunque aún no escuche: sin esto, mientras arranca, una de cada dos
+    // peticiones acababa en 502. Con «retry», una conexión rechazada se reintenta
+    // y el balanceo la lleva a la versión anterior, que sigue en pie hasta que la
+    // nueva responde (ver `waitReplicaReady` en el deployer). Traefik solo
+    // reintenta si el servidor no llegó a contestar.
+    labels[`traefik.http.routers.${router}${tls ? '-secure' : ''}.middlewares`] = `${base}-retry`;
+  }
   if (tls) {
-    labels[`traefik.http.routers.${router}-secure.rule`] = rule;
-    labels[`traefik.http.routers.${router}-secure.entrypoints`] = 'websecure';
-    labels[`traefik.http.routers.${router}-secure.tls.certresolver`] = 'le';
-    labels[`traefik.http.routers.${router}-secure.service`] = base;
-    // Con HTTPS disponible, el router de texto en claro deja de servir contenido
-    // y solo redirige: si no, el puerto 80 seguiría entregando la web —y con
-    // ella cookies de sesión o claves de API— sin cifrar, para siempre. El reto
-    // HTTP-01 de Let's Encrypt no se ve afectado: Traefik lo atiende en un
-    // router interno propio, con prioridad por encima de este.
     labels[`traefik.http.middlewares.${base}-https.redirectscheme.scheme`] = 'https';
     labels[`traefik.http.middlewares.${base}-https.redirectscheme.permanent`] = 'true';
-    labels[`traefik.http.routers.${router}.middlewares`] = `${base}-https`;
   }
-  // Durante un intercambio la versión nueva entra en el balanceo en cuanto
-  // nace, aunque aún no escuche: sin esto, mientras arranca, una de cada dos
-  // peticiones acababa en 502. Con «retry», una conexión rechazada se reintenta
-  // y el balanceo la lleva a la versión anterior, que sigue en pie hasta que la
-  // nueva responde (ver `waitReplicaReady` en el deployer). Traefik solo
-  // reintenta si el servidor no llegó a contestar.
   labels[`traefik.http.middlewares.${base}-retry.retry.attempts`] = '3';
   labels[`traefik.http.middlewares.${base}-retry.retry.initialinterval`] = '100ms';
-  labels[`traefik.http.routers.${router}${tls ? '-secure' : ''}.middlewares`] = `${base}-retry`;
   labels[`traefik.http.services.${base}.loadbalancer.server.port`] = String(port);
   return labels;
 }

@@ -74,6 +74,12 @@ server/src/
                         hosts y direcciones, huella del plan y bloque de URL de WordPress
   redirecciones.ts      prepublicación y redirecciones del cambio de dominio en el proveedor HTTP de
                         Traefik (prioridad 1) y comprobación local del certificado (`comprobarTlsLocal`)
+  comodin.ts            certificado comodín del dominio raíz: detecta el resolutor `lecomodin` y de dónde toma
+                        Traefik el token de Cloudflare (docker inspect o `SKYWAY_TRAEFIK_WILDCARD`), estado
+                        efectivo (`dominioComodin`), router del proveedor HTTP que pide `raíz` + `*.raíz` y el
+                        fichero del token del panel en el volumen `traefik-secrets`
+  tokencomodin.ts       token de ese certificado guardado desde Ajustes: lo prueba en Cloudflare, lo escribe
+                        para Traefik (nunca en `settings`), lo borra y reinicia Traefik cuando hace falta
   pricing.ts            cálculo de precios por tramos (graduated/volume) del catálogo
   aigateway.ts          gateway de IA: config (clave de Gemini del operador, modelos), medición de tokens,
                         streaming SSE, API compatible con OpenAI y coste/margen por modelo
@@ -117,7 +123,8 @@ server/src/
                         las contraseñas de aplicación invalidadas por Mailway (`mailwayrenovacion.ts`)
   autodeploy.ts         bucle ~1 min: sondea la cabeza de la rama (API con ETag, o git ls-remote) y despliega si cambió;
                         línea base y última comprobación persistidas (`autodeploy_state`)
-  tls.ts                TLS efectivo: ajuste del panel + correo de Let's Encrypt REAL de Traefik (docker inspect)
+  tls.ts                TLS efectivo: ajuste del panel + correo de Let's Encrypt REAL de Traefik (docker inspect,
+                        `leerTraefik`, que también usa `comodin.ts`)
   paneldomain.ts        dominios del panel (`SKYWAY_DOMAIN`, `SKYWAY_DOMAIN_EXTRA`) y routers de los adicionales
   datamigrate.ts        copia de datos desde una base externa (Railway) a una gestionada, con log en vivo
   events.ts             bus en memoria: logs de despliegue y feed de despliegues del proyecto (SSE)
@@ -210,9 +217,62 @@ web/src/
     distintos, routers distintos que conviven: con un nombre fijo, Traefik
     borraba el router definido dos veces de forma distinta y todos los nombres
     del servicio daban 404 mientras convivían las dos versiones.
+  - **Certificado comodín del dominio raíz** (opcional, `comodin.ts`): cada
+    nombre pide su certificado a `le` por HTTP-01, y Let's Encrypt admite 50
+    certificados nuevos por dominio registrado cada 7 días; pasar decenas de
+    servicios a un dominio raíz nuevo agotaba ese límite y cada servicio nuevo
+    esperaba a su certificado. Con el resolutor `lecomodin` (DNS-01 de
+    Cloudflare, ver `docker-compose.yml`), su token y la casilla de Ajustes →
+    Dominios y TLS, el
+    proveedor HTTP publica el router `skyway-comodin-<huella de raíz y
+    *.raíz>` (`tls.certResolver: lecomodin`, `tls.domains: [{main: raíz,
+    sans: [*.raíz]}]`, prioridad 1, `noop@internal` y una regla
+    `Host(raíz) && Path(/.well-known/skyway-comodin)` que no atiende
+    peticiones reales: la raíz sigue dando el 404 de siempre y no cuenta como
+    nombre propio frente a las rutas de Mailway). En las etiquetas de cada
+    servicio, los **subdominios generados** (`esSubdominioGenerado`: un nivel
+    bajo el dominio raíz, salvo `www.<raíz>`) van en un router aparte,
+    `skyway-<proyecto>-<servicio>-<huella de esos hosts>-comodin`, con
+    `tls=true` y **sin resolutor**; los demás (dominios propios, `www.<raíz>`,
+    la raíz y lo que cuelga a más de un nivel) siguen en el router de siempre,
+    con la huella de sus hosts y `le`. El sufijo `-comodin` evita que la
+    versión con `le` y la del comodín de los mismos hosts compartan nombre
+    durante un relevo. La prepublicación y las redirecciones del cambio de
+    dominio usan la misma regla por nombre (`tls: {}` si lo cubre el comodín).
+    Sin el ajuste, sin HTTPS, sin dominio raíz o si Traefik no tiene el
+    resolutor o el token, nada cambia: un router con todos los hosts y `le`,
+    con las mismas etiquetas que antes. Si no se puede leer Traefik, se confía
+    en el ajuste (solo se pudo activar estando disponible), como con el correo
+    de Let's Encrypt. Comprobado en el código de Traefik 3.7 (la documentación
+    solo dice que el certificado se elige en el saludo TLS y que «cada dominio
+    genera una petición»): el certificado se elige **por SNI** entre todos los
+    del almacén `default`, de cualquier resolutor y sin mirar el router
+    (`GetBestCertificate`, orden lexicográfico inverso de los nombres: uno
+    emitido para el nombre gana al comodín, que cubre un solo nivel); y un
+    router con `certResolver` **no pide otro** certificado para un nombre que
+    ya cubre uno del almacén, comodín incluido y aunque haya caducado
+    (`getUncheckedDomains`), pero solo si ya está cargado cuando lee el router:
+    mientras el comodín se emite o tras reiniciar Traefik, con `le` se pediría
+    uno por nombre. Por eso los generados van sin resolutor. Los servicios ya
+    desplegados conservan sus etiquetas (y sus certificados, que Traefik sigue
+    renovando y prefiere al comodín) hasta el siguiente despliegue.
+    **El token** llega a Traefik por `CF_DNS_API_TOKEN` del `.env` del
+    servidor o, sin entrar en él, desde Ajustes → Dominios y TLS («Token de
+    Cloudflare del certificado comodín», `tokencomodin.ts`): Skyway lo prueba
+    en Cloudflare (token activo, no la clave global, y que ve la zona del
+    dominio raíz) y lo escribe con permisos 600 en el volumen `traefik-secrets`,
+    que Traefik monta para solo lectura y lee con `CF_DNS_API_TOKEN_FILE`;
+    nunca en `settings`, así que tampoco viaja en las copias de `skyway.db`. Si
+    están los dos, manda el del `.env` (lego mira la variable antes que el
+    fichero; Traefik 3.7 usa lego v5, que busca `CLOUDFLARE_DNS_API_TOKEN` y
+    después `CF_DNS_API_TOKEN`, cada una con su variante `_FILE`). lego lee el
+    token al crear su cliente y lo conserva hasta que Traefik se reinicia: si
+    Traefik ya usaba el del panel, sustituirlo o eliminarlo reinicia Traefik
+    (también guardar el primero con el comodín ya activado), siempre después
+    de responder, porque la propia petición pasa por Traefik.
   - **Proveedor HTTP** (`GET /api/traefik/mailway`, que Traefik lee cada 15 s):
-    además de las rutas saneadas de Mailway y los routers de
-    `SKYWAY_DOMAIN_EXTRA`, sirve lo propio del cambio de dominio
+    además de las rutas saneadas de Mailway, los routers de
+    `SKYWAY_DOMAIN_EXTRA` y el del certificado comodín, sirve lo propio del cambio de dominio
     (`redirecciones.ts`), sin desplegar nada: la **prepublicación** (el nombre
     nuevo hacia el servicio `@docker` del contenedor en marcha, solo cuando su
     DNS ya apunta aquí, para que el certificado exista antes de pasar) y las
@@ -712,7 +772,7 @@ del servicio, **lo que está saliendo va por encima del activo**.
 | `ai_model_prices` | coste del operador por modelo y margen objetivo: `model` (PK), `cost_micros_in`/`cost_micros_cache`/`cost_micros_out` (micro-céntimos por millón de tokens), `margin_pct` (margen objetivo s/ venta, guía el PVP sugerido), `currency`, `source` (`auto` = lo mantiene la sincronización con la tarifa de Google, `manual` = fijado por el operador y respetado), `synced_at`, `updated_at`. Informativo; no interviene en la factura |
 | `passkeys` | credencial WebAuthn: `credential_id`, `public_key`, `counter`, `rp_id`… |
 | `api_tokens` | `token_hash` (sha256 hex), `prefix`, `expires_at` — tokens `sky_…` |
-| `settings` | pares clave/valor: `jwtSecret`, `githubToken`, `rootDomain`, `letsencryptEmail`, `serverIp`, `serverIpv6` (opcional: sin ella, cualquier AAAA de un dominio cuenta como ajeno), canales de alerta, `importReport:<projectId>`, `billingProfile` (perfil fiscal del emisor, JSON: razón social, NIF, domicilio, IVA por defecto, `defaultIrpfRate`, `sifMode` veri/no-veri, IBAN…), claves de Stripe (`stripeSecretKey`, `stripeWebhookSecret`, `stripePublishableKey` — las secretas nunca se devuelven), gateway de IA (`ai.geminiApiKey` — clave del operador, nunca devuelta; `ai.allowedModels`, `ai.geminiBaseUrl`), autoactualización de la tarifa de IA (`ai.prices.auto` por defecto activada, `ai.prices.url` fuente propia, `ai.prices.currency` por defecto EUR, `ai.prices.fx`/`ai.prices.fxAt` cambio USD→moneda, `ai.prices.defaultMarginPct`, `ai.prices.autoAllow`, `ai.prices.lastAt`/`ai.prices.last` resultado del último pase), dunning (`billing.dunningGraceDays` por defecto 14, `billing.dunningCancelDays` por defecto 44), Mailway (`mailway.baseUrl`, `mailway.serviceId`, `mailway.token` — token de gestión, nunca devuelto —, `mailway.traefikToken` y `mailway.traefikCache`, última configuración de Traefik saneada; `mailway.defaultPlanId`, plan con el que se crea el cliente si no lo elige un administrador; `mailway.hosts`, hosts públicos que anuncia la instancia; `mailway.containerHosts`, hosts de las reglas `Host(…)` de las etiquetas de Traefik de los contenedores `mailway-mail`, `mailway-webmail` y `mailway-panel`; `mailway.previousHosts`, nombres que fueron de la instancia (`[{host, lastSeen}]`) y siguen reservados hasta que el administrador los libera; `mailway.whitelabelHosts`, última lista buena de nombres de marca blanca de todos los clientes en cualquier estado, reservados para los servicios; `mailway.previousClient:<projectId>`, cliente que tenía el proyecto antes de desactivar el correo)… |
+| `settings` | pares clave/valor: `jwtSecret`, `githubToken`, `rootDomain`, `letsencryptEmail`, `serverIp`, `serverIpv6` (opcional: sin ella, cualquier AAAA de un dominio cuenta como ajeno), `wildcardCert` (`'1'`: certificado comodín del dominio raíz, §2; el token de Cloudflare de ese certificado NO se guarda aquí, es de Traefik), canales de alerta, `importReport:<projectId>`, `billingProfile` (perfil fiscal del emisor, JSON: razón social, NIF, domicilio, IVA por defecto, `defaultIrpfRate`, `sifMode` veri/no-veri, IBAN…), claves de Stripe (`stripeSecretKey`, `stripeWebhookSecret`, `stripePublishableKey` — las secretas nunca se devuelven), gateway de IA (`ai.geminiApiKey` — clave del operador, nunca devuelta; `ai.allowedModels`, `ai.geminiBaseUrl`), autoactualización de la tarifa de IA (`ai.prices.auto` por defecto activada, `ai.prices.url` fuente propia, `ai.prices.currency` por defecto EUR, `ai.prices.fx`/`ai.prices.fxAt` cambio USD→moneda, `ai.prices.defaultMarginPct`, `ai.prices.autoAllow`, `ai.prices.lastAt`/`ai.prices.last` resultado del último pase), dunning (`billing.dunningGraceDays` por defecto 14, `billing.dunningCancelDays` por defecto 44), Mailway (`mailway.baseUrl`, `mailway.serviceId`, `mailway.token` — token de gestión, nunca devuelto —, `mailway.traefikToken` y `mailway.traefikCache`, última configuración de Traefik saneada; `mailway.defaultPlanId`, plan con el que se crea el cliente si no lo elige un administrador; `mailway.hosts`, hosts públicos que anuncia la instancia; `mailway.containerHosts`, hosts de las reglas `Host(…)` de las etiquetas de Traefik de los contenedores `mailway-mail`, `mailway-webmail` y `mailway-panel`; `mailway.previousHosts`, nombres que fueron de la instancia (`[{host, lastSeen}]`) y siguen reservados hasta que el administrador los libera; `mailway.whitelabelHosts`, última lista buena de nombres de marca blanca de todos los clientes en cualquier estado, reservados para los servicios; `mailway.previousClient:<projectId>`, cliente que tenía el proyecto antes de desactivar el correo)… |
 | `projects` | `id`, `name`, `slug` (único), `workspace_id` (cuenta de cliente), `client` (reflejo denormalizado del nombre del workspace para la UI), página de estado (`status_token`, `status_enabled`, `status_notice`) |
 | `services` | `id`, `project_id`, `name`, `slug`, `type` (`git`/`database`/`image`), `config` (JSON), `config_rev` (revisión de la configuración: sube con cada cambio guardado que exige redesplegar) |
 | `env_vars` | `(service_id, key)` → `value` — variables por servicio |
@@ -1655,7 +1715,15 @@ con lo ya aprobado». Nunca se escriben valores en el registro ni en la auditor�
   (§3.1).
 - **Dominios y TLS**: verificación DNS en vivo, subdominios con comodín, TLS
   automático con Let's Encrypt vía Traefik y redirección de HTTP a HTTPS en todo
-  servicio con dominio. Dominio principal automático (www primero, §5.5). El
+  servicio con dominio. Opcional, **certificado comodín del dominio raíz** (§2):
+  la casilla «Certificado comodín para el dominio raíz» de Ajustes → Dominios y
+  TLS solo aparece si Traefik tiene el resolutor `lecomodin`; sin el token de
+  Cloudflare sale desactivada con el aviso de lo que hay que hacer, y ya
+  activada sale siempre para poder desactivarla. Debajo, el bloque «Token de
+  Cloudflare del certificado comodín» lo guarda con su propio botón (solo se
+  escribe; después se ve su pista y «Eliminar token», que pide confirmación) o
+  explica que hay que actualizar Skyway si falta el volumen compartido; si
+  Traefik usa el del `.env`, lo indica. Dominio principal automático (www primero, §5.5). El
   editor muestra los dominios en una lista con el estado del DNS (punto de color
   y etiqueta: «Configurado», «Esperando DNS», «Apunta a otra IP», «Proxy de
   Cloudflare») y, si falta algo, el registro A que hay que crear (tipo, nombre y
@@ -2649,8 +2717,10 @@ distroless), el explorador lo indica y no está disponible.
 | POST | `/system/backups` | admin | crea un snapshot ahora (VACUUM INTO) |
 | GET | `/system/backups/:file/download` | admin + session | descarga un snapshot (.db restaurable). Exige sesión de navegador: lleva en claro los secretos que la API nunca devuelve (token de Cloudflare, de Mailway, de GitHub…) |
 | DELETE | `/system/backups/:file` | admin | borra un snapshot |
-| GET | `/settings` | admin | ajustes (secretos como booleanos) + `traefikAcme: {status: ok/missing/invalid/unknown, email}` (correo real de Traefik) + `defaults.keepImages` |
-| PUT | `/settings` | admin | guarda ajustes (dominio, TLS, token GitHub, alertas, `keepImages` 1–50 o vacío → 400 `invalid_keep_images`); `rootDomain` debe ser un nombre de host válido o vacío; `serverIpv6`, una IPv6 sin identificador de zona (`fe80::1%eth0` da 400: ningún DNS la publica) o vacía |
+| GET | `/settings` | admin | ajustes (secretos como booleanos; `wildcardCert` = `'1'` o null) + `traefikAcme: {status: ok/missing/invalid/unknown, email}` (correo real de Traefik) + `comodin: {resolver: 'lecomodin', resolutor: ok/sin_token/sin_resolutor/desconocido, declarado, disponible, enUso, certificado}` (lo que Traefik tiene para el certificado comodín; `enUso` = dominio raíz cuyo comodín se usa ahora, o null; `certificado` = si Traefik ya lo sirve, `ok`/`invalido`/`desconocido`, comprobado por SNI con `skyway-comodin.<raíz>` como en `comprobarTlsLocal`, o null sin comodín en uso; `token` = de dónde lo toma Traefik, `entorno`/`panel`/`fichero` o null; `panel: {disponible, configurado, pista}` = el volumen compartido con Traefik está montado, hay un token guardado desde el panel y sus últimos 4 caracteres; del token nunca sale nada más). Ajustes avisa si aún no lo sirve (la primera emisión tarda unos minutos; si no llega, el token no puede editar la zona) y, al cambiar el dominio raíz con el comodín activo, de que el token debe poder editar también la zona nueva + `defaults.keepImages` |
+| PUT | `/settings` | admin | guarda ajustes (dominio, TLS, token GitHub, alertas, `keepImages` 1–50 o vacío → 400 `invalid_keep_images`); `rootDomain` debe ser un nombre de host válido o vacío; `serverIpv6`, una IPv6 sin identificador de zona (`fe80::1%eth0` da 400: ningún DNS la publica) o vacía. `wildcardCert` (booleano): activarlo exige dominio raíz (400 `wildcard_needs_root_domain`) y que Traefik tenga el resolutor `lecomodin` con el token, o `SKYWAY_TRAEFIK_WILDCARD=1` si no se puede leer Traefik (400 `wildcard_unavailable` con lo que hay que hacer); se comprueba antes de guardar nada, y reenviar el valor que ya tiene no vuelve a comprobarlo. Cambiarlo audita `wildcard_cert_enabled` o `wildcard_cert_disabled` (detalle: el dominio raíz) |
+| PUT | `/settings/wildcard-token` | admin + session | `{token}`: token de Cloudflare del certificado comodín. Exige dominio raíz (400) y el volumen `traefik-secrets` montado (409, con «skyway update»); lo prueba en Cloudflare **antes** de guardarlo (activo, no la clave global, y que ve la zona del dominio raíz; si no, 400 y no se guarda nada) y lo escribe con permisos 600 en el volumen que lee Traefik (`CF_DNS_API_TOKEN_FILE`), nunca en `settings` → `{ok, zona, reinicio, comodin}`. `reinicio`: Traefik se reinicia tras responder porque ya usaba el anterior del panel, o porque el comodín estaba activado; con el token en el `.env` no. Guardar el mismo no cambia nada. Audita `wildcard_token_saved` o `wildcard_token_replaced` («zona …», sin el token). 10/min |
+| DELETE | `/settings/wildcard-token` | admin + session | borra el token del panel → `{ok, reinicio, comodin}` (reinicia Traefik si lo usaba). Audita `wildcard_token_removed` |
 | POST | `/settings/github/test` | admin | valida el token de GitHub |
 | DELETE | `/settings/github` | admin | borra el token de GitHub |
 | POST | `/settings/alerts/test` | admin | envía notificación de prueba |
@@ -2772,6 +2842,14 @@ Zone · Read» y «Zone · DNS · Edit»; la clave global se rechaza). Se guarda
 `settings` (`cloudflare.token`) y **nunca se devuelve**: solo su pista (últimos
 4 caracteres) y las zonas que ve. El instalador de Mailway lo deja puesto con
 `tools/cloudflare.js conectar` (§9).
+
+El certificado comodín del dominio raíz (§2) usa **otro token**, que solo lee
+Traefik (resolutor `lecomodin`, reto DNS-01): va en el `.env` del servidor
+(`CF_DNS_API_TOKEN`) o se guarda en Ajustes → Dominios y TLS, que lo deja en el
+volumen `traefik-secrets`; nunca en `settings`, y conviene limitarlo a la zona
+del dominio raíz. No se reutiliza este a propósito: el del DNS automático
+suele ver todas las zonas del operador, y Traefik solo necesita escribir el
+registro TXT `_acme-challenge` de una.
 
 | Método | Ruta | Nivel | Descripción |
 | --- | --- | --- | --- |
@@ -2927,12 +3005,20 @@ desplegar: 409 `migration_services_pending`.
 | `LOG_LEVEL` | `info` | nivel de log de Fastify |
 | `SKYWAY_DOMAIN` | — | dominio del panel, **un solo nombre** (docker-compose lo pone tal cual en la regla `Host()` del panel: una lista con comas no coincidiría nunca y Skyway lo avisa al arrancar). Ningún servicio puede asignárselo y el puente de Traefik de Mailway nunca acepta una ruta para él; es también el dominio de las URL de webhook que se dan a GitHub |
 | `SKYWAY_DOMAIN_EXTRA` | — | nombres adicionales del panel, separados por comas (p. ej. el anterior mientras se cambia de dominio). Mismas reservas que `SKYWAY_DOMAIN`; sus routers (HTTP con redirección y HTTPS con certificado propio, hacia `skyway@docker`) los publica Skyway en el proveedor dinámico que Traefik ya lee (`/api/traefik/mailway`) |
-| `SKYWAY_TRAEFIK_CONTAINER` | `skyway-traefik` | contenedor de Traefik del que se lee el correo de Let's Encrypt (`tls.ts`) |
+| `SKYWAY_TRAEFIK_CONTAINER` | `skyway-traefik` | contenedor de Traefik del que se lee el correo de Let's Encrypt (`tls.ts`) y su resolutor `lecomodin` (`comodin.ts`) |
+| `SKYWAY_TRAEFIK_WILDCARD` | — | `1` declara que Traefik tiene el resolutor `lecomodin` con su token cuando Skyway no puede leerlo (Traefik configurado por fichero o en otro contenedor). Lo que se ve en el contenedor de Traefik manda sobre la declaración |
+| `CF_DNS_API_TOKEN` | — | **de Traefik, no de Skyway** (el `.env` lo pasa solo al contenedor de Traefik): token de API de Cloudflare del certificado comodín (§2), con «Zone · DNS · Edit» y «Zone · Zone · Read» limitados a la zona del dominio raíz. Opcional: se puede guardar en Ajustes → Dominios y TLS en su lugar, y si están los dos manda este. Skyway solo comprueba en el `docker inspect` de Traefik que tiene valor (también `CLOUDFLARE_DNS_API_TOKEN` y las variantes `_FILE`); nunca lo guarda, lo registra ni lo devuelve. Vacío, nada cambia. Tras cambiarlo, `docker compose up -d traefik` |
+| `CF_DNS_API_TOKEN_FILE` | `/secrets/cf_dns_api_token` | de Traefik (en el `docker-compose.yml`, no en el `.env`): el fichero del token que guarda el panel, en el volumen `traefik-secrets` montado para solo lectura. Skyway lo reconoce por esa ruta (`RUTA_TOKEN_EN_TRAEFIK`); otro `_FILE` del operador se da por bueno |
+| `SKYWAY_TRAEFIK_SECRETS_DIR` | `/traefik-secrets` | donde Skyway monta el volumen `traefik-secrets` para escribir el token del panel. Si no existe (un `docker-compose.yml` anterior), no se crea y Ajustes pide actualizar Skyway |
 
 Ajustes en la UI (tabla `settings`, solo admin): `rootDomain`, `letsencryptEmail`,
-`serverIp`, `githubToken`, umbrales de alerta y canales (Discord/Telegram/webhook)
-y `keepImages` (versiones por servicio cuya imagen se conserva, 1–50; por
-defecto 5). `letsencryptEmail` solo activa las etiquetas HTTPS: los certificados
+`serverIp`, `githubToken`, umbrales de alerta y canales (Discord/Telegram/webhook),
+`keepImages` (versiones por servicio cuya imagen se conserva, 1–50; por
+defecto 5) y `wildcardCert` (certificado comodín del dominio raíz, §2; el
+informe de seguridad añade el hallazgo `wildcard-unavailable` si está activado
+con HTTPS y Traefik ya no tiene el resolutor o el token: el comodín emitido no
+se renueva y, mientras exista en `acme.json`, Traefik no pide certificados por
+nombre para lo que cubre). `letsencryptEmail` solo activa las etiquetas HTTPS: los certificados
 los pide Traefik con `LETSENCRYPT_EMAIL` del `.env` (docker-compose ya no pone un
 correo de `example.com` por defecto). Skyway lee el correo real de Traefik
 (`docker inspect`, `tls.ts`) y, si es de un dominio que Let's Encrypt rechaza

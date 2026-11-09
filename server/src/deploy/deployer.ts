@@ -96,6 +96,7 @@ import { availableReferences, resolveServiceEnv, systemVars } from '../variables
 import { DatabaseConfig, DeploymentRow, GitConfig, ImageConfig, ProjectRow, ServiceRow } from '../types';
 import { now } from '../util';
 import { refreshTraefikAcme, tlsBlocked, tlsEnabled } from '../tls';
+import { refreshTraefikComodin } from '../comodin';
 
 const MAX_LOG_CHARS = 400_000;
 /** Tope del log de ejecución que se archiva por despliegue (se guarda el final). */
@@ -1363,9 +1364,10 @@ async function deployContainer(
   const netName = projectNetworkName(project);
   await ensureNetwork(netName);
   await ensureNetwork(EDGE_NETWORK);
-  // Las etiquetas HTTPS dependen del correo REAL de Traefik (ver tls.ts): se
-  // mira ahora y no con lo que se leyó hace un rato.
-  await refreshTraefikAcme();
+  // Las etiquetas HTTPS dependen del correo REAL de Traefik (ver tls.ts) y de
+  // si tiene el resolutor del certificado comodín (comodin.ts): se mira ahora
+  // y no con lo que se leyó hace un rato.
+  await Promise.all([refreshTraefikAcme(), refreshTraefikComodin()]);
 
   if (service.type === 'database') ensureDatabaseEnv(service, log);
   const env = resolveServiceEnv(service);

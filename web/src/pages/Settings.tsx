@@ -33,12 +33,48 @@ interface Settings {
   alertDiscordUrl: string | null;
   alertTelegramChat: string | null;
   keepImages: string | null;
+  /** '1' si se usa el certificado comodín del dominio raíz. */
+  wildcardCert: string | null;
 }
 
 /** Correo con el que Traefik se registra en Let's Encrypt (del .env del servidor). */
 interface TraefikAcme {
   status: 'ok' | 'missing' | 'invalid' | 'unknown';
   email: string | null;
+}
+
+/** Resolutor del certificado comodín en Traefik (ver server/src/comodin.ts). */
+interface ComodinTraefik {
+  /** Nombre del resolutor (`lecomodin`). */
+  resolver: string;
+  resolutor: 'ok' | 'sin_token' | 'sin_resolutor' | 'desconocido';
+  /** Declarado con SKYWAY_TRAEFIK_WILDCARD. */
+  declarado: boolean;
+  /** Se puede activar. */
+  disponible: boolean;
+  /** Dominio raíz cuyo comodín se usa ahora mismo, o null. */
+  enUso: string | null;
+  /** Si Traefik ya sirve el comodín (comprobado por SNI); null si no está en uso. */
+  certificado: 'ok' | 'invalido' | 'desconocido' | null;
+  /** De dónde toma Traefik el token: el .env manda sobre el del panel. */
+  token: 'entorno' | 'panel' | 'fichero' | null;
+  /** Token guardado desde el panel (nunca el token, solo su pista). */
+  panel: { disponible: boolean; configurado: boolean; pista: string | null };
+}
+
+/** Respuesta de GET /settings. */
+interface RespuestaAjustes {
+  settings: Settings;
+  traefikAcme?: TraefikAcme;
+  comodin?: ComodinTraefik;
+  defaults?: { keepImages: number };
+}
+
+/** Respuesta de guardar o eliminar el token del certificado comodín. */
+interface RespuestaTokenComodin {
+  /** Traefik se reinicia en unos segundos para dejar el token anterior. */
+  reinicio: boolean;
+  comodin: ComodinTraefik;
 }
 
 function OkPill({ label, dot }: { label: string; dot?: boolean }) {
@@ -190,6 +226,276 @@ function AvisoAcme({ acme, activado }: { acme?: TraefikAcme; activado: boolean }
   return null;
 }
 
+/** Aviso de la casilla del comodín: ámbar si algo impide usarlo, gris si solo informa. */
+function NotaComodin({ tono, children }: { tono: 'warn' | 'info'; children: React.ReactNode }) {
+  if (tono === 'info') return <p className="text-xs leading-relaxed text-subtle">{children}</p>;
+  return <p className="rounded-lg border border-warn/35 bg-warn/[.06] px-3 py-2 text-xs leading-relaxed text-sub">{children}</p>;
+}
+
+/**
+ * Casilla del certificado comodín del dominio raíz. Solo se ofrece si Traefik
+ * tiene el resolutor `lecomodin` (Skyway lo ve en su contenedor, o el operador
+ * lo declara con SKYWAY_TRAEFIK_WILDCARD): sin él, marcarla no haría nada. Con
+ * el resolutor pero sin el token de Cloudflare, sale desactivada con el aviso.
+ * Ya activada, sale siempre, para poder desactivarla.
+ */
+function CasillaComodin({
+  comodin,
+  marcada,
+  guardada,
+  rootDomain,
+  raizGuardada,
+  conHttps,
+  onChange,
+}: {
+  comodin?: ComodinTraefik;
+  marcada: boolean;
+  /** Activado en el servidor. */
+  guardada: boolean;
+  /** Dominio raíz del formulario. */
+  rootDomain: string;
+  /** Dominio raíz guardado en el servidor. */
+  raizGuardada: string;
+  /** Correo de Let's Encrypt del formulario: sin HTTPS no hay certificados. */
+  conHttps: boolean;
+  onChange: (marcada: boolean) => void;
+}) {
+  if (!comodin) return null;
+  const conResolutor = comodin.disponible || comodin.resolutor === 'sin_token';
+  if (!conResolutor && !guardada) return null;
+  const raiz = rootDomain.trim().toLowerCase();
+  // Desmarcarla siempre se puede; marcarla, solo con el resolutor, su token y un dominio raíz.
+  const bloqueada = !marcada && (!comodin.disponible || !raiz);
+  const ejemplo = raiz || 'apps.midominio.com';
+  const token = (
+    <>
+      <span className="font-mono">CF_DNS_API_TOKEN</span> en el <span className="font-mono">.env</span> del servidor
+    </>
+  );
+  // De dónde lo toma Traefik: el .env manda sobre el del panel.
+  const origen =
+    comodin.token === 'entorno' ? (
+      <>Traefik utiliza el token de Cloudflare del .env del servidor.</>
+    ) : comodin.token === 'panel' ? (
+      <>Traefik utiliza el token de Cloudflare guardado aquí.</>
+    ) : comodin.token === 'fichero' ? (
+      <>Traefik lee el token de Cloudflare de un fichero propio.</>
+    ) : (
+      <>Exige el token de Cloudflare ({token}).</>
+    );
+  let nota: React.ReactNode;
+  if (comodin.resolutor === 'sin_token') {
+    nota = (
+      <NotaComodin tono="warn">
+        {guardada ? 'Está activado, pero Traefik no tiene el token de Cloudflare: no puede emitirlo ni renovarlo. ' : ''}
+        {comodin.panel.disponible ? (
+          <>
+            Exige el token de Cloudflare: guárdalo aquí debajo, o define {token} y ejecuta <span className="font-mono">docker compose up -d traefik</span>.
+          </>
+        ) : (
+          <>
+            Exige el token de Cloudflare: define {token} (permisos «Zone · DNS · Edit» y «Zone · Zone · Read», solo en la zona del dominio raíz) y ejecuta{' '}
+            <span className="font-mono">docker compose up -d traefik</span>.
+          </>
+        )}
+      </NotaComodin>
+    );
+  } else if (comodin.resolutor === 'sin_resolutor') {
+    nota = (
+      <NotaComodin tono="warn">
+        Está activado, pero Traefik no tiene el resolutor <span className="font-mono">{comodin.resolver}</span>: no puede emitirlo ni renovarlo. Actualiza Skyway con{' '}
+        <span className="font-mono">skyway update</span>, define {token} y ejecuta <span className="font-mono">docker compose up -d traefik</span>, o desactívalo.
+      </NotaComodin>
+    );
+  } else if (!comodin.disponible) {
+    nota = (
+      <NotaComodin tono="warn">
+        No se ha podido comprobar si Traefik tiene el resolutor <span className="font-mono">{comodin.resolver}</span>. Se mantiene el ajuste mientras tanto.
+      </NotaComodin>
+    );
+  } else if (marcada && !raiz) {
+    nota = <NotaComodin tono="warn">Sin efecto mientras no haya dominio raíz.</NotaComodin>;
+  } else if (marcada && !conHttps) {
+    nota = <NotaComodin tono="warn">Sin efecto mientras HTTPS no esté activado (correo electrónico para Let's Encrypt).</NotaComodin>;
+  } else if (marcada && guardada && raiz !== raizGuardada.trim().toLowerCase()) {
+    nota = (
+      <NotaComodin tono="warn">
+        Con otro dominio raíz, Traefik pide otro certificado comodín: el token de Cloudflare debe poder editar también la zona de{' '}
+        <span className="font-mono">{raiz}</span>.
+      </NotaComodin>
+    );
+  } else if (marcada && !guardada) {
+    nota = (
+      <NotaComodin tono="info">
+        Al guardar, Traefik pide el certificado y los servicios que se desplieguen a partir de entonces lo utilizan. Los ya desplegados conservan sus certificados hasta su siguiente despliegue.
+      </NotaComodin>
+    );
+  } else if (!marcada && guardada) {
+    nota = (
+      <NotaComodin tono="info">
+        Al guardar, los servicios que se desplieguen vuelven a pedir un certificado por nombre. El certificado comodín ya emitido sigue en{' '}
+        <span className="font-mono">acme.json</span> y, mientras exista, Traefik lo utiliza para los subdominios que cubre: el README explica cómo
+        retirarlo.
+      </NotaComodin>
+    );
+  } else if (marcada && guardada && comodin.certificado === 'invalido') {
+    nota = (
+      <NotaComodin tono="warn">
+        Traefik todavía no sirve el certificado comodín de <span className="font-mono">{ejemplo}</span>. La primera emisión tarda unos minutos; si no
+        aparece, comprueba que el token de Cloudflare puede editar la zona del dominio raíz y revisa el registro de Traefik (
+        <span className="font-mono">docker logs skyway-traefik</span>).
+      </NotaComodin>
+    );
+  } else if (marcada && guardada && comodin.certificado === 'ok') {
+    nota = (
+      <NotaComodin tono="info">
+        Traefik ya sirve el certificado comodín de <span className="font-mono">{ejemplo}</span>. {origen}
+      </NotaComodin>
+    );
+  } else if (comodin.resolutor === 'desconocido') {
+    nota = (
+      <NotaComodin tono="info">
+        Exige el token de Cloudflare ({token}). No se ha podido comprobar en Traefik: se considera disponible porque así lo declara{' '}
+        <span className="font-mono">SKYWAY_TRAEFIK_WILDCARD</span>.
+      </NotaComodin>
+    );
+  } else {
+    nota = <NotaComodin tono="info">{origen}</NotaComodin>;
+  }
+  return (
+    <div className="flex flex-col gap-2">
+      <label className={cx('flex items-start gap-2 self-start text-sm max-sm:min-h-10', bloqueada ? 'cursor-not-allowed text-subtle' : 'cursor-pointer')}>
+        <input
+          type="checkbox"
+          className="mt-0.5 h-4 w-4 shrink-0 accent-acc"
+          checked={marcada}
+          disabled={bloqueada}
+          onChange={(e) => onChange(e.target.checked)}
+        />
+        <span className="min-w-0">
+          <span className="font-medium">Certificado comodín para el dominio raíz</span>
+          <span className="mt-0.5 block text-xs leading-relaxed text-subtle">
+            Un solo certificado para <span className="font-mono">{ejemplo}</span> y <span className="font-mono">*.{ejemplo}</span>, que se utiliza en todos los
+            subdominios generados en lugar de pedir uno por servicio. Lo emite Let's Encrypt por DNS-01 a través de Cloudflare. Los dominios propios siguen con su propio certificado.
+          </span>
+        </span>
+      </label>
+      {nota}
+    </div>
+  );
+}
+
+/**
+ * Token de Cloudflare del certificado comodín, guardado desde el panel para no
+ * tener que editar el .env del servidor. Solo se escribe: después solo se ve su
+ * pista. Va con su propio botón, porque se prueba en Cloudflare antes de
+ * guardarlo y puede reiniciar Traefik.
+ */
+function TokenComodin({ comodin, raizGuardada }: { comodin?: ComodinTraefik; raizGuardada: string }) {
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const [token, setToken] = useState('');
+  const [confirmarBorrado, setConfirmarBorrado] = useState(false);
+  const aplicar = (res: RespuestaTokenComodin, mensaje: string) => {
+    queryClient.setQueryData<RespuestaAjustes>(['settings'], (old) => (old ? { ...old, comodin: res.comodin } : old));
+    if (res.reinicio) {
+      toast(`${mensaje}. Traefik se está reiniciando: las webs pueden no responder durante unos segundos.`, 'ok');
+      // Se vuelve a leer cuando Traefik ya ha vuelto.
+      window.setTimeout(() => queryClient.invalidateQueries({ queryKey: ['settings'] }), 10_000);
+    } else {
+      toast(mensaje, 'ok');
+      queryClient.invalidateQueries({ queryKey: ['settings'] });
+    }
+  };
+  const guardar = useMutation({
+    mutationFn: () => api.put<RespuestaTokenComodin>('/settings/wildcard-token', { token: token.trim() }),
+    onSuccess: (res) => {
+      setToken('');
+      aplicar(res, 'Token guardado');
+    },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+  const borrar = useMutation({
+    mutationFn: () => api.del<RespuestaTokenComodin>('/settings/wildcard-token'),
+    onSuccess: (res) => {
+      setConfirmarBorrado(false);
+      aplicar(res, 'Token eliminado');
+    },
+    onError: (err: Error) => toast(err.message, 'err'),
+  });
+
+  if (!comodin) return null;
+  // Con el mismo criterio que la casilla: solo si Traefik tiene el resolutor
+  // (o ya hay un token guardado, para poder eliminarlo).
+  const conResolutor = comodin.resolutor === 'ok' || comodin.resolutor === 'sin_token';
+  if (!conResolutor && !comodin.panel.configurado) return null;
+  const { configurado, pista } = comodin.panel;
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border border-line bg-bg px-3.5 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-xs font-semibold">Token de Cloudflare del certificado comodín</h3>
+        {configurado && <OkPill label={pista ? `Guardado · …${pista}` : 'Guardado'} />}
+      </div>
+      {!comodin.panel.disponible ? (
+        <p className="text-xs leading-relaxed text-subtle">
+          Para guardarlo desde aquí, actualiza Skyway con <span className="font-mono">skyway update</span>: el docker-compose.yml actual comparte con
+          Traefik el volumen donde se guarda. Mientras tanto, defínelo en <span className="font-mono">CF_DNS_API_TOKEN</span> del{' '}
+          <span className="font-mono">.env</span> del servidor.
+        </p>
+      ) : (
+        <>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              className="input min-w-0 flex-1 font-mono text-xs"
+              type="password"
+              autoComplete="off"
+              aria-label="Token de Cloudflare del certificado comodín"
+              placeholder={configurado ? '••••••••  (escribe para reemplazar)' : 'Token de API de Cloudflare'}
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+            />
+            <Button size="sm" variant="secondary" onClick={() => guardar.mutate()} loading={guardar.isPending} disabled={!token.trim() || !raizGuardada}>
+              Guardar token
+            </Button>
+          </div>
+          <p className="text-xs leading-relaxed text-subtle">
+            Permisos «Zone · DNS · Edit» y «Zone · Zone · Read», solo en la zona del dominio raíz. Se comprueba en Cloudflare antes de guardarlo y solo lo
+            lee Traefik; no se guarda en la base de datos del panel. Si sustituyes uno que Traefik ya utiliza, Traefik se reinicia: las webs pueden no
+            responder durante unos segundos.
+          </p>
+          {!raizGuardada && <NotaComodin tono="warn">Guarda primero el dominio raíz: el token se comprueba con su zona.</NotaComodin>}
+          {comodin.token === 'entorno' && (
+            <NotaComodin tono="info">
+              Traefik utiliza el token <span className="font-mono">CF_DNS_API_TOKEN</span> del <span className="font-mono">.env</span> del servidor: el que se
+              guarde aquí no se usa mientras exista.
+            </NotaComodin>
+          )}
+          {configurado && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="self-start text-err hover:bg-err/[.1]"
+              onClick={() => setConfirmarBorrado(true)}
+              loading={borrar.isPending}
+            >
+              <Trash2 size={13} /> Eliminar token
+            </Button>
+          )}
+        </>
+      )}
+      <ConfirmModal
+        open={confirmarBorrado}
+        onClose={() => setConfirmarBorrado(false)}
+        onConfirm={() => borrar.mutate()}
+        title="Eliminar token"
+        message="Se eliminará el token de Cloudflare guardado en el panel. Si Traefik lo utiliza, se reinicia y el certificado comodín deja de renovarse: si no vas a guardar otro, desactiva también la casilla."
+        confirmLabel="Eliminar"
+        loading={borrar.isPending}
+      />
+    </div>
+  );
+}
+
 export default function SettingsPage() {
   const toast = useToast();
   const queryClient = useQueryClient();
@@ -208,6 +514,7 @@ export default function SettingsPage() {
   const [discordUrl, setDiscordUrl] = useState('');
   const [telegramToken, setTelegramToken] = useState('');
   const [telegramChat, setTelegramChat] = useState('');
+  const [wildcardCert, setWildcardCert] = useState(false);
   const [testing, setTesting] = useState(false);
   const [githubTesting, setGithubTesting] = useState(false);
   const [githubTest, setGithubTest] = useState<
@@ -218,8 +525,7 @@ export default function SettingsPage() {
 
   const settings = useQuery({
     queryKey: ['settings'],
-    queryFn: () =>
-      api.get<{ settings: Settings; traefikAcme?: TraefikAcme; defaults?: { keepImages: number } }>('/settings'),
+    queryFn: () => api.get<RespuestaAjustes>('/settings'),
   });
   // Versiones por servicio cuya imagen se conserva: se guarda aparte, con su botón.
   const [keepImages, setKeepImages] = useState('');
@@ -297,7 +603,7 @@ export default function SettingsPage() {
     if (!settings.data) return;
     const s = settings.data.settings;
     const prev = prevServerRef.current;
-    const sync = (key: Exclude<keyof Settings, 'hasGithubToken' | 'hasTelegramToken'>, set: (v: string) => void) => {
+    const sync = (key: Exclude<keyof Settings, 'hasGithubToken' | 'hasTelegramToken' | 'wildcardCert'>, set: (v: string) => void) => {
       if (!prev || prev[key] !== s[key]) set(s[key] || '');
     };
     sync('rootDomain', setRootDomain);
@@ -311,6 +617,7 @@ export default function SettingsPage() {
     sync('alertDiscordUrl', setDiscordUrl);
     sync('alertTelegramChat', setTelegramChat);
     sync('keepImages', setKeepImages);
+    if (!prev || prev.wildcardCert !== s.wildcardCert) setWildcardCert(s.wildcardCert === '1');
     prevServerRef.current = s;
   }, [settings.data]);
 
@@ -328,6 +635,9 @@ export default function SettingsPage() {
         alertWebhookUrl: webhookUrl,
         alertDiscordUrl: discordUrl,
         alertTelegramChat: telegramChat,
+        // Solo si cambia: activarlo vuelve a comprobar el resolutor de Traefik,
+        // y reenviar lo que ya estaba no debe impedir guardar lo demás.
+        ...(wildcardCert !== (settings.data?.settings.wildcardCert === '1') ? { wildcardCert } : {}),
         ...(githubToken ? { githubToken } : {}),
         ...(telegramToken ? { alertTelegramToken: telegramToken } : {}),
       }),
@@ -352,7 +662,8 @@ export default function SettingsPage() {
         rootDomain !== (s.rootDomain || '') ||
         letsencryptEmail !== (s.letsencryptEmail || '') ||
         serverIp !== (s.serverIp || '') ||
-        serverIpv6 !== (s.serverIpv6 || ''),
+        serverIpv6 !== (s.serverIpv6 || '') ||
+        wildcardCert !== (s.wildcardCert === '1'),
       github: !!githubToken,
       alerts:
         !!telegramToken ||
@@ -363,7 +674,7 @@ export default function SettingsPage() {
         discordUrl !== (s.alertDiscordUrl || '') ||
         telegramChat !== (s.alertTelegramChat || ''),
     };
-  }, [settings.data, githubToken, telegramToken, rootDomain, letsencryptEmail, serverIp, serverIpv6, cpuPct, memPct, sustainMin, webhookUrl, discordUrl, telegramChat]);
+  }, [settings.data, githubToken, telegramToken, rootDomain, letsencryptEmail, serverIp, serverIpv6, wildcardCert, cpuPct, memPct, sustainMin, webhookUrl, discordUrl, telegramChat]);
   const dirty = pending.domains || pending.github || pending.alerts;
 
   const discardSettings = () => {
@@ -373,6 +684,7 @@ export default function SettingsPage() {
     setLetsencryptEmail(s.letsencryptEmail || '');
     setServerIp(s.serverIp || '');
     setServerIpv6(s.serverIpv6 || '');
+    setWildcardCert(s.wildcardCert === '1');
     setCpuPct(s.alertCpuPercent || '');
     setMemPct(s.alertMemPercent || '');
     setSustainMin(s.alertSustainMinutes || '');
@@ -491,6 +803,16 @@ export default function SettingsPage() {
             >
               <input className="input" placeholder="apps.midominio.com" value={rootDomain} onChange={(e) => setRootDomain(e.target.value)} />
             </Field>
+            <CasillaComodin
+              comodin={settings.data?.comodin}
+              marcada={wildcardCert}
+              guardada={settings.data?.settings.wildcardCert === '1'}
+              rootDomain={rootDomain}
+              raizGuardada={settings.data?.settings.rootDomain ?? ''}
+              conHttps={!!letsencryptEmail.trim()}
+              onChange={setWildcardCert}
+            />
+            <TokenComodin comodin={settings.data?.comodin} raizGuardada={settings.data?.settings.rootDomain ?? ''} />
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <Field
                 label="Correo electrónico para Let's Encrypt"

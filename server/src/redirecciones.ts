@@ -23,6 +23,11 @@
  * Cada nombre lo publica un solo router de los de aquí (ver
  * `redireccionesVigentes`): entre dos reglas iguales con la misma prioridad,
  * Traefik elige sin un orden fijo.
+ *
+ * Un nombre que cubre el certificado comodín del dominio raíz (comodin.ts) va
+ * con TLS y sin resolutor, como en las etiquetas de su servicio: cambiar a un
+ * dominio raíz nuevo prepublica de golpe los subdominios generados de todos
+ * los servicios, y con `le` cada uno pediría su certificado.
  */
 import crypto from 'crypto';
 import tls from 'tls';
@@ -34,6 +39,7 @@ import {
   listPrepublished,
   listServicesForProjects,
 } from './db';
+import { cubiertoPorComodin, dominioComodin } from './comodin';
 import { traefikServiceName } from './docker/containers';
 import { parseHostRule, TraefikDynamicConfig } from './mailwaytraefik';
 import { tlsEnabled } from './tls';
@@ -44,7 +50,12 @@ export interface TraefikRouterSkyway {
   service: string;
   priority: number;
   middlewares?: string[];
-  tls?: { certResolver: string };
+  /**
+   * `{}`: TLS con el certificado del almacén que encaje por SNI, sin pedir
+   * ninguno (el comodín). `domains`: los nombres que pide el resolutor en vez
+   * de los de la regla (el router del comodín).
+   */
+  tls?: { certResolver?: string; domains?: { main: string; sans?: string[] }[] };
 }
 
 export interface ConfigSkyway {
@@ -179,6 +190,9 @@ function redireccionesVigentes(filas: readonly DomainRedirectRow[], ocupado: (ho
 /** Configuración propia de Skyway para el proveedor HTTP. Pura salvo las lecturas de la base. */
 export function configuracionTraefikSkyway(ahora = Date.now()): ConfigSkyway {
   const conTls = tlsEnabled();
+  const raizComodin = conTls ? dominioComodin() : null;
+  const tlsDe = (host: string): NonNullable<TraefikRouterSkyway['tls']> =>
+    cubiertoPorComodin(host, raizComodin) ? {} : { certResolver: CERT_RESOLVER };
   const routers: ConfigSkyway['http']['routers'] = {};
   const middlewares: ConfigSkyway['http']['middlewares'] = {};
 
@@ -215,7 +229,7 @@ export function configuracionTraefikSkyway(ahora = Date.now()): ConfigSkyway {
         entryPoints: ['websecure'],
         priority: PRIORIDAD,
         service,
-        tls: { certResolver: CERT_RESOLVER },
+        tls: tlsDe(host),
       };
     }
     prepublicados.add(host);
@@ -244,7 +258,7 @@ export function configuracionTraefikSkyway(ahora = Date.now()): ConfigSkyway {
         priority: PRIORIDAD,
         service: 'noop@internal',
         middlewares: [nombre],
-        tls: { certResolver: CERT_RESOLVER },
+        tls: tlsDe(host),
       };
     }
   }
@@ -263,12 +277,16 @@ function esObjeto(v: unknown): v is Record<string, unknown> {
  * que reclaman un host que ya publica Skyway: el saneado del puente ya los
  * quita (`listAssignedDomains`), y aquí se asegura aunque la copia de Mailway
  * sea anterior a la redirección. `panel` son los routers de los dominios
- * adicionales del panel (`SKYWAY_DOMAIN_EXTRA`), también propios.
+ * adicionales del panel (`SKYWAY_DOMAIN_EXTRA`), también propios. `comodin`
+ * es el router que pide el certificado comodín del dominio raíz
+ * (comodin.ts): no cuenta como nombre propio, porque su regla no atiende
+ * peticiones reales y no le quita la raíz a nadie.
  */
 export function mezclarConfiguracion(
   mailway: TraefikDynamicConfig,
   propia: ConfigSkyway,
   panel: TraefikDynamicConfig = {},
+  comodin: { http?: { routers?: Record<string, TraefikRouterSkyway> } } = {},
 ): ConfigTraefikMezclada {
   const deSkyway = (nombre: string) => nombre.startsWith(PREFIJO_SKYWAY);
   const hostsPropios = new Set<string>();
@@ -294,6 +312,7 @@ export function mezclarConfiguracion(
   const routers: Record<string, unknown> = {
     ...Object.fromEntries(mwRouters),
     ...(panel.http?.routers ?? {}),
+    ...(comodin.http?.routers ?? {}),
     ...propia.http.routers,
   };
   const services: Record<string, unknown> = {

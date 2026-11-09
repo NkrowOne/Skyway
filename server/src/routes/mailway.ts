@@ -133,6 +133,7 @@ import {
   reserveWhitelabelHost,
   stableStringify,
 } from '../mailwaytraefik';
+import { configuracionTraefikComodin } from '../comodin';
 import { panelExtraTraefikConfig } from '../paneldomain';
 import { configuracionTraefikSkyway, mezclarConfiguracion } from '../redirecciones';
 import {
@@ -1301,14 +1302,16 @@ export async function mailwayRoutes(app: FastifyInstance): Promise<void> {
     );
     if (reenviada) return reply.code(404).send({ error: 'No encontrado' });
     // Más lo propio de Skyway: las redirecciones y la prepublicación del cambio
-    // de dominio (redirecciones.ts) y los routers de los dominios adicionales
-    // del panel (SKYWAY_DOMAIN_EXTRA, ver paneldomain.ts). Van aquí porque es el
+    // de dominio (redirecciones.ts), los routers de los dominios adicionales
+    // del panel (SKYWAY_DOMAIN_EXTRA, ver paneldomain.ts) y el que pide el
+    // certificado comodín del dominio raíz (comodin.ts). Van aquí porque es el
     // único proveedor dinámico que Traefik ya lee, y salen aunque Mailway no
     // esté configurado: `mailwayTraefikConfig` nunca lanza.
     const config = mezclarConfiguracion(
       await mailwayTraefikConfig(req.log),
       configuracionTraefikSkyway(),
       panelExtraTraefikConfig(),
+      configuracionTraefikComodin(),
     );
     return reply.type('application/json; charset=utf-8').send(stableStringify(config));
   });

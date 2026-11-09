@@ -81,7 +81,9 @@ Si arreglas un fallo con una prueba que lo reproduce, mejor.
   guardan el estado intermedio antes de empezar y son idempotentes; el estado
   del correo vive solo en Mailway. Los routers de los servicios llevan la
   huella de sus hosts en el nombre (`traefikRouter`): no lo cambies a un
-  nombre fijo.
+  nombre fijo. Con el certificado comodín del dominio raíz (`comodin.ts`,
+  FUNCIONALIDAD §2), los subdominios generados van en un segundo router con la
+  huella de los suyos y el sufijo `-comodin`, con TLS y sin resolutor.
 - **Docker/BBDD/archivos**: nunca interpoles entrada del usuario en un shell;
   pásala como variable de entorno del `exec` (patrón en `dbconsole.ts` y
   `files.ts`).
