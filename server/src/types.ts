@@ -806,9 +806,15 @@ export interface RegistroFacturacionRow {
   registro_json: string;
   /** 1 si es la subsanación de un registro anterior de la misma factura. */
   subsanacion: number;
-  /** 1 si no se pudo remitir a su hora (sin certificado o sin conexión). */
+  /** 1 si no se pudo remitir a su hora (sin certificado, sin conexión o con el envío rechazado). */
   incidencia: number;
   intentos: number;
+  /**
+   * 1 si algún envío del registro acabó sin saber si la AEAT lo guardó (corte
+   * a mitad, respuesta perdida). Solo entonces un «duplicado» (3000) posterior
+   * es el propio registro; si no, es otra factura con el mismo número y fecha.
+   */
+  envio_incierto: number;
   ultimo_intento_at: number | null;
   respuesta_at: number | null;
   codigo_error: string | null;

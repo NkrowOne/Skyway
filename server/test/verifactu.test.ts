@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import https from 'node:https';
-import type { AddressInfo } from 'node:net';
+import net, { type AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { inflateSync } from 'node:zlib';
@@ -9,9 +9,9 @@ import Database from 'better-sqlite3';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app';
-import { API_TOKEN_PREFIX, hashApiToken } from '../src/auth';
+import { API_TOKEN_PREFIX, hashApiToken, signToken } from '../src/auth';
 import { config } from '../src/config';
-import { closeDb, createUser, initDb, insertApiToken, listInvoiceSeries, registrosDeFactura } from '../src/db';
+import { closeDb, createUser, getSetting, initDb, insertApiToken, listInvoiceSeries, registrosDeFactura, setSetting } from '../src/db';
 import { huellaAlta, huellaAnulacion } from '../src/verifactu/huella';
 import { peticionHttps, remisionTick, type Transporte } from '../src/verifactu/remision';
 import type { RegistroAeat } from '../src/verifactu/tipos';
@@ -22,6 +22,8 @@ type Json = any;
 
 let app: FastifyInstance;
 let headers: Record<string, string>;
+/** Sesión de navegador del administrador: la piden las credenciales (el certificado). */
+let sesion: Record<string, string>;
 let wsId = '';
 let wsExtranjero = '';
 /** Factura emitida antes de activar VERI*FACTU: no tiene registro de alta. */
@@ -31,11 +33,11 @@ let antigua = '';
 const NIF_EMISOR = '89890001K';
 const NIF_CLIENTE = 'B12345674';
 
-async function call(method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE', url: string, body?: unknown): Promise<{ status: number; json: Json }> {
+async function call(method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE', url: string, body?: unknown, cabeceras: Record<string, string> = headers): Promise<{ status: number; json: Json }> {
   const r = await app.inject({
     method,
     url,
-    headers: body === undefined ? headers : { ...headers, 'content-type': 'application/json' },
+    headers: body === undefined ? cabeceras : { ...cabeceras, 'content-type': 'application/json' },
     payload: body === undefined ? undefined : JSON.stringify(body),
   });
   let json: Json = null;
@@ -164,6 +166,9 @@ function soapFault(codigo: string, texto: string): string {
 
 const todoCorrecto = (r: Recibido): string => respuestaAeat(r, () => ({ estado: 'Correcto' }));
 
+/** Corte después de entregar la petición: la AEAT pudo guardar el lote. */
+const respuestaPerdida = (): Error => Object.assign(new Error('socket hang up'), { enviado: true });
+
 /** Transporte simulado: anota lo enviado y contesta con `responder`. */
 function transporte(responder: (r: Recibido) => string | Error): Transporte {
   return async (_url, xml) => {
@@ -184,6 +189,7 @@ beforeAll(async () => {
   const secret = `${API_TOKEN_PREFIX}${randomToken(24)}`;
   insertApiToken({ user_id: admin.id, name: 'pruebas', token_hash: hashApiToken(secret), prefix: secret.slice(0, 12), expires_at: null });
   headers = { authorization: `Bearer ${secret}` };
+  sesion = { cookie: `skyway_token=${signToken(admin.id)}`, 'sec-fetch-site': 'same-origin' };
   app = buildApp();
   await app.ready();
 });
@@ -257,11 +263,22 @@ describe('activación de VERI*FACTU', () => {
     expect(apartado('1.i')).toBe(NIF_EMISOR);
   });
 
+  it('unos datos del productor guardados a medias no impiden cambiar de modo ni de entorno', async () => {
+    // Como los que pudo dejar una versión anterior: el nombre sin el NIF.
+    setSetting('verifactu', JSON.stringify({ ...JSON.parse(getSetting('verifactu') ?? '{}'), productorNombre: 'Productora a medias SL', productorNif: '' }));
+    let r = await call('PUT', '/api/verifactu', { entorno: 'pruebas' });
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    // Mientras, el productor efectivo es la empresa emisora.
+    expect(r.json.declaracion.apartados.find((a: Json) => a.letra === '1.h').texto).toBe('Emisor Pruebas SL');
+    r = await call('PUT', '/api/verifactu', { productorNombre: '', productorNif: '' });
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+  });
+
   it('la declaración responsable se descarga en texto, con los rótulos del modelo de la AEAT en su orden', async () => {
     const r = await app.inject({ method: 'GET', url: '/api/verifactu/declaracion.txt', headers });
     expect(r.statusCode).toBe(200);
     expect(r.headers['content-type']).toMatch(/^text\/plain/);
-    expect(r.headers['content-disposition']).toBe('attachment; filename="declaracion-responsable-skyway.txt"');
+    expect(r.headers['content-disposition']).toBe(`attachment; filename="declaracion-responsable-skyway-${config.version}.txt"`);
     const texto = r.body;
     expect(texto.startsWith('DECLARACIÓN RESPONSABLE DEL SISTEMA INFORMÁTICO DE FACTURACIÓN\n')).toBe(true);
     expect(texto).toContain('1.a) Nombre del sistema informático a que se refiere esta declaración responsable:\nSkyway\n');
@@ -581,11 +598,20 @@ describe('validaciones antes de emitir', () => {
 });
 
 describe.skipIf(!hayOpenssl)('certificado y remisión a una AEAT simulada', () => {
+  it('cargar o retirar el certificado exige sesión de navegador: con un token de API, no', async () => {
+    let r = await call('POST', '/api/verifactu/certificado', { pfx: leer('cliente.p12').toString('base64'), password: 'clave de pruebas' });
+    expect(r.status).toBe(403);
+    expect(r.json.error).toMatch(/sesión de navegador/);
+    r = await call('DELETE', '/api/verifactu/certificado');
+    expect(r.status).toBe(403);
+    expect((await call('GET', '/api/verifactu')).json.certificado).toBeNull();
+  });
+
   it('rechaza un certificado con la contraseña equivocada y acepta el bueno sin devolverlo', async () => {
-    let r = await call('POST', '/api/verifactu/certificado', { pfx: leer('cliente.p12').toString('base64'), password: 'mala' });
+    let r = await call('POST', '/api/verifactu/certificado', { pfx: leer('cliente.p12').toString('base64'), password: 'mala' }, sesion);
     expect(r.status).toBe(400);
     expect(r.json.error).toBe('La contraseña del certificado no es correcta.');
-    r = await call('POST', '/api/verifactu/certificado', { pfx: leer('cliente.p12').toString('base64'), password: 'clave de pruebas' });
+    r = await call('POST', '/api/verifactu/certificado', { pfx: leer('cliente.p12').toString('base64'), password: 'clave de pruebas' }, sesion);
     expect(r.status, JSON.stringify(r.json)).toBe(200);
     expect(r.json.certificado).toMatchObject({ nif: NIF_EMISOR });
     const vista = (await call('GET', '/api/verifactu')).json;
@@ -628,7 +654,8 @@ describe.skipIf(!hayOpenssl)('certificado y remisión a una AEAT simulada', () =
     const t0 = Date.now() + 400_000;
     let res = await remisionTick({ ahora: t0, transporte: transporte(() => new Error('connect ECONNREFUSED')) });
     expect(res).toMatchObject({ enviado: true, resultado: 'fallo' });
-    expect(registrosDeFactura(id)[0]).toMatchObject({ estado_remision: 'pendiente', incidencia: 1, intentos: 1 });
+    // La conexión ni se abrió: la AEAT no tiene nada, el envío no queda incierto.
+    expect(registrosDeFactura(id)[0]).toMatchObject({ estado_remision: 'pendiente', incidencia: 1, intentos: 1, envio_incierto: 0 });
     // Aviso desde el primer fallo, con cuántos faltan (art. 16.4 de la Orden).
     const alertas = (await call('GET', '/api/alerts')).json;
     const lista: Json[] = Array.isArray(alertas) ? alertas : alertas.alerts ?? [];
@@ -659,31 +686,37 @@ describe.skipIf(!hayOpenssl)('certificado y remisión a una AEAT simulada', () =
     expect(registrosDeFactura(id)[0].estado_remision).toBe('correcto');
   });
 
-  it('si un registro hace rechazar el envío entero, se reenvía de uno en uno: el culpable queda rechazado y el resto sigue', async () => {
-    const buena = await borrador(wsId);
-    const mala = await borrador(wsId);
-    expect((await emitir(buena)).status).toBe(200);
-    expect((await emitir(mala)).status).toBe(200);
+  it('si un registro hace rechazar el envío entero, se parte el lote hasta dar con él: queda rechazado y el resto sigue', async () => {
+    const ids: string[] = [];
+    for (let i = 0; i < 4; i++) {
+      const id = await borrador(wsId);
+      expect((await emitir(id)).status).toBe(200);
+      ids.push(id);
+    }
+    const mala = ids[2];
     const numMala = registrosDeFactura(mala)[0].num_serie_factura;
     // La AEAT simulada rechaza entero cualquier envío que lleve el registro de `mala`.
     const aeat = transporte((r) => (r.registros.some((x) => x.num === numMala) ? soapFault('4102', 'El XML no cumple el esquema. Falta informar campo obligatorio.') : todoCorrecto(r)));
     const t0 = Date.now() + 1_200_000;
+    const tamanos: number[] = [];
     let res = await remisionTick({ ahora: t0, transporte: aeat });
-    expect(res).toMatchObject({ resultado: 'rechazado', registros: 2 });
-    expect(registrosDeFactura(buena)[0].estado_remision).toBe('pendiente');
-    expect(registrosDeFactura(mala)[0].estado_remision).toBe('pendiente');
-    res = await remisionTick({ ahora: t0 + 61_000, transporte: aeat });
-    expect(res).toMatchObject({ resultado: 'correcto', registros: 1 });
-    expect(registrosDeFactura(buena)[0].estado_remision).toBe('correcto');
-    res = await remisionTick({ ahora: t0 + 122_000, transporte: aeat });
-    expect(res).toMatchObject({ resultado: 'rechazado', registros: 1 });
-    expect(registrosDeFactura(mala)[0]).toMatchObject({ estado_remision: 'incorrecto', codigo_error: '4102' });
+    expect(res).toMatchObject({ resultado: 'rechazado', registros: 4 });
+    tamanos.push(res.registros!);
+    // Cada envío, pasada la espera de la AEAT (60 s), con la mitad del lote que falló.
+    for (let paso = 1; paso <= 4; paso++) {
+      res = await remisionTick({ ahora: t0 + paso * 61_000, transporte: aeat });
+      tamanos.push(res.registros!);
+    }
+    // 4 → [1, 2] bien, [3, 4] mal → [3] culpable → [4] bien.
+    expect(tamanos).toEqual([4, 2, 2, 1, 1]);
+    expect(ids.map((id) => registrosDeFactura(id)[0].estado_remision)).toEqual(['correcto', 'correcto', 'incorrecto', 'correcto']);
+    expect(registrosDeFactura(mala)[0].codigo_error).toBe('4102');
     const inv = (await call('GET', `/api/workspaces/${wsId}/invoices`)).json.invoices.find((i: Json) => i.id === mala);
     expect(inv.verifactu).toMatchObject({ estado: 'incorrecto', codigoError: '4102', accion: 'subsanar' });
     expect((await alertasAbiertas('verifactu_registro')).some((a) => a.title.includes(inv.number))).toBe(true);
-    // Encontrado el culpable, la cola vuelve a los lotes.
+    // Encontrado el culpable, la cola vuelve a los lotes enteros.
     for (const otra of [await borrador(wsId), await borrador(wsId)]) expect((await emitir(otra)).status).toBe(200);
-    res = await remisionTick({ ahora: t0 + 183_000, transporte: aeat });
+    res = await remisionTick({ ahora: t0 + 5 * 61_000, transporte: aeat });
     expect(res).toMatchObject({ resultado: 'correcto', registros: 2 });
   });
 
@@ -692,9 +725,12 @@ describe.skipIf(!hayOpenssl)('certificado y remisión a una AEAT simulada', () =
     expect((await emitir(id)).status).toBe(200);
     const t0 = Date.now() + 2_000_000;
     // El envío llega a la AEAT, pero la respuesta se pierde por el camino.
-    await remisionTick({ ahora: t0, transporte: transporte(() => new Error('socket hang up')) });
-    expect(registrosDeFactura(id)[0]).toMatchObject({ estado_remision: 'pendiente', intentos: 1 });
-    const res = await remisionTick({ ahora: t0 + 1000, forzar: true, transporte: transporte((r) => respuestaAeat(r, () => ({ estado: 'Duplicado', previo: 'Correcta' }))) });
+    await remisionTick({ ahora: t0, transporte: transporte(respuestaPerdida) });
+    expect(registrosDeFactura(id)[0]).toMatchObject({ estado_remision: 'pendiente', intentos: 1, envio_incierto: 1 });
+    // La AEAT pudo contarlo como envío: «Enviar ahora» respeta su espera.
+    let res = await remisionTick({ ahora: t0 + 1000, forzar: true, transporte: transporte(() => new Error('no debería llamarse')) });
+    expect(res).toEqual({ enviado: false, motivo: 'esperando' });
+    res = await remisionTick({ ahora: t0 + 61_000, forzar: true, transporte: transporte((r) => respuestaAeat(r, () => ({ estado: 'Duplicado', previo: 'Correcta' }))) });
     expect(res.enviado).toBe(true);
     expect(registrosDeFactura(id)[0]).toMatchObject({ estado_remision: 'correcto', id_peticion: '2025PET0001' });
   });
@@ -702,8 +738,35 @@ describe.skipIf(!hayOpenssl)('certificado y remisión a una AEAT simulada', () =
   it('en el primer envío, un duplicado (3000) es un rechazo: la AEAT ya tiene otra factura con ese número y fecha', async () => {
     const id = await borrador(wsId);
     expect((await emitir(id)).status).toBe(200);
-    await remisionTick({ ahora: Date.now() + 2_100_000, forzar: true, transporte: transporte((r) => respuestaAeat(r, () => ({ estado: 'Duplicado', previo: 'Correcta' }))) });
+    await remisionTick({ ahora: Date.now() + 2_150_000, forzar: true, transporte: transporte((r) => respuestaAeat(r, () => ({ estado: 'Duplicado', previo: 'Correcta' }))) });
     expect(registrosDeFactura(id)[0]).toMatchObject({ estado_remision: 'incorrecto', codigo_error: '3000', id_peticion: null });
+  });
+
+  it('tras un rechazo del envío entero (SOAP Fault), un duplicado (3000) también es un rechazo: la AEAT no guardó nada', async () => {
+    const id = await borrador(wsId);
+    expect((await emitir(id)).status).toBe(200);
+    const t0 = Date.now() + 2_300_000;
+    await remisionTick({ ahora: t0, transporte: transporte(() => soapFault('4111', 'Error técnico al crear el trámite.')) });
+    expect(registrosDeFactura(id)[0]).toMatchObject({ estado_remision: 'pendiente', intentos: 1, envio_incierto: 0 });
+    await remisionTick({ ahora: t0 + 61_000, forzar: true, transporte: transporte((r) => respuestaAeat(r, () => ({ estado: 'Duplicado', previo: 'Correcta' }))) });
+    expect(registrosDeFactura(id)[0]).toMatchObject({ estado_remision: 'incorrecto', codigo_error: '3000', id_peticion: null });
+  });
+
+  it('si tras un corte la AEAT rechaza al registro culpable, el corte ha terminado: el aviso se cierra y lo siguiente nace sin incidencia', async () => {
+    const x = await borrador(wsId);
+    expect((await emitir(x)).status).toBe(200);
+    const t0 = Date.now() + 2_500_000;
+    await remisionTick({ ahora: t0, transporte: transporte(() => new Error('connect ECONNREFUSED')) });
+    expect(await alertasAbiertas('verifactu_remision')).toHaveLength(1);
+    const res = await remisionTick({ ahora: t0 + 1000, forzar: true, transporte: transporte(() => soapFault('4102', 'El XML no cumple el esquema. Falta informar campo obligatorio.')) });
+    expect(res).toMatchObject({ resultado: 'rechazado', registros: 1 });
+    expect(registrosDeFactura(x)[0].estado_remision).toBe('incorrecto');
+    // No queda ningún registro con incidencia por remitir: el aviso se cierra.
+    expect(await alertasAbiertas('verifactu_remision')).toHaveLength(0);
+    const y = await borrador(wsId);
+    expect((await emitir(y)).status).toBe(200);
+    expect(registrosDeFactura(y)[0].incidencia).toBe(0);
+    expect((await remisionTick({ ahora: t0 + 62_000, transporte: transporte(todoCorrecto) })).resultado).toBe('correcto');
   });
 
   it('un registro rechazado se ve en la factura y se subsana con un registro nuevo encadenado', async () => {
@@ -717,6 +780,8 @@ describe.skipIf(!hayOpenssl)('certificado y remisión a una AEAT simulada', () =
     });
     let inv = (await call('GET', `/api/workspaces/${wsId}/invoices`)).json.invoices.find((i: Json) => i.id === id);
     expect(inv.verifactu).toMatchObject({ estado: 'incorrecto', codigoError: '1100', accion: 'subsanar' });
+    const alertaDeLaFactura = async (): Promise<boolean> => (await alertasAbiertas('verifactu_registro')).some((a) => a.title.includes(inv.number));
+    expect(await alertaDeLaFactura()).toBe(true);
     const r = await call('POST', `/api/invoices/${id}/verifactu/subsanar`);
     expect(r.status, JSON.stringify(r.json)).toBe(200);
     const filas = registrosDeFactura(id);
@@ -730,6 +795,8 @@ describe.skipIf(!hayOpenssl)('certificado y remisión a una AEAT simulada', () =
     await remisionTick({ ahora: t0 + 61_000, transporte: transporte((x) => respuestaAeat(x, () => ({ estado: 'Correcto' }))) });
     inv = (await call('GET', `/api/workspaces/${wsId}/invoices`)).json.invoices.find((i: Json) => i.id === id);
     expect(inv.verifactu).toMatchObject({ estado: 'correcto', accion: null });
+    // Aceptada la subsanación, la alerta del rechazo queda resuelta.
+    expect(await alertaDeLaFactura()).toBe(false);
     // Nada más que subsanar.
     expect((await call('POST', `/api/invoices/${id}/verifactu/subsanar`)).status).toBe(409);
   });
@@ -757,6 +824,46 @@ describe.skipIf(!hayOpenssl)('certificado y remisión a una AEAT simulada', () =
     expect(sub.alta.Destinatarios).toEqual([{ NombreRazon: 'Lucía Pérez Gómez', IDOtro: { CodigoPais: 'ES', IDType: '07', ID: '00000000T' } }]);
     await remisionTick({ ahora: t0 + 61_000, transporte: transporte(todoCorrecto) });
     expect(registrosDeFactura(id)[1].estado_remision).toBe('correcto');
+  });
+
+  it('cargar un certificado levanta la espera de una hora tras un rechazo de configuración, pero no la de la AEAT', async () => {
+    const id = await borrador(wsId);
+    expect((await emitir(id)).status).toBe(200);
+    const t0 = Date.now() + 3_700_000;
+    await remisionTick({ ahora: t0, transporte: transporte(() => soapFault('4112', 'El titular del certificado debe ser Obligado Emisión, Colaborador Social, Apoderado o Sucesor.')) });
+    let res = await remisionTick({ ahora: t0 + 120_000, transporte: transporte(() => new Error('no debería llamarse')) });
+    expect(res).toEqual({ enviado: false, motivo: 'esperando' });
+    const r = await call('POST', '/api/verifactu/certificado', { pfx: leer('cliente.p12').toString('base64'), password: 'clave de pruebas' }, sesion);
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    // La espera de la AEAT tras el rechazo (60 s) sigue contando…
+    res = await remisionTick({ ahora: t0 + 30_000, transporte: transporte(() => new Error('no debería llamarse')) });
+    expect(res).toEqual({ enviado: false, motivo: 'esperando' });
+    // …pero la hora de espera por el rechazo de configuración ya no.
+    res = await remisionTick({ ahora: t0 + 120_000, transporte: transporte(todoCorrecto) });
+    expect(res.resultado).toBe('correcto');
+    expect(registrosDeFactura(id)[0].estado_remision).toBe('correcto');
+  });
+
+  it('una petición que no llega a salir no queda como enviada; una que sale y no tiene respuesta, sí', async () => {
+    const cert = { pfx: leer('cliente.p12'), passphrase: 'clave de pruebas' };
+    // Puerto cerrado: la conexión ni se abre.
+    const libre = net.createServer();
+    await new Promise<void>((ok) => libre.listen(0, '127.0.0.1', ok));
+    const puertoCerrado = (libre.address() as AddressInfo).port;
+    await new Promise((ok) => libre.close(ok));
+    const rechazada = await peticionHttps(`https://localhost:${puertoCerrado}/x`, '<x/>', cert, { timeoutMs: 2000, ca: leer('servidor.pem') }).catch((e: unknown) => e);
+    expect(rechazada).toMatchObject({ enviado: false });
+    // Un servidor que recibe la petición entera y no contesta nunca.
+    const mudo = https.createServer({ key: leer('servidor.key'), cert: leer('servidor.pem') }, (req) => req.resume());
+    await new Promise<void>((ok) => mudo.listen(0, '127.0.0.1', ok));
+    try {
+      const { port } = mudo.address() as AddressInfo;
+      const sinRespuesta = await peticionHttps(`https://localhost:${port}/x`, '<x/>', cert, { timeoutMs: 500, ca: leer('servidor.pem') }).catch((e: unknown) => e);
+      expect(sinRespuesta).toMatchObject({ enviado: true, message: expect.stringMatching(/no ha respondido/) });
+    } finally {
+      mudo.closeAllConnections();
+      await new Promise((ok) => mudo.close(ok));
+    }
   });
 
   it('cada cadena tiene su cola: un corte en una no frena a la otra, y lo generado durante el corte consta con incidencia', async () => {
@@ -868,7 +975,7 @@ describe.skipIf(!hayOpenssl)('punto de acceso del certificado de sello', () => {
   it('un certificado de sello se remite por el punto de acceso de sello', async () => {
     openssl(['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', 'sello.key', '-out', 'sello.pem', '-days', '7300', '-subj', `/C=ES/O=EMISOR PRUEBAS SL/organizationIdentifier=VATES-${NIF_EMISOR}/CN=SELLO ELECTRONICO DE PRUEBAS`]);
     openssl(['pkcs12', '-export', '-inkey', 'sello.key', '-in', 'sello.pem', '-out', 'sello.p12', '-passout', 'pass:sello']);
-    let r = await call('POST', '/api/verifactu/certificado', { pfx: leer('sello.p12').toString('base64'), password: 'sello' });
+    let r = await call('POST', '/api/verifactu/certificado', { pfx: leer('sello.p12').toString('base64'), password: 'sello' }, sesion);
     expect(r.status, JSON.stringify(r.json)).toBe(200);
     expect(r.json.certificado).toMatchObject({ sello: true, nif: NIF_EMISOR });
     const id = await borrador(wsId);
@@ -933,5 +1040,37 @@ describe('comprobaciones antes de encadenar (art. 7.i de la Orden HAC/1177/2024)
     const alertas = await alertasAbiertas('verifactu_cadena');
     expect(alertas).toHaveLength(1);
     expect(alertas[0].severity).toBe('critical');
+  });
+
+  it.skipIf(!hayOpenssl)('un registro con los datos ilegibles se anota como anomalía al encadenar y, en la cola, queda rechazado sin frenar a los demás', async () => {
+    const db = new Database(path.join(config.dataDir, 'skyway.db'));
+    try {
+      const ultimo = db.prepare("SELECT * FROM invoice_ledger WHERE entorno = 'produccion' ORDER BY seq DESC LIMIT 1").get() as Record<string, unknown>;
+      db.prepare(
+        `INSERT INTO invoice_ledger (id, seq, invoice_id, record_type, emisor_nif, num_serie_factura, fecha_expedicion, tipo_factura, cuota_total_cents, importe_total_cents, fecha_hora_gen, huella, huella_anterior, sif_mode, qr_url, estado_remision, version_sif, created_at, entorno, registro_json)
+         VALUES (@id, @seq, @invoice_id, @record_type, @emisor_nif, @num_serie_factura, @fecha_expedicion, @tipo_factura, @cuota_total_cents, @importe_total_cents, @fecha_hora_gen, @huella, @huella_anterior, @sif_mode, @qr_url, 'pendiente', @version_sif, @created_at, @entorno, @registro_json)`,
+      ).run({ ...ultimo, id: 'vfr_ilegible', seq: Number(ultimo.seq) + 1, created_at: Date.now() - 500, registro_json: 'no es JSON' });
+    } finally {
+      db.close();
+    }
+    const id = await borrador(wsId);
+    const r = await emitir(id);
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    const eventos = (await call('GET', '/api/verifactu')).json.eventos as Json[];
+    expect(eventos.some((e) => e.tipo_evento === 'anomalia_cadena' && /no se pueden leer/.test(e.detalle))).toBe(true);
+    // El registro ilegible es de la misma factura que el anterior (un envío no
+    // lleva dos registros de una factura): la cola puede necesitar dos pasadas.
+    let ahora = Date.now() + 10_000_000;
+    for (let i = 0; i < 4 && registrosDeFactura(id)[0].estado_remision === 'pendiente'; i++, ahora += 61_000) {
+      const res = await remisionTick({ ahora, forzar: true, transporte: transporte(todoCorrecto) });
+      expect(res.resultado).toBe('correcto');
+    }
+    expect(registrosDeFactura(id)[0].estado_remision).toBe('correcto');
+    const db2 = new Database(path.join(config.dataDir, 'skyway.db'));
+    try {
+      expect(db2.prepare("SELECT estado_remision FROM invoice_ledger WHERE id = 'vfr_ilegible'").get()).toEqual({ estado_remision: 'incorrecto' });
+    } finally {
+      db2.close();
+    }
   });
 });

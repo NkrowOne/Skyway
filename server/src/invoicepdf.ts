@@ -259,6 +259,22 @@ function fmtExpedicion(data: InvoicePdfData): string {
   return fmtFecha(data.issuedAt);
 }
 
+/**
+ * Vencimiento. Con la fecha de expedición congelada (en hora peninsular), esa
+ * fecha más los días del plazo, contados en el calendario: con el instante de
+ * vencimiento en UTC, una factura de madrugada vencería un día antes de lo que
+ * dice su plazo. Las anteriores conservan la UTC, como su fecha de expedición.
+ */
+function fmtVencimiento(data: InvoicePdfData): string {
+  if (data.dueAt == null || !Number.isFinite(data.dueAt)) return '';
+  if (data.issuedDate && /^\d{4}-\d{2}-\d{2}$/.test(data.issuedDate) && data.issuedAt != null && Number.isFinite(data.issuedAt)) {
+    const dias = Math.round((data.dueAt - data.issuedAt) / 86_400_000);
+    const [a, m, d] = data.issuedDate.split('-').map(Number);
+    return fmtFecha(Date.UTC(a, m - 1, d + dias));
+  }
+  return fmtFecha(data.dueAt);
+}
+
 /** Fecha en el formato de metadatos PDF: D:AAAAMMDDHHmmSSZ. */
 function fmtFechaPdf(ms: number): string {
   const d = new Date(ms);
@@ -301,7 +317,7 @@ const ALTO_FILA = 15;
 const MM = 72 / 25.4;
 const LADO_QR = 35 * MM;
 const SILENCIO_QR = 6 * MM;
-const CUERPO_LEYENDA_QR = 12;
+const CUERPO_LEYENDA_QR = 14;
 // La cabecera (emisor y destinatario) es el único bloque que no pagina, así que
 // una dirección con decenas de saltos de línea imprimiría texto fuera del papel:
 // se recorta a las líneas que caben de sobra en cualquier dirección postal real.
@@ -399,7 +415,8 @@ export async function renderInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
     const silencio = Math.max(SILENCIO_QR, 4 * modulo);
     // Las leyendas, centradas sobre el QR y con un cuerpo «igual o superior al
     // del resto de datos de la factura» (especificación del QR de la AEAT, §3):
-    // 12 pt, el mayor de los datos (el TOTAL). El título no es un dato.
+    // 14 pt, el de la razón social del emisor, que es el dato más grande (el
+    // TOTAL va a 12). El título no es un dato. A 14 pt caben en los 35 mm.
     const centro = (texto: string, tam: number): number => MARGEN + (LADO_QR - anchoTexto(texto, tam, true)) / 2;
     dibujaTexto(centro('QR tributario:', CUERPO_LEYENDA_QR), y, 'QR tributario:', CUERPO_LEYENDA_QR, true);
     const arriba = y - 3 - silencio;
@@ -426,10 +443,12 @@ export async function renderInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
     // Un solo trazado relleno: los visores no dibujan juntas entre módulos.
     pagina.ops.push(`q 0 g ${rects.join(' ')} f Q`);
     const abajo = arriba - LADO_QR;
-    let yLeyenda = abajo - silencio - 9;
+    // La línea base, a la altura de las mayúsculas (~0,72 del cuerpo) bajo la
+    // zona de silencio, para que la leyenda no la invada.
+    let yLeyenda = abajo - silencio - Math.ceil(CUERPO_LEYENDA_QR * 0.75);
     dibujaTexto(centro('VERI*FACTU', CUERPO_LEYENDA_QR), yLeyenda, 'VERI*FACTU', CUERPO_LEYENDA_QR, true);
     if (data.verifactu.entorno === 'pruebas') {
-      yLeyenda -= 11;
+      yLeyenda -= 12;
       dibujaTexto(MARGEN, yLeyenda, 'Registro remitido al entorno de pruebas de la AEAT', 7, false, GRIS_TEXTO);
     }
     yEmisor = yLeyenda - 24;
@@ -457,7 +476,7 @@ export async function renderInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
   if (expedicion) fechas.push(`Fecha de expedición: ${expedicion}`);
   const operacion = fmtFecha(data.operationDate);
   if (operacion) fechas.push(`Fecha de operación: ${operacion}`);
-  const vencimiento = fmtFecha(data.dueAt);
+  const vencimiento = fmtVencimiento(data);
   if (vencimiento) fechas.push(`Vencimiento: ${vencimiento}`);
   for (const l of fechas) {
     dibujaTextoDer(X_DERECHA, yDer, truncar(l, 240, 8.5, false), 8.5, false, GRIS_TEXTO);

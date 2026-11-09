@@ -437,8 +437,16 @@ function fechaDeRegistro(fila: RegistroFacturacionRow): string {
 export function anomaliasCadena(ultimo: RegistroFacturacionRow): string[] {
   const out: string[] = [];
   const nombre = `${ultimo.num_serie_factura} (n.º ${ultimo.seq} de la cadena)`;
+  let r: RegistroAeat;
+  try {
+    r = registroAeat(ultimo);
+  } catch {
+    // Sin su contenido no hay huella que recalcular ni enlace que mirar. Es la
+    // anomalía misma (datos alterados) y se anota como tal: no es motivo para
+    // dejar de facturar (FAQ 15.2).
+    return [`los datos guardados del registro ${nombre} no se pueden leer`];
+  }
   if (huellaRecalculada(ultimo) !== ultimo.huella) out.push(`la huella del registro ${nombre} no cuadra con sus datos`);
-  const r = registroAeat(ultimo);
   const enc = r.tipo === 'alta' ? r.alta.Encadenamiento : r.anulacion.Encadenamiento;
   if (ultimo.seq === 1) {
     if (!enc.PrimerRegistro) out.push(`el registro ${nombre} es el primero de la cadena y no está marcado como tal`);
@@ -569,6 +577,7 @@ export function registrarAlta(inv: InvoiceRow, opts: OpcionesAlta): RegistroFact
     codigo_error: null,
     descripcion_error: null,
     id_peticion: null,
+    envio_incierto: 0,
   };
   insertarRegistroFacturacion(fila);
   return fila;
@@ -679,6 +688,7 @@ export function registrarAnulacion(inv: InvoiceRow, opts: { ahora?: number } = {
     codigo_error: null,
     descripcion_error: null,
     id_peticion: null,
+    envio_incierto: 0,
   };
   insertarRegistroFacturacion(fila);
   return fila;

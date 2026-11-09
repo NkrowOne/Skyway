@@ -52,7 +52,11 @@ export interface AjustesVerifactu {
    */
   productorNombre: string;
   productorNif: string;
-  /** Dirección postal de contacto del productor (declaración responsable). Vacía = la del emisor. */
+  /**
+   * Dirección postal de contacto del productor (declaración responsable).
+   * Vacía y con el emisor como productor, la del emisor; con un productor
+   * propio no hay de dónde tomarla y la declaración la da por pendiente.
+   */
   productorDireccion: string;
   /** Lugar y fecha (aaaa-mm-dd) en que el productor suscribe la declaración responsable. */
   declaracionLugar: string;

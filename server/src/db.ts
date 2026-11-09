@@ -731,6 +731,7 @@ export function initDb(): void {
   ensureColumn('invoice_ledger', 'codigo_error', 'TEXT');
   ensureColumn('invoice_ledger', 'descripcion_error', 'TEXT');
   ensureColumn('invoice_ledger', 'id_peticion', 'TEXT');
+  ensureColumn('invoice_ledger', 'envio_incierto', 'INTEGER NOT NULL DEFAULT 0');
   db.exec(`
     -- Una cadena por emisor y entorno: dos registros nunca ocupan el mismo
     -- puesto, ni aunque dos emisiones se cruzaran.
@@ -3920,12 +3921,12 @@ export function insertarRegistroFacturacion(r: RegistroFacturacionRow): void {
        id, seq, invoice_id, record_type, emisor_nif, num_serie_factura, fecha_expedicion, tipo_factura,
        cuota_total_cents, importe_total_cents, fecha_hora_gen, huella, huella_anterior, sif_mode, firma,
        qr_url, estado_remision, csv_aeat, version_sif, created_at, entorno, registro_json, subsanacion,
-       incidencia, intentos, ultimo_intento_at, respuesta_at, codigo_error, descripcion_error, id_peticion)
+       incidencia, intentos, ultimo_intento_at, respuesta_at, codigo_error, descripcion_error, id_peticion, envio_incierto)
      VALUES (
        @id, @seq, @invoice_id, @record_type, @emisor_nif, @num_serie_factura, @fecha_expedicion, @tipo_factura,
        @cuota_total_cents, @importe_total_cents, @fecha_hora_gen, @huella, @huella_anterior, @sif_mode, @firma,
        @qr_url, @estado_remision, @csv_aeat, @version_sif, @created_at, @entorno, @registro_json, @subsanacion,
-       @incidencia, @intentos, @ultimo_intento_at, @respuesta_at, @codigo_error, @descripcion_error, @id_peticion)`,
+       @incidencia, @intentos, @ultimo_intento_at, @respuesta_at, @codigo_error, @descripcion_error, @id_peticion, @envio_incierto)`,
   ).run(r);
 }
 
@@ -3984,12 +3985,22 @@ export function registroDeCadena(emisorNif: string, entorno: string, seq: number
 export type CamposRemision = Partial<
   Pick<
     RegistroFacturacionRow,
-    'estado_remision' | 'csv_aeat' | 'incidencia' | 'intentos' | 'ultimo_intento_at' | 'respuesta_at' | 'codigo_error' | 'descripcion_error' | 'id_peticion'
+    | 'estado_remision'
+    | 'csv_aeat'
+    | 'incidencia'
+    | 'intentos'
+    | 'ultimo_intento_at'
+    | 'respuesta_at'
+    | 'codigo_error'
+    | 'descripcion_error'
+    | 'id_peticion'
+    | 'envio_incierto'
   >
 >;
 
 const COLUMNAS_REMISION = new Set([
   'estado_remision', 'csv_aeat', 'incidencia', 'intentos', 'ultimo_intento_at', 'respuesta_at', 'codigo_error', 'descripcion_error', 'id_peticion',
+  'envio_incierto',
 ]);
 
 export function actualizarRemisionRegistro(registroId: string, campos: CamposRemision): void {
@@ -3999,6 +4010,11 @@ export function actualizarRemisionRegistro(registroId: string, campos: CamposRem
     ...claves.map((k) => (campos as Record<string, unknown>)[k]),
     registroId,
   );
+}
+
+/** Registros en cola que no se pudieron remitir a su hora (con incidencia): los del aviso del art. 16.4. */
+export function contarPendientesConIncidencia(): number {
+  return (stmt("SELECT COUNT(*) AS n FROM invoice_ledger WHERE estado_remision = 'pendiente' AND incidencia = 1").get() as { n: number }).n;
 }
 
 export function contarRegistrosPendientes(): number {

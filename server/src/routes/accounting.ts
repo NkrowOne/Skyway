@@ -168,8 +168,8 @@ export async function accountingRoutes(app: FastifyInstance): Promise<void> {
       paymentReturnUrl: body.paymentReturnUrl ?? current.paymentReturnUrl,
     };
     // Las mismas reglas que la ruta de VERI*FACTU: no se activa sin NIF válido,
-    // no se deja de tener NIF válido mientras esté activo y no se desactiva el
-    // año en que ya se ha remitido a producción.
+    // no se deja de tener NIF válido mientras esté activo y, con registros de
+    // producción, no se desactiva (art. 17 de la Orden; ver `modo.ts`).
     const motivo = motivoCambioNoPermitido(current, next);
     if (motivo) return reply.code(409).send({ error: motivo });
     setBillingProfile(next);

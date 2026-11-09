@@ -1415,7 +1415,8 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
           return target === 'void' && inv.status !== 'void' && inv.number ? registrarAnulacion(getInvoice(id)!) : null;
         });
       } catch (err) {
-        // Cadena dañada o reloj atrasado: no se anula nada hasta resolverlo.
+        // Reloj del servidor atrasado respecto al último registro: no se anula
+        // nada hasta corregirlo. (Una anomalía de la cadena no bloquea: avisa.)
         if (err instanceof ErrorVerifactu) return reply.code(409).send({ error: err.message });
         throw err;
       }

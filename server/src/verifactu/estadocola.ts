@@ -17,11 +17,21 @@ export interface EstadoCadena {
   reintentoHasta: number;
   fallosSeguidos: number;
   /**
-   * Registros que quedan por enviar de uno en uno tras un rechazo del envío
-   * entero causado por un registro: así se encuentra el culpable sin frenar
-   * a los demás.
+   * Aislamiento tras un rechazo del envío entero causado por un registro:
+   * cuántos registros del lote rechazado quedan por resolver y con qué tamaño
+   * de lote se prueban. Cada rechazo parte el lote por la mitad, así que el
+   * culpable aparece en unos pocos envíos (no en uno por registro, que con
+   * 1000 registros y la espera de la AEAT entre envíos serían horas).
+   * 0 = sin aislar.
    */
   aislarRestantes: number;
+  aislarLote: number;
+  /**
+   * Último `TiempoEsperaEnvio` de la AEAT para la cadena (s). Es la espera
+   * entre envíos también después de un envío sin respuesta o rechazado entero,
+   * que la AEAT pudo contar como envío (art. 16 de la Orden).
+   */
+  esperaS: number;
 }
 
 export interface EstadoCola {
@@ -36,7 +46,7 @@ export interface EstadoCola {
   ultimoError: string | null;
 }
 
-const CADENA_INICIAL: EstadoCadena = { esperaHasta: 0, reintentoHasta: 0, fallosSeguidos: 0, aislarRestantes: 0 };
+const CADENA_INICIAL: EstadoCadena = { esperaHasta: 0, reintentoHasta: 0, fallosSeguidos: 0, aislarRestantes: 0, aislarLote: 0, esperaS: 0 };
 
 export const claveCadena = (emisorNif: string, entorno: string): string => `${entorno}:${emisorNif}`;
 
@@ -70,6 +80,17 @@ export function guardarEstadoCola(e: EstadoCola): void {
     fallos = Math.max(fallos, c.fallosSeguidos);
   }
   setSetting('verifactuRemision', JSON.stringify({ ...e, esperaHasta, reintentoHasta, fallosSeguidos: fallos }));
+}
+
+/**
+ * Quita las esperas tras un fallo de todas las cadenas (no la de la AEAT):
+ * con un certificado nuevo, lo que esperaba por un rechazo de configuración
+ * puede salir ya, sin aguardar hasta una hora.
+ */
+export function levantarReintentos(): void {
+  const e = getEstadoCola();
+  for (const c of Object.values(e.cadenas)) c.reintentoHasta = 0;
+  guardarEstadoCola(e);
 }
 
 /**

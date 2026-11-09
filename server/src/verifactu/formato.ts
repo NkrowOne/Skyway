@@ -10,10 +10,10 @@
 const dos = (v: number): string => String(v).padStart(2, '0');
 
 /**
- * Fecha `dd-mm-aaaa` (tipo `fecha` del esquema). En UTC, como la fecha que
- * imprime el PDF (`invoicepdf.ts`): la fecha de expedición del registro tiene
- * que ser la misma que lleva la factura, y el PDF la imprime en UTC para que
- * no dependa de la zona horaria del proceso.
+ * Fecha `dd-mm-aaaa` (tipo `fecha` del esquema) de un instante, en UTC. La
+ * fecha de expedición sale de `issued_date` (`fechaExpedicionIso`); esta solo
+ * queda para los instantes guardados sin fecha propia (registros y facturas
+ * anteriores), que siempre se imprimieron en UTC.
  */
 export function fechaAeat(ms: number): string {
   const d = new Date(ms);
