@@ -106,6 +106,22 @@ del servidor confirmando las cabeceras y que las rutas nuevas exigen sesión.
   auditoría específica del cálculo (qué se cobra, cuántas veces y a quién) está en
   [AUDITORIA-FACTURACION.md](AUDITORIA-FACTURACION.md), que corrigió 34 defectos —
   dos de ellos críticos— y deja 13 puntos pendientes.
+- **VERI*FACTU** (`routes/verifactu.ts`, `verifactu/*.ts`; diseño en
+  [VERIFACTU.md](VERIFACTU.md)): todas las rutas exigen **admin**, validan con
+  **zod** y auditan (`verifactu_updated`, `verifactu_certificate_uploaded`,
+  `verifactu_certificate_removed`, `verifactu_send_now`,
+  `verifactu_record_corrected`). El **certificado electrónico** (.pfx/.p12) y su
+  contraseña se guardan en `settings` como las claves de Stripe y **nunca se
+  devuelven**: la API, la auditoría y el registro de eventos solo llevan sus datos
+  públicos (titular, NIF, caducidad, huella SHA-256); tamaño máximo 64 KB y
+  base64 comprobado. El TLS con la AEAT verifica su certificado de servidor con
+  las raíces de Node (incluyen las de la FNMT) y no se desactiva nunca. La
+  respuesta de la AEAT se lee con un analizador propio que rechaza DOCTYPE (sin
+  entidades externas) y con un tope de 8 MB; el XML de salida escapa todos los
+  textos y elimina los caracteres que la AEAT no admite. Los registros
+  (`invoice_ledger`) y los eventos son **inmutables**: disparadores de SQLite
+  impiden borrarlos o cambiar lo encadenado. Las facturas de una cuenta solo
+  enseñan a su propietario el estado de su propio registro.
 
 - **Integración con Mailway (correo)** (`mailway.ts`, `mailwaytraefik.ts`,
   `mailwaycuentas.ts`, `mailwayrenovacion.ts`, `routes/mailway.ts`): el token
@@ -318,6 +334,15 @@ del servidor confirmando las cabeceras y que las rutas nuevas exigen sesión.
 
 Estos no son defectos, sino consecuencias del propósito de la herramienta
 (paridad con Railway). Se documentan para que sean decisiones conscientes.
+
+- **Certificado de VERI*FACTU en la base de datos**: el .pfx y su contraseña viven
+  en `settings`, igual que las claves de Stripe y el secreto de las sesiones, así
+  que quien tenga una copia de `skyway.db` (o acceso de administrador al servidor)
+  tiene el certificado, con el que se puede actuar ante la AEAT en nombre de su
+  titular. Cifrarlo con una clave guardada en la misma base no protegería nada.
+  Mitigado: nunca sale por la API; se recomienda un certificado de representante
+  o de sello antes que el personal del administrador, y proteger las copias de
+  la base como se protege el propio certificado.
 
 - **Control del Docker del host**: montar `/var/run/docker.sock` implica que quien
   entra en Skyway controla todos los contenedores del servidor. Mitigado por bind

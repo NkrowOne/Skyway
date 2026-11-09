@@ -2,7 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { requireAdmin, requireAuth } from '../auth';
 import { audit } from '../audit';
-import { getSetting, listAllInvoices, setSetting } from '../db';
+import { getSetting, listAllInvoices, registrosDeFacturas, setSetting } from '../db';
 import { getBillingAutomation, setBillingAutomation } from '../billingsettings';
 import {
   getBillingProfile,
@@ -15,6 +15,9 @@ import {
 } from '../company';
 import { MailError, verifySmtp } from '../mailer';
 import { BillingProfile, InvoiceRow } from '../types';
+import { anotarEvento } from '../verifactu/eventos';
+import { motivoCambioNoPermitido } from '../verifactu/modo';
+import { resumenRegistros } from '../verifactu/registro';
 
 /**
  * La página de vuelta la abre el navegador del cliente al salir de Stripe. Solo
@@ -50,7 +53,11 @@ const profileSchema = z.object({
     .optional(),
   paymentTermsDays: z.coerce.number().int().min(0).max(365).optional(),
   defaultIrpfRate: z.coerce.number().min(0).max(100).optional(),
-  sifMode: z.enum(['verifactu', 'no_verifactu']).optional(),
+  // `no_verifactu` es el valor de las versiones anteriores: se lee como desactivado.
+  sifMode: z
+    .enum(['desactivado', 'verifactu', 'no_verifactu'])
+    .transform((v) => (v === 'verifactu' ? ('verifactu' as const) : ('desactivado' as const)))
+    .optional(),
   iban: z.string().trim().max(40).optional(),
   bic: z.string().trim().max(20).optional(),
   bankName: z.string().trim().max(120).optional(),
@@ -138,7 +145,7 @@ export async function accountingRoutes(app: FastifyInstance): Promise<void> {
     })(),
   }));
 
-  app.put('/api/billing/profile', async (req) => {
+  app.put('/api/billing/profile', async (req, reply) => {
     const body = profileSchema.parse(req.body ?? {});
     const current = getBillingProfile();
     const next: BillingProfile = {
@@ -159,7 +166,13 @@ export async function accountingRoutes(app: FastifyInstance): Promise<void> {
       footer: body.footer ?? current.footer,
       paymentReturnUrl: body.paymentReturnUrl ?? current.paymentReturnUrl,
     };
+    // Las mismas reglas que la ruta de VERI*FACTU: no se activa sin NIF válido,
+    // no se deja de tener NIF válido mientras esté activo y no se desactiva el
+    // año en que ya se ha remitido a producción.
+    const motivo = motivoCambioNoPermitido(current, next);
+    if (motivo) return reply.code(409).send({ error: motivo });
     setBillingProfile(next);
+    if (next.sifMode !== current.sifMode) anotarEvento(next.sifMode === 'verifactu' ? 'activacion' : 'desactivacion', 'Desde los datos de la empresa');
     // Claves de Stripe: se actualizan solo si se envían; '' las borra.
     if (body.stripeSecretKey !== undefined) setSetting('stripeSecretKey', body.stripeSecretKey || null);
     if (body.stripeWebhookSecret !== undefined) setSetting('stripeWebhookSecret', body.stripeWebhookSecret || null);
@@ -289,8 +302,12 @@ export async function accountingRoutes(app: FastifyInstance): Promise<void> {
   // Todas las facturas de todos los clientes (para la lista y auditoría contable).
   app.get('/api/accounting/invoices', async (req) => {
     const { status } = z.object({ status: z.enum(['draft', 'issued', 'paid', 'void']).optional() }).parse(req.query);
+    const facturas = listAllInvoices({ status });
+    const registros = registrosDeFacturas(facturas.map((f) => f.id));
     return {
-      invoices: listAllInvoices({ status }).map((i) => ({
+      invoices: facturas.map((i) => ({
+        // Estado del registro de VERI*FACTU de la factura (null si no tiene).
+        verifactu: resumenRegistros(registros.get(i.id) ?? []),
         id: i.id,
         number: i.number,
         invoice_type: i.invoice_type,

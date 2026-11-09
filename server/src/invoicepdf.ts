@@ -16,6 +16,7 @@
  */
 import { promisify } from 'node:util';
 import { deflate } from 'node:zlib';
+import { generarQr } from './verifactu/qr';
 
 const deflateAsync = promisify(deflate);
 // Nivel 6 (el de zlib por defecto): el 9 comprimía apenas unos bytes más a
@@ -50,6 +51,12 @@ export interface InvoicePdfData {
   paymentMethod: string | null;
   bank: { iban: string; bic: string; bankName: string };
   footer: string;
+  /**
+   * QR tributario de VERI*FACTU (art. 20 y 21 de la Orden HAC/1177/2024): la
+   * URL del servicio de cotejo de la AEAT con los datos del registro. null si
+   * la factura no tiene registro (borradores o emitidas sin VERI*FACTU).
+   */
+  verifactu?: { qrUrl: string; entorno: 'pruebas' | 'produccion' } | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -281,6 +288,11 @@ const X_TOTALES = 300;
 const X_IMPORTE_TOTALES = COL_IMPORTE_FIN - 5;
 
 const ALTO_FILA = 15;
+// QR tributario: entre 30 y 40 mm de lado (art. 21 de la Orden HAC/1177/2024).
+// 35 mm, sin contar la zona de silencio, que es papel en blanco alrededor.
+const MM = 72 / 25.4;
+const LADO_QR = 35 * MM;
+const SILENCIO_QR = 6 * MM;
 // La cabecera (emisor y destinatario) es el único bloque que no pagina, así que
 // una dirección con decenas de saltos de línea imprimiría texto fuera del papel:
 // se recorta a las líneas que caben de sobra en cualquier dirección postal real.
@@ -366,8 +378,55 @@ export async function renderInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
   // --- primera página: emisor, título y datos de la factura ---
   nuevaPagina();
 
-  dibujaTexto(MARGEN, y, truncar(data.issuer.companyName || '', 245, 14, true), 14, true);
-  let yIzq = y - 18;
+  // QR tributario al principio de la factura, antes de su contenido, con
+  // «QR tributario:» encima y la leyenda VERI*FACTU debajo. Ocupa la columna
+  // izquierda; el emisor baja y el título sigue arriba a la derecha.
+  let yEmisor = y;
+  if (data.verifactu?.qrUrl) {
+    const qr = generarQr(data.verifactu.qrUrl, 'M');
+    const modulo = LADO_QR / qr.tamano;
+    // Zona de silencio: la AEAT pide al menos 2 mm y recomienda 6 (y la norma,
+    // 4 módulos). 6 mm cubre las tres cosas en cualquier versión del QR.
+    const silencio = Math.max(SILENCIO_QR, 4 * modulo);
+    // Las leyendas, centradas sobre el QR y con un cuerpo no menor que el de
+    // los datos de la factura (especificación del QR de la AEAT, §3).
+    const centro = (texto: string, tam: number): number => MARGEN + (LADO_QR - anchoTexto(texto, tam, true)) / 2;
+    dibujaTexto(centro('QR tributario:', 9), y, 'QR tributario:', 9, true);
+    const arriba = y - 3 - silencio;
+    const r = (v: number): number => Math.round(v * 100) / 100;
+    const rects: string[] = [];
+    qr.modulos.forEach((fila, f) => {
+      let c = 0;
+      while (c < fila.length) {
+        if (!fila[c]) {
+          c++;
+          continue;
+        }
+        const inicio = c;
+        while (c < fila.length && fila[c]) c++;
+        // Cada borde se redondea una sola vez y el ancho sale de los bordes ya
+        // redondeados: dos tramos vecinos comparten borde exacto, sin rendijas.
+        const x0 = r(MARGEN + inicio * modulo);
+        const x1 = r(MARGEN + c * modulo);
+        const yArriba = r(arriba - f * modulo);
+        const yAbajo = r(arriba - (f + 1) * modulo);
+        rects.push(`${n(x0)} ${n(yAbajo)} ${n(r(x1 - x0))} ${n(r(yArriba - yAbajo))} re`);
+      }
+    });
+    // Un solo trazado relleno: los visores no dibujan juntas entre módulos.
+    pagina.ops.push(`q 0 g ${rects.join(' ')} f Q`);
+    const abajo = arriba - LADO_QR;
+    let yLeyenda = abajo - silencio - 7;
+    dibujaTexto(centro('VERI*FACTU', 9), yLeyenda, 'VERI*FACTU', 9, true);
+    if (data.verifactu.entorno === 'pruebas') {
+      yLeyenda -= 11;
+      dibujaTexto(MARGEN, yLeyenda, 'Registro remitido al entorno de pruebas de la AEAT', 7, false, GRIS_TEXTO);
+    }
+    yEmisor = yLeyenda - 24;
+  }
+
+  dibujaTexto(MARGEN, yEmisor, truncar(data.issuer.companyName || '', 245, 14, true), 14, true);
+  let yIzq = yEmisor - 18;
   const datosEmisor: string[] = [];
   if (data.issuer.taxId) datosEmisor.push(`NIF: ${data.issuer.taxId}`);
   const dirEmisor = data.issuer.address ? envolver(data.issuer.address, 250, 8.5, false) : [];
@@ -489,10 +548,10 @@ export async function renderInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
   ].filter((b) => b.lineas.length > 0);
 
   // Tiene que coincidir EXACTAMENTE con lo que el bloque baja el cursor
-  // (10 + 14 por fila + 38 del recuadro TOTAL): si se queda corto, la reserva no
-  // alcanza y las menciones legales se van solas a una página siguiente dejando
-  // los totales huérfanos en la anterior.
-  const altoTotales = 10 + filasTotales.length * 14 + 38;
+  // (10 + 14 por fila + 8 de aire + 38 del recuadro TOTAL): si se queda corto, la
+  // reserva no alcanza y las menciones legales se van solas a una página
+  // siguiente dejando los totales huérfanos en la anterior.
+  const altoTotales = 10 + filasTotales.length * 14 + 8 + 38;
   const altoBloques = bloques.reduce((suma, b) => suma + 21 + b.lineas.length * 11, 0);
   // Los totales tienen que quedar en la última página, así que el cierre entero
   // (totales + menciones) salta de página junto si no cabe donde acabó el detalle.
@@ -511,6 +570,9 @@ export async function renderInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
     dibujaTextoDer(X_IMPORTE_TOTALES, y, importe, 9);
     y -= 14;
   }
+  // Aire antes del recuadro: sin él, su borde superior quedaba por encima de la
+  // línea base de la última fila y tapaba la mitad inferior del desglose de IVA.
+  y -= 8;
   dibujaCaja(X_TOTALES - 8, y - 8, X_DERECHA - X_TOTALES + 8, 24, GRIS_SOMBRA);
   dibujaTexto(X_TOTALES, y, 'TOTAL', 12, true);
   dibujaTextoDer(X_IMPORTE_TOTALES, y, truncar(fmtImporte(data.totalCents, moneda), 190, 12, true), 12, true);

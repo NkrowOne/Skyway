@@ -1,7 +1,7 @@
 import { createHash } from 'crypto';
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { assertWorkspaceAccess, requireAdmin, requireAuth } from '../auth';
+import { assertWorkspaceAccess, currentUser, requireAdmin, requireAuth } from '../auth';
 import { audit, auditSystem } from '../audit';
 import {
   assignSeriesNumber,
@@ -23,6 +23,8 @@ import {
   planContractedSince,
   reopenChargesForInvoice,
   reopenChargesNotIn,
+  registrosDeFactura,
+  registrosDeFacturas,
   transaction,
   updateInvoice,
   updateWorkspace,
@@ -38,8 +40,11 @@ import { getBillingAutomation } from '../billingsettings';
 import { priceTiers } from '../pricing';
 import { reactivateWorkspaceIfCurrent } from '../billingauto';
 import { StripeError, createStripeCheckout, retrieveStripeCheckout, stripeAmount } from '../stripe';
-import { BillingProfile, InvoiceLine, InvoiceRow, InvoiceStatus, IssuerSnapshot, PlanRow, TaxBreakdownEntry, VatRegime, WorkspaceRow } from '../types';
+import { BillingProfile, InvoiceLine, InvoiceRow, InvoiceStatus, IssuerSnapshot, PlanRow, RegistroFacturacionRow, TaxBreakdownEntry, VatRegime, WorkspaceRow } from '../types';
 import { safeParse } from '../util';
+import { verifactuActivo } from '../verifactu/ajustes';
+import { ErrorVerifactu, registrarAlta, registrarAnulacion, resumenRegistros, ultimaAlta } from '../verifactu/registro';
+import { avisarRemision } from '../verifactu/remision';
 
 const HOUR_MS = 3_600_000;
 
@@ -401,6 +406,12 @@ function invoicePdfData(inv: InvoiceRow): InvoicePdfData {
     paymentMethod: inv.payment_method,
     bank: { iban: profile.iban, bic: profile.bic, bankName: profile.bankName },
     footer: profile.footer,
+    // QR tributario de VERI*FACTU: el del último registro de alta de la factura
+    // (una subsanación no cambia los datos del QR, pero manda la última).
+    verifactu: (() => {
+      const alta = ultimaAlta(inv.id);
+      return alta?.qr_url ? { qrUrl: alta.qr_url, entorno: alta.entorno } : null;
+    })(),
   };
 }
 
@@ -509,7 +520,11 @@ function issuerSnapshot(profile: BillingProfile): IssuerSnapshot {
   };
 }
 
-function publicInvoice(inv: InvoiceRow) {
+/**
+ * La factura tal como la ve el panel. `registros` son sus registros de
+ * VERI*FACTU si quien llama ya los tiene (los listados los leen de una vez).
+ */
+function publicInvoice(inv: InvoiceRow, registros?: RegistroFacturacionRow[]) {
   return {
     id: inv.id,
     workspace_id: inv.workspace_id,
@@ -549,6 +564,9 @@ function publicInvoice(inv: InvoiceRow) {
     locked: inv.locked,
     notes: inv.notes,
     created_at: inv.created_at,
+    rectify_code: inv.rectify_code,
+    // Estado del registro de VERI*FACTU (null si la factura no tiene ninguno).
+    verifactu: resumenRegistros(registros ?? registrosDeFactura(inv.id)),
   };
 }
 
@@ -798,6 +816,29 @@ function performEmission(inv: InvoiceRow, target: 'issued' | 'paid', extra: Reco
     const blocker = fiscalBlocker(inv, profile, ws);
     if (blocker) throw new BillingError(blocker);
   }
+  const primeraEmision = !inv.number;
+  let emitida: InvoiceRow;
+  try {
+    emitida = emitirEnTransaccion(inv, target, extra, opts, profile, ws);
+  } catch (err) {
+    // Un dato que haría rechazar el registro de VERI*FACTU deshace la emisión
+    // entera (número incluido): mejor un borrador por corregir que una factura
+    // emitida con su registro rechazado.
+    if (err instanceof ErrorVerifactu) throw new BillingError(err.message);
+    throw err;
+  }
+  if (primeraEmision && verifactuActivo()) avisarRemision();
+  return emitida;
+}
+
+function emitirEnTransaccion(
+  inv: InvoiceRow,
+  target: 'issued' | 'paid',
+  extra: Record<string, unknown>,
+  opts: { requireFiscalData?: boolean },
+  profile: BillingProfile,
+  ws: WorkspaceRow | undefined,
+): InvoiceRow {
   return transaction(() => {
     const fields: Record<string, unknown> = { ...extra };
     const issuedAt = (extra.issued_at as number | undefined) ?? inv.issued_at ?? Date.now();
@@ -843,7 +884,14 @@ function performEmission(inv: InvoiceRow, target: 'issued' | 'paid', extra: Reco
     if (ws && inv.period_start === ws.last_billed_period_end && inv.period_end > inv.period_start) {
       updateWorkspace(ws.id, { last_billed_period_end: inv.period_end });
     }
-    return getInvoice(inv.id)!;
+    const emitida = getInvoice(inv.id)!;
+    // VERI*FACTU: el registro de alta nace con el número, en esta misma
+    // transacción (art. 9 del RD 1007/2023: se genera al expedir la factura).
+    // Solo en la primera emisión: pasar de emitida a pagada no es otra factura.
+    if (!inv.number && verifactuActivo()) {
+      registrarAlta(emitida, { estricto: !!opts.requireFiscalData });
+    }
+    return emitida;
   });
 }
 
@@ -1150,7 +1198,20 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
     if (!ws) return reply.code(404).send({ error: 'Workspace no encontrado' });
     if (!assertWorkspaceAccess(req, reply, id)) return reply;
     return {
-      invoices: listInvoices(id).map(publicInvoice),
+      invoices: (() => {
+        const facturas = listInvoices(id);
+        const registros = registrosDeFacturas(facturas.map((f) => f.id));
+        // El propietario de la cuenta ve si su factura consta en la AEAT y su QR,
+        // pero no el CSV del envío (un envío agrupa facturas de varios clientes)
+        // ni la huella o los errores, que son cosa del emisor.
+        const admin = currentUser(req)?.role === 'admin';
+        return facturas.map((f) => {
+          const pub = publicInvoice(f, registros.get(f.id) ?? []);
+          if (admin || !pub.verifactu) return pub;
+          const { estado, tipo, entorno, qrUrl } = pub.verifactu;
+          return { ...pub, verifactu: { estado, tipo, entorno, qrUrl } };
+        });
+      })(),
       issuer: getBillingProfile(),
       client: {
         name: ws.name,
@@ -1335,7 +1396,21 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
       }
     } else {
       if (target !== inv.status) fields.status = target; // draft/issued → void
-      updateInvoice(id, fields);
+      let anulada: ReturnType<typeof registrarAnulacion> = null;
+      try {
+        anulada = transaction(() => {
+          updateInvoice(id, fields);
+          // VERI*FACTU: anular una factura emitida genera su registro de
+          // anulación en la misma transacción (con alta, aunque el modo esté ya
+          // desactivado: la AEAT tiene el alta y tiene que saber que se anuló).
+          return target === 'void' && inv.status !== 'void' && inv.number ? registrarAnulacion(getInvoice(id)!) : null;
+        });
+      } catch (err) {
+        // Cadena dañada o reloj atrasado: no se anula nada hasta resolverlo.
+        if (err instanceof ErrorVerifactu) return reply.code(409).send({ error: err.message });
+        throw err;
+      }
+      if (anulada) avisarRemision();
       // Al anular, los cargos puntuales enlazados vuelven a pendientes (no se
       // pierden) y el periodo vuelve a estar sin facturar.
       if (target === 'void' && inv.status !== 'void') {
@@ -1437,6 +1512,11 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
     const body = z
       .object({
         reason: z.string().trim().min(3).max(500),
+        // Causa de la rectificación con las claves de VERI*FACTU: R1 (art. 80.Uno,
+        // Dos y Seis de la Ley del IVA —descuentos, devoluciones, operaciones
+        // resueltas— o error fundado en derecho), R2 (concurso), R3 (créditos
+        // incobrables) o R4 (resto: cualquier otro error de la factura).
+        cause: z.enum(['R1', 'R2', 'R3', 'R4']).default('R1'),
         // Líneas CORRECTAS (lo que la factura debería decir). Vacío = anulación total.
         lines: z.array(lineSchema).max(100).default([]),
         operationDate: z.coerce.number().int().nullable().optional(),
@@ -1469,6 +1549,7 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
       invoice_type: 'rectificativa',
       rectifies_invoice_id: original.id,
       rectify_reason: body.reason,
+      rectify_code: body.cause,
       currency: original.currency,
       subtotal_cents: totals.subtotal,
       tax_cents: totals.tax,

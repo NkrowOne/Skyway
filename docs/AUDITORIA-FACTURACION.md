@@ -257,6 +257,14 @@ usar el ciclo como periodo por defecto.
 | --- | --- | --- |
 | 75 | **Tras pagar o cancelar en Stripe, el cliente volvía al panel de administración** (`/workspaces/:id`), que le pedía iniciar sesión aunque no tuviera cuenta. Además, la URL de vuelta salía de la cabecera Host del administrador que creaba el enlace. | Ajuste `paymentReturnUrl` en el perfil de facturación: solo `https://`, sin usuario ni contraseña (`http://` o `javascript:` → 400). Con él, Stripe devuelve a esa página pública con `estado=pagado` o `estado=cancelado` y `factura=<número>`, codificado, y se conservan los parámetros que ya traiga. Vacío, se mantiene la vuelta al panel. `estado` solo informa: el cobro lo sigue confirmando el webhook. Pruebas en `server/test/billing-stripe.test.ts`. |
 
+### Octava tanda: VERI*FACTU
+
+| # | Hallazgo | Corrección |
+| --- | --- | --- |
+| 76 | **Skyway no cumplía el Reglamento de sistemas informáticos de facturación** (RD 1007/2023, Orden HAC/1177/2024), obligatorio desde el 1-1-2027 para las sociedades y el 1-7-2027 para el resto: el libro `invoice_ledger` estaba vacío, sin huella, QR ni remisión, y el selector «Modo Verifactu» no activaba nada. | Modalidad **VERI*FACTU** completa ([VERIFACTU.md](VERIFACTU.md)): registro de alta al emitir y de anulación al anular, **en la misma transacción** que la numeración y con la huella SHA-256 encadenada (los tres ejemplos oficiales de la AEAT son prueba); registros **inmutables** por disparadores de SQLite; comprobaciones del art. 7.i de la Orden antes de encadenar; QR tributario de 35 mm y leyenda «VERI*FACTU» en el PDF; cola de remisión al servicio SOAP de la AEAT con certificado de cliente, lotes de hasta 1000, control de flujo, reintentos, duplicados, incidencias, alertas y subsanación; certificado tratado como secreto (nunca sale por la API); registro de eventos encadenado; declaración responsable en el panel ([DECLARACION-RESPONSABLE.md](DECLARACION-RESPONSABLE.md)). Los envíos generados validan contra los XSD oficiales. Pruebas en `server/test/verifactu*.test.ts`. |
+| 77 | Una factura con un dato que la AEAT rechaza (NIF del cliente mal escrito, fecha de operación posterior a la expedición, número con caracteres no admitidos) se habría emitido con su registro rechazado. | Con VERI*FACTU activo, la emisión deliberada lo comprueba dentro de la transacción y la deshace entera con un mensaje (409): el número no se gasta. El cobro por webhook no se bloquea nunca; si la AEAT rechaza su registro, se ve en la factura y se subsana. |
+| 78 | El **importe total** que la AEAT exige en el registro es base + cuotas, pero el `total_cents` de Skyway resta la retención de IRPF: usarlo habría hecho rechazar o aceptar con errores cada factura con retención (1210, 2005). | `ImporteTotal` y el importe del QR se calculan del desglose (base + cuotas + recargo), sin la retención. |
+
 ### Sigue pendiente
 
 1. **Cada cubo horario se factura como hora completa**, aunque el servicio solo
@@ -269,11 +277,15 @@ usar el ciclo como periodo por defecto.
    ISO 3166-1 alfa-2, España por defecto): se congela al emitir y consta en la
    factura y en el PDF, de modo que cuando se implemente el régimen por país el
    dato ya estará.
-4. **Verifactu**: el registro encadenado (`invoice_ledger`, `invoice_events_log`)
-   está creado como reserva, sin huella, QR ni remisión a la AEAT.
+4. **VERI*FACTU con certificado real**: lo que solo se puede comprobar contra la
+   AEAT (aceptación del certificado y respuestas reales del entorno de pruebas)
+   está preparado pero sin probar: ninguna prueba llama a la AEAT. El primer paso
+   en una instalación real es «Probar conexión» y emitir en el entorno de pruebas
+   ([VERIFACTU.md §3](VERIFACTU.md)).
 
 Los puntos 2 y 3 se dejan conscientemente fuera: el negocio factura hoy solo en
-régimen general español.
+régimen general español. Cuando se calcule el recargo de equivalencia, el
+registro de VERI*FACTU ya lo recoge (clave 18).
 
 ---
 

@@ -18,7 +18,7 @@ export const DEFAULT_PROFILE: BillingProfile = {
   invoicePrefix: 'FRA',
   paymentTermsDays: 30,
   defaultIrpfRate: 0,
-  sifMode: 'no_verifactu',
+  sifMode: 'desactivado',
   iban: '',
   bic: '',
   bankName: '',
@@ -29,7 +29,10 @@ export const DEFAULT_PROFILE: BillingProfile = {
 export function getBillingProfile(): BillingProfile {
   // `safeParse` exige además que lo guardado sea un objeto: extender una cadena o
   // una lista habría metido claves numéricas en el perfil sin que nadie lo viera.
-  return { ...DEFAULT_PROFILE, ...safeParse<Partial<BillingProfile>>(getSetting('billingProfile'), {}) };
+  const perfil = { ...DEFAULT_PROFILE, ...safeParse<Partial<BillingProfile>>(getSetting('billingProfile'), {}) };
+  // Las versiones anteriores guardaban «no_verifactu» sin que activara nada: es
+  // el modo desactivado. Cualquier otro valor desconocido, también.
+  return { ...perfil, sifMode: perfil.sifMode === 'verifactu' ? 'verifactu' : 'desactivado' };
 }
 
 export function setBillingProfile(profile: BillingProfile): void {

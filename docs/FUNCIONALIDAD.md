@@ -31,6 +31,22 @@ server/src/
   quota.ts              cuota efectiva, asignación agregada de recursos y módulos por workspace
   company.ts            perfil fiscal de la empresa emisora + claves de Stripe (en settings)
   stripe.ts             cliente mínimo de Stripe (Checkout Session + verificación de firma de webhook)
+  invoicepdf.ts         PDF de la factura escrito a mano (sin dependencias), con el QR tributario de VERI*FACTU
+  verifactu/            VERI*FACTU (RD 1007/2023, Orden HAC/1177/2024; diseño en docs/VERIFACTU.md):
+    formato.ts            formatos de los campos de la AEAT (fechas, importes, NIF, texto sin < > " ' =)
+    huella.ts             huella SHA-256 de los registros de alta y anulación (concatenación oficial)
+    registro.ts           registro de alta al emitir y de anulación al anular, encadenados en la misma
+                          transacción que la factura; resumen por factura y subsanación
+    xml.ts                XML SOAP de la remisión (orden de los XSD) y lectura de la respuesta o del Fault
+    remision.ts           cola de remisión: lotes de hasta 1000, control de flujo, reintentos, duplicados,
+                          incidencias, alertas y prueba de conexión; bucle cada 10 s
+    certificado.ts        certificado electrónico (.pfx/.p12) para el TLS con la AEAT: se lee, se valida y
+                          se guarda en settings; nunca sale por la API
+    qr.ts                 generador de códigos QR (ISO/IEC 18004, modo byte) sin dependencias
+    ajustes.ts            entorno (pruebas/producción), productor, número de instalación, URL de la AEAT
+    modo.ts               reglas para activar/desactivar VERI*FACTU (las comparten las dos rutas que lo cambian)
+    eventos.ts            registro de eventos encadenado (activación, entorno, certificado, envíos)
+    declaracion.ts        declaración responsable del sistema, rellena con los datos de la instalación
   mailway.ts            cliente de la API de integraciones de Mailway (correo): configuración en settings,
                         dirección interna del panel si lo despliega Skyway, token de gestión `mwt_…` (Bearer),
                         proyecto de Mailway en Skyway, hosts reservados de la instancia (actuales y anteriores), referencias
@@ -710,13 +726,13 @@ del servicio, **lo que está saliendo va por encima del activo**.
 | `pending_charges` | cargos puntuales pendientes del próximo ciclo: `id`, `workspace_id`, `product_id`, `label`, `kind`, `qty`, `unit_cents`, `tax_rate`, `irpf_rate`, `status` (`pending`/`invoiced`/`cancelled`), `invoice_id` |
 | `usage_events` | ingesta cruda de consumo (idempotente): `id`, `idempotency_key` (único), `subject_type` (`workspace`/`service`), `subject_id`, `meter`, `quantity`, `product_id`, `ts`, `metadata` |
 | `usage_meter_hourly` | agregado horario del uso para tarifar: `PK(subject_id, meter, hour)`, `quantity` |
-| `invoice_ledger` | **reservada** (Verifactu, RD 1007/2023): libro inmutable encadenado por huella SHA-256 — `id`, `seq`, `invoice_id`, `record_type` (`alta`/`anulacion`), `huella`, `huella_anterior`, `qr_url`, `sif_mode`, `estado_remision`… Se crea vacía para no exigir migración al activar Verifactu; la lógica llega en fase posterior |
-| `invoice_events_log` | **reservada** (Verifactu): registro de eventos del SIF encadenado por huella |
+| `invoice_ledger` | registros de facturación de VERI*FACTU (RD 1007/2023, §7.2.4): uno de **alta** al emitir y uno de **anulación** al anular, encadenados por huella SHA-256 en una cadena por emisor (`emisor_nif`) y entorno (`entorno`: `pruebas`/`produccion`), con `seq` único por cadena. `registro_json` guarda el registro con los campos de la AEAT (de él sale el XML); `huella`, `huella_anterior`, `fecha_hora_gen`, `qr_url`, `tipo_factura`, importes. Remisión: `estado_remision` (`pendiente`, `correcto`, `aceptado_con_errores`, `incorrecto`), `csv_aeat`, `codigo_error`, `descripcion_error`, `intentos`, `incidencia`, `id_peticion` (duplicados). **Inmutable**: disparadores de SQLite impiden borrar filas y cambiar cualquier columna que no sea de la remisión |
+| `invoice_events_log` | registro de eventos de VERI*FACTU encadenado por huella (`seq`, `tipo_evento`, `ts` con huso, `detalle`, `huella_evento`, `huella_evento_anterior`): activación, entorno, productor, certificado, envíos y subsanaciones. Inmutable (disparadores) |
 | `workspace_api_keys` | claves de API por cuenta para el proxy de IA: `id`, `workspace_id`, `name`, `key_hash` (sha256, único; el secreto `skai_…` solo se muestra al crear), `prefix`, `provider`, `allowed_models` (JSON), `status` (`active`/`suspended`/`revoked`), `budget_cents_month`, `spend_cents_cycle`, `rate_limit_rpm`, `last_used_at`, `expires_at`, `revoked_at`. El prefijo **no** empieza por `sky_`: nunca se resuelve como token de panel |
 | `ai_model_prices` | coste del operador por modelo y margen objetivo: `model` (PK), `cost_micros_in`/`cost_micros_cache`/`cost_micros_out` (micro-céntimos por millón de tokens), `margin_pct` (margen objetivo s/ venta, guía el PVP sugerido), `currency`, `source` (`auto` = lo mantiene la sincronización con la tarifa de Google, `manual` = fijado por el operador y respetado), `synced_at`, `updated_at`. Informativo; no interviene en la factura |
 | `passkeys` | credencial WebAuthn: `credential_id`, `public_key`, `counter`, `rp_id`… |
 | `api_tokens` | `token_hash` (sha256 hex), `prefix`, `expires_at` — tokens `sky_…` |
-| `settings` | pares clave/valor: `jwtSecret`, `githubToken`, `rootDomain`, `rootDomainAnteriores` (dominios raíz anteriores, JSON del más reciente al más antiguo, máx. 10: sus subdominios siguen contando como generados, §5.5), `letsencryptEmail`, `serverIp`, `serverIpv6` (opcional: sin ella, cualquier AAAA de un dominio cuenta como ajeno), canales de alerta, `importReport:<projectId>`, `billingProfile` (perfil fiscal del emisor, JSON: razón social, NIF, domicilio, IVA por defecto, `defaultIrpfRate`, `sifMode` veri/no-veri, IBAN, `paymentReturnUrl` página de vuelta tras pagar con Stripe…), claves de Stripe (`stripeSecretKey`, `stripeWebhookSecret`, `stripePublishableKey` — las secretas nunca se devuelven), gateway de IA (`ai.geminiApiKey` — clave del operador, nunca devuelta; `ai.allowedModels`, `ai.geminiBaseUrl`), autoactualización de la tarifa de IA (`ai.prices.auto` por defecto activada, `ai.prices.url` fuente propia, `ai.prices.currency` por defecto EUR, `ai.prices.fx`/`ai.prices.fxAt` cambio USD→moneda, `ai.prices.defaultMarginPct`, `ai.prices.autoAllow`, `ai.prices.lastAt`/`ai.prices.last` resultado del último pase), dunning (`billing.dunningGraceDays` por defecto 14, `billing.dunningCancelDays` por defecto 44), Mailway (`mailway.baseUrl`, `mailway.serviceId`, `mailway.token` — token de gestión, nunca devuelto —, `mailway.traefikToken` y `mailway.traefikCache`, última configuración de Traefik saneada; `mailway.defaultPlanId`, plan con el que se crea el cliente si no lo elige un administrador; `mailway.hosts`, hosts públicos que anuncia la instancia; `mailway.containerHosts`, hosts de las reglas `Host(…)` de las etiquetas de Traefik de los contenedores `mailway-mail`, `mailway-webmail` y `mailway-panel`; `mailway.previousHosts`, nombres que fueron de la instancia (`[{host, lastSeen}]`) y siguen reservados hasta que el administrador los libera; `mailway.whitelabelHosts`, última lista buena de nombres de marca blanca de todos los clientes en cualquier estado, reservados para los servicios; `mailway.previousClient:<projectId>`, cliente que tenía el proyecto antes de desactivar el correo)… |
+| `settings` | pares clave/valor: `jwtSecret`, `githubToken`, `rootDomain`, `rootDomainAnteriores` (dominios raíz anteriores, JSON del más reciente al más antiguo, máx. 10: sus subdominios siguen contando como generados, §5.5), `letsencryptEmail`, `serverIp`, `serverIpv6` (opcional: sin ella, cualquier AAAA de un dominio cuenta como ajeno), canales de alerta, `importReport:<projectId>`, `billingProfile` (perfil fiscal del emisor, JSON: razón social, NIF, domicilio, IVA por defecto, `defaultIrpfRate`, `sifMode` `desactivado`/`verifactu` —el antiguo `no_verifactu` se lee como desactivado—, IBAN, `paymentReturnUrl` página de vuelta tras pagar con Stripe…), VERI*FACTU (`verifactu` —entorno, productor, dirección, lugar y fecha de la declaración responsable—, `verifactuNumeroInstalacion`, `verifactuCertPfx` y `verifactuCertPass` —certificado y contraseña, nunca se devuelven—, `verifactuCertInfo` —sus datos públicos—, `verifactuRemision` —estado de la cola: esperas, fallos seguidos, último envío—), claves de Stripe (`stripeSecretKey`, `stripeWebhookSecret`, `stripePublishableKey` — las secretas nunca se devuelven), gateway de IA (`ai.geminiApiKey` — clave del operador, nunca devuelta; `ai.allowedModels`, `ai.geminiBaseUrl`), autoactualización de la tarifa de IA (`ai.prices.auto` por defecto activada, `ai.prices.url` fuente propia, `ai.prices.currency` por defecto EUR, `ai.prices.fx`/`ai.prices.fxAt` cambio USD→moneda, `ai.prices.defaultMarginPct`, `ai.prices.autoAllow`, `ai.prices.lastAt`/`ai.prices.last` resultado del último pase), dunning (`billing.dunningGraceDays` por defecto 14, `billing.dunningCancelDays` por defecto 44), Mailway (`mailway.baseUrl`, `mailway.serviceId`, `mailway.token` — token de gestión, nunca devuelto —, `mailway.traefikToken` y `mailway.traefikCache`, última configuración de Traefik saneada; `mailway.defaultPlanId`, plan con el que se crea el cliente si no lo elige un administrador; `mailway.hosts`, hosts públicos que anuncia la instancia; `mailway.containerHosts`, hosts de las reglas `Host(…)` de las etiquetas de Traefik de los contenedores `mailway-mail`, `mailway-webmail` y `mailway-panel`; `mailway.previousHosts`, nombres que fueron de la instancia (`[{host, lastSeen}]`) y siguen reservados hasta que el administrador los libera; `mailway.whitelabelHosts`, última lista buena de nombres de marca blanca de todos los clientes en cualquier estado, reservados para los servicios; `mailway.previousClient:<projectId>`, cliente que tenía el proyecto antes de desactivar el correo)… |
 | `projects` | `id`, `name`, `slug` (único), `workspace_id` (cuenta de cliente), `client` (reflejo denormalizado del nombre del workspace para la UI), página de estado (`status_token`, `status_enabled`, `status_notice`) |
 | `services` | `id`, `project_id`, `name`, `slug`, `type` (`git`/`database`/`image`), `config` (JSON), `config_rev` (revisión de la configuración: sube con cada cambio guardado que exige redesplegar) |
 | `env_vars` | `(service_id, key)` → `value` — variables por servicio |
@@ -2331,12 +2347,12 @@ Niveles: **manage** = admin o propietario del workspace del recurso; **admin** =
 | POST | `/plans` | admin | crea un plan (usos incluidos + precio + `discount_pct` opcional) |
 | PATCH | `/plans/:id` | admin | edita un plan (409 al cambiar la moneda de uno contratado) |
 | DELETE | `/plans/:id` | admin | borra un plan (bloqueado si alguna cuenta lo usa) |
-| GET | `/workspaces/:id/invoices` | manage | facturas de la cuenta (con `due_at`, el vencimiento congelado) + datos del emisor (perfil fiscal), del cliente y si Stripe está activo |
+| GET | `/workspaces/:id/invoices` | manage | facturas de la cuenta (con `due_at`, el vencimiento congelado, y `verifactu`: estado del último registro, CSV, error de la AEAT, URL del QR y acción posible —`subsanar`/`repetir_anulacion`—, o null) + datos del emisor (perfil fiscal), del cliente y si Stripe está activo |
 | POST | `/workspaces/:id/invoices/generate` | admin | genera la factura del ciclo (plan + uso) con el IVA del perfil |
 | POST | `/workspaces/:id/invoices` | admin | crea un borrador a medida (`{lines[], taxRate?, irpfRate?, vatRegime?, operationDate?, notes?}`); cada línea admite su propio `taxRate`; 400 si `periodEnd ≤ periodStart` |
-| PATCH | `/invoices/:id` | admin | edita el borrador o transiciona el estado. **El contenido fiscal solo es editable en borrador**; una factura emitida es inmutable (409). Al emitir (`issued`/`paid`) congela emisor y destinatario, asigna nº de serie del ejercicio y bloquea (`locked`). Transiciones válidas: `draft→issued→paid`, `→void`; nunca vuelve a borrador. Anular una factura con rectificativa viva → 409 (sería un doble abono) |
+| PATCH | `/invoices/:id` | admin | edita el borrador o transiciona el estado. **El contenido fiscal solo es editable en borrador**; una factura emitida es inmutable (409). Al emitir (`issued`/`paid`) congela emisor y destinatario, asigna nº de serie del ejercicio y bloquea (`locked`); con VERI*FACTU activo genera en la misma transacción su **registro de alta** encadenado (§7.2.4), y un dato que la AEAT rechazaría (NIF del cliente no válido, fecha de operación posterior…) deshace la emisión con 409 sin gastar número. Anular una factura con registro de alta genera su **registro de anulación**. Transiciones válidas: `draft→issued→paid`, `→void`; nunca vuelve a borrador. Anular una factura con rectificativa viva → 409 (sería un doble abono) |
 | DELETE | `/invoices/:id` | admin | **solo borradores**; una factura emitida se conserva (409): debe anularse o rectificarse, nunca borrarse |
-| POST | `/invoices/:id/rectify` | admin | crea una **factura rectificativa** (borrador, serie REC) que corrige una emitida (`{reason, lines?, operationDate?}`); sin `lines` es anulación total, con `lines` correctas factura la diferencia; enlaza por `rectifies_invoice_id` |
+| POST | `/invoices/:id/rectify` | admin | crea una **factura rectificativa** (borrador, serie REC) que corrige una emitida (`{reason, cause?, lines?, operationDate?}`); sin `lines` es anulación total, con `lines` correctas factura la diferencia; enlaza por `rectifies_invoice_id`. `cause` es la clave de VERI*FACTU (`R1` por defecto: art. 80.Uno, Dos y Seis de la Ley del IVA o error fundado en derecho; `R2` concurso; `R3` créditos incobrables; `R4` resto), guardada en `rectify_code` |
 | POST | `/invoices/:id/stripe-link` | admin | emite la factura (alta antes del cobro) y crea/reutiliza el enlace de pago Stripe; 400 si el total es ≤ 0 (antes de emitir), 409 si ya se está generando; el enlace guardado se renueva si Stripe lo da por caducado (`reused: true` solo si sigue abierto). Con `paymentReturnUrl` en el perfil, Stripe devuelve al cliente a esa página con `estado=pagado` o `estado=cancelado` y `factura=<número>` (§7.2.1, contabilidad); sin ella, al panel (`/workspaces/:id?paid=1`), que pide iniciar sesión |
 
 **Motor de factura conforme (RD 1619/2012).** El total se recomputa siempre en
@@ -2358,9 +2374,9 @@ con la factura rectificada; la original permanece intacta. Los **regímenes de I
 (`vat_regime`) aplican la mención legal obligatoria y ponen el IVA a cero cuando
 corresponde: exención por exportación (art. 21) o entrega intracomunitaria
 (art. 25), inversión del sujeto pasivo (art. 84), recargo de equivalencia, no
-sujeción y otras exenciones. Reservado: la estructura Verifactu (cadena de hash,
-QR, registros de alta/anulación y remisión a la AEAT — no obligatoria hasta 2027,
-RDL 15/2025).
+sujeción y otras exenciones. Con VERI*FACTU activo, cada emisión y cada anulación
+generan su registro de facturación encadenado y la factura lleva el QR tributario
+(§7.2.4).
 
 ### 7.2.1 Contabilidad de la empresa y facturación (nosotros como emisor)
 Perfil fiscal, resumen contable y cobros con Stripe. **Solo admin.** Las claves
@@ -2369,11 +2385,11 @@ booleanos, igual que el token de GitHub).
 
 | Método | Ruta | Nivel | Descripción |
 | --- | --- | --- | --- |
-| GET | `/billing/profile` | admin | perfil fiscal del emisor (IVA/IRPF por defecto, modo Verifactu) + estado de Stripe (claves como booleanos) |
-| PUT | `/billing/profile` | admin | actualiza el perfil fiscal (incl. `defaultIrpfRate`, `sifMode`, `paymentReturnUrl`); las claves de Stripe se guardan solo si se envían (`''` las borra). `paymentReturnUrl` admite una URL `https://` sin usuario ni contraseña o `''`; otra cosa → 400 |
+| GET | `/billing/profile` | admin | perfil fiscal del emisor (IVA/IRPF por defecto, `sifMode`) + estado de Stripe (claves como booleanos) |
+| PUT | `/billing/profile` | admin | actualiza el perfil fiscal (incl. `defaultIrpfRate`, `sifMode`, `paymentReturnUrl`); las claves de Stripe se guardan solo si se envían (`''` las borra). `paymentReturnUrl` admite una URL `https://` sin usuario ni contraseña o `''`; otra cosa → 400. Las reglas de VERI*FACTU (§7.2.4) valen también aquí: activar sin razón social o NIF español válido, dejar un NIF no válido con VERI*FACTU activo o desactivarlo el año en que ya se ha remitido a producción → 409 |
 | GET·PUT | `/billing/automation` | admin | automatización: `autoGenerate` (generar el borrador del ciclo), `autoIssue` (emitirlo automáticamente; opt-in, off por defecto) y umbrales de morosidad (`dunningGraceDays` ≤ `dunningCancelDays`) |
 | GET | `/accounting/summary?months=` | admin | totales (facturado/cobrado/pendiente/borrador/anulado), serie mensual de ingresos y desglose por cliente |
-| GET | `/accounting/invoices?status=` | admin | todas las facturas de todos los clientes (nº, tipo, NIF, base, IVA, IRPF) |
+| GET | `/accounting/invoices?status=` | admin | todas las facturas de todos los clientes (nº, tipo, NIF, base, IVA, IRPF y estado de VERI*FACTU) |
 | GET | `/accounting/export.csv` | admin | libro registro de facturas emitidas en CSV (nº, tipo, NIF receptor, base, IVA, IRPF, total; guardas anti-inyección de fórmulas) |
 
 **Página de vuelta tras pagar (`paymentReturnUrl`).** Es la página pública a la
@@ -2536,6 +2552,52 @@ descontada) y ninguna base queda negativa. Se excluyen del descuento las líneas
 **precio negociado por cliente** (`unit_cents` de la suscripción), para no rebajar
 dos veces un precio ya pactado. En una factura a medida el descuento se añade a mano
 como línea negativa; una factura emitida es inmutable y conserva su descuento.
+
+### 7.2.4 VERI*FACTU (registros de facturación y remisión a la AEAT)
+Modalidad **VERI*FACTU** del Reglamento de sistemas informáticos de facturación
+(RD 1007/2023) y la Orden HAC/1177/2024: cada factura emitida genera un registro de
+alta y cada anulación un registro de anulación, encadenados por huella SHA-256, que
+se remiten a la AEAT al momento con el certificado electrónico del emisor. El diseño
+completo (campos, huella, QR, remisión, reglas y fuentes) está en
+**[VERIFACTU.md](VERIFACTU.md)**, y la declaración responsable en
+**[DECLARACION-RESPONSABLE.md](DECLARACION-RESPONSABLE.md)**. **Solo admin.**
+
+| Método | Ruta | Nivel | Descripción |
+| --- | --- | --- | --- |
+| GET | `/verifactu` | admin | modo, ajustes (entorno, productor, declaración), sistema (`SK`, versión, nº de instalación), datos públicos del certificado, estado de la cola con recuento por estado, últimos 50 registros, últimos 20 eventos (y si su cadena está íntegra), declaración responsable y avisos |
+| PUT | `/verifactu` | admin | `{modo?, entorno?, productorNombre?, productorNif?, productorDireccion?, declaracionLugar?, declaracionFecha?}`. Activar exige razón social y NIF español válido del emisor; desactivar el año en que ya se ha remitido a producción → 409. Anota activación, entorno y productor en el registro de eventos |
+| POST | `/verifactu/certificado` | admin | `{pfx (base64 de un .pfx/.p12, ≤64 KB), password}`: lo abre, comprueba que no ha caducado y lo guarda; devuelve solo sus datos públicos (titular, NIF, emisor, validez, huella). 400 con contraseña incorrecta, fichero no válido, caducado o con cifrado antiguo (RC2) |
+| DELETE | `/verifactu/certificado` | admin | retira el certificado (los registros esperan en cola) |
+| POST | `/verifactu/probar` | admin | `{entorno?}`: TLS con el certificado contra el servicio de la AEAT (GET, sin enviar registros) |
+| POST | `/verifactu/enviar` | admin | envía ya lo que haya en cola, saltándose la espera tras un fallo pero nunca el `TiempoEsperaEnvio` de la AEAT |
+| GET | `/invoices/:id/verifactu` | admin | registros de la factura con todos sus campos de la AEAT, huellas, QR y estado de remisión |
+| POST | `/invoices/:id/verifactu/subsanar` | admin | subsana el último registro rechazado o aceptado con errores: alta nueva con `Subsanacion=S` (y `RechazoPrevio=X` si la AEAT no tiene ningún alta de la factura, `S` si se rechazó una subsanación) o repite la anulación rechazada; 409 si no hay nada que subsanar |
+
+- **Cuándo se generan.** El alta, dentro de la transacción que numera la factura
+  (`performEmission`), solo en la primera emisión; la anulación, dentro de la que la
+  anula, aunque el modo esté ya desactivado (la AEAT tiene el alta). Antes de
+  encadenar se recalcula la huella del último registro y se comprueba que su hora no
+  va más de un minuto por delante del reloj (art. 7.i de la Orden); si algo falla,
+  no se emite.
+- **Cadenas.** Una por NIF del emisor y entorno: el de pruebas no tiene efectos
+  fiscales y la cadena de producción empieza con `PrimerRegistro=S`.
+- **Remisión.** Bucle cada 10 s (`startRemisionVerifactu`), más un aviso al generar
+  un registro. Lotes de hasta 1000 registros del mismo emisor, entorno e
+  incidencia, en orden y con uno por factura; espera el `TiempoEsperaEnvio` de cada
+  respuesta (60 s si no viene). Sin conexión o con el envío rechazado entero, los
+  registros siguen en cola, constan con `incidencia` y se reintenta a los 1, 2, 5,
+  15, 30 y 60 minutos (una hora si el rechazo es de configuración: certificado o NIF).
+  Desde el primer fallo, o con registros en cola sin certificado, una alerta dice
+  cuántos faltan por remitir (art. 16.4 de la Orden) y se resuelve con el primer
+  envío que llega. Un duplicado (3000) toma el estado que ya tenía la AEAT. Un
+  registro rechazado o aceptado con errores abre una alerta por factura. Con un
+  certificado de sello se usa el punto de acceso de sello (`www10`/`prewww10`).
+- **Anulaciones.** Con alta, en su cadena y entorno; sin alta (factura emitida antes
+  de activar), solo con el modo activo y con `SinRegistroPrevio=S`.
+- **QR y leyenda.** El PDF de una factura con registro de alta lleva arriba a la
+  izquierda «QR tributario:», el QR de 35 mm (nivel M) con la URL de cotejo de la
+  AEAT del entorno y «VERI*FACTU»; en pruebas, además, «Registro remitido al
+  entorno de pruebas de la AEAT».
 
 ### 7.3 Proyectos, variables compartidas y GitHub
 | Método | Ruta | Nivel | Descripción |

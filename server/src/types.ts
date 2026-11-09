@@ -669,6 +669,13 @@ export interface InvoiceRow {
   rectifies_invoice_id: string | null;
   /** Motivo de la rectificación. */
   rectify_reason: string | null;
+  /**
+   * Causa de la rectificativa, con las claves de VERI*FACTU: R1 (art. 80.Uno,
+   * Dos y Seis de la Ley del IVA o error fundado en derecho), R2 (concurso),
+   * R3 (créditos incobrables) o R4 (resto). null en las demás facturas; en una
+   * rectificativa anterior a la columna se toma R1.
+   */
+  rectify_code: 'R1' | 'R2' | 'R3' | 'R4' | null;
   period_start: number;
   period_end: number;
   /** Fecha de la operación si difiere de la de expedición (issued_at). */
@@ -746,6 +753,77 @@ export interface InvoiceSeriesRow {
   created_at: number;
 }
 
+/** Entorno de la AEAT al que se remiten los registros de facturación. */
+export type EntornoVerifactu = 'pruebas' | 'produccion';
+
+/**
+ * Estado de la remisión de un registro de facturación a la AEAT:
+ * `pendiente` (en cola), `correcto`, `aceptado_con_errores` (la AEAT lo ha
+ * guardado, pero hay que subsanarlo) o `incorrecto` (rechazado).
+ */
+export type EstadoRemision = 'pendiente' | 'correcto' | 'aceptado_con_errores' | 'incorrecto';
+
+/**
+ * Registro de facturación de VERI*FACTU (`invoice_ledger`). Inmutable salvo
+ * las columnas de la remisión: unos disparadores de SQLite impiden cambiar los
+ * datos encadenados o borrar una fila.
+ */
+export interface RegistroFacturacionRow {
+  id: string;
+  /** Posición en su cadena (emisor + entorno), desde 1. */
+  seq: number;
+  invoice_id: string;
+  record_type: 'alta' | 'anulacion';
+  emisor_nif: string;
+  num_serie_factura: string;
+  /** Expedición de la factura (ms). La fecha exacta del registro va en `registro_json`. */
+  fecha_expedicion: number;
+  /** F1, F2, R1…R5; null en las anulaciones. */
+  tipo_factura: string | null;
+  cuota_total_cents: number | null;
+  importe_total_cents: number | null;
+  /** FechaHoraHusoGenRegistro. */
+  fecha_hora_gen: string;
+  huella: string;
+  huella_anterior: string | null;
+  sif_mode: 'verifactu';
+  firma: string | null;
+  /** URL del QR de la factura (solo altas). */
+  qr_url: string | null;
+  estado_remision: EstadoRemision;
+  /** CSV del envío en que la AEAT aceptó el registro. */
+  csv_aeat: string | null;
+  version_sif: string;
+  created_at: number;
+  entorno: EntornoVerifactu;
+  /** El registro con los campos de la AEAT (`RegistroAltaAeat` o `RegistroAnulacionAeat`). */
+  registro_json: string;
+  /** 1 si es la subsanación de un registro anterior de la misma factura. */
+  subsanacion: number;
+  /** 1 si no se pudo remitir a su hora (sin certificado o sin conexión). */
+  incidencia: number;
+  intentos: number;
+  ultimo_intento_at: number | null;
+  respuesta_at: number | null;
+  codigo_error: string | null;
+  descripcion_error: string | null;
+  /** Petición en la que la AEAT ya tenía el registro (respuesta de duplicado). */
+  id_peticion: string | null;
+}
+
+/** Evento del sistema de facturación (`invoice_events_log`), encadenado por huella. */
+export interface EventoSifRow {
+  id: string;
+  seq: number;
+  tipo_evento: string;
+  /** Fecha y hora con huso horario. */
+  ts: string;
+  detalle: string | null;
+  huella_evento: string;
+  huella_evento_anterior: string | null;
+  created_at: number;
+}
+
 /** Datos fiscales del emisor congelados en la factura al emitir. */
 export interface IssuerSnapshot {
   companyName: string;
@@ -773,10 +851,14 @@ export interface BillingProfile {
   /** Tipo de retención de IRPF (%) por defecto, 0 = no se aplica retención. */
   defaultIrpfRate: number;
   /**
-   * Modo del sistema de facturación de cara a Verifactu: `verifactu` (con
-   * remisión a la AEAT) o `no_verifactu` (con firma y conservación local).
+   * Sistema de facturación de cara al reglamento VERI*FACTU (RD 1007/2023):
+   * `verifactu` genera el registro encadenado de cada factura emitida o anulada
+   * y lo remite a la AEAT; `desactivado` no genera registros (solo vale antes
+   * del plazo de adaptación). La modalidad «NO VERI*FACTU» (firma y registro
+   * de eventos sin remisión) no está implementada. `no_verifactu`, el valor
+   * que guardaban las versiones anteriores, se lee como `desactivado`.
    */
-  sifMode: 'verifactu' | 'no_verifactu';
+  sifMode: 'desactivado' | 'verifactu';
   /** Datos para transferencia bancaria. */
   iban: string;
   bic: string;
