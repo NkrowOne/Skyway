@@ -43,6 +43,7 @@ import { StripeError, createStripeCheckout, retrieveStripeCheckout, stripeAmount
 import { BillingProfile, InvoiceLine, InvoiceRow, InvoiceStatus, IssuerSnapshot, PlanRow, RegistroFacturacionRow, TaxBreakdownEntry, VatRegime, WorkspaceRow } from '../types';
 import { safeParse } from '../util';
 import { verifactuActivo } from '../verifactu/ajustes';
+import { fechaExpedicionIso, fechaLocal } from '../verifactu/formato';
 import { ErrorVerifactu, registrarAlta, registrarAnulacion, resumenRegistros, ultimaAlta } from '../verifactu/registro';
 import { avisarRemision } from '../verifactu/remision';
 
@@ -371,6 +372,7 @@ function invoicePdfData(inv: InvoiceRow): InvoicePdfData {
   return {
     number: inv.number ?? 'BORRADOR',
     status: inv.status,
+    issuedDate: fechaExpedicionIso(inv),
     invoiceType: inv.invoice_type === 'rectificativa' ? 'rectificativa' : inv.invoice_type === 'simplificada' ? 'simplificada' : 'normal',
     issuedAt: inv.issued_at,
     operationDate: inv.operation_date,
@@ -557,6 +559,7 @@ function publicInvoice(inv: InvoiceRow, registros?: RegistroFacturacionRow[]) {
     payment_method: inv.payment_method,
     stripe_url: inv.stripe_url,
     issued_at: inv.issued_at,
+    issued_date: fechaExpedicionIso(inv),
     // Vencimiento congelado al emitir: es el que imprime el PDF y el que usa la
     // morosidad; sin exponerlo el panel no podía mostrar cuándo vence.
     due_at: inv.due_at,
@@ -845,6 +848,10 @@ function emitirEnTransaccion(
     // Congelar emisor y destinatario la primera vez que se emite.
     if (!inv.issued_at) {
       fields.issued_at = issuedAt;
+      // La fecha de expedición se fija ya, en hora peninsular: de madrugada la
+      // UTC sería la del día anterior (y, en Nochevieja, del año anterior). La
+      // imprimen el PDF y el registro de VERI*FACTU, y fija el año de la serie.
+      fields.issued_date = fechaLocal(issuedAt);
       // El vencimiento se resuelve AQUÍ y se congela: es lo que se imprime en la
       // factura y lo que la morosidad usa para contar los días de impago.
       fields.due_at = issuedAt + profile.paymentTermsDays * 86_400_000;
@@ -862,7 +869,9 @@ function emitirEnTransaccion(
       const code = isRect ? 'REC' : (profile.invoicePrefix || 'FRA').trim() || 'FRA';
       const assigned = assignSeriesNumber({
         code,
-        year: new Date(issuedAt).getFullYear(),
+        // El año de la serie es el de la fecha de expedición que se imprime (y
+        // que lleva el registro), no el del reloj del proceso.
+        year: Number(fechaExpedicionIso({ issued_date: inv.issued_date ?? (fields.issued_date as string | undefined), issued_at: issuedAt })!.slice(0, 4)),
         prefix: code,
         kind: isRect ? 'rectificativa' : inv.invoice_type === 'simplificada' ? 'simplificada' : 'ordinaria',
       });

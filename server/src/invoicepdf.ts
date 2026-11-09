@@ -29,6 +29,8 @@ export interface InvoicePdfData {
   /** Estado de la factura: una ANULADA se rotula como tal, o el duplicado engaña. */
   status?: 'draft' | 'issued' | 'paid' | 'void';
   issuedAt: number | null;      // ms epoch
+  /** Fecha de expedición congelada (aaaa-mm-dd); sin ella se imprime la UTC de `issuedAt`. */
+  issuedDate?: string | null;
   operationDate: number | null; // ms epoch
   periodStart: number;
   periodEnd: number;
@@ -251,6 +253,12 @@ function fmtFecha(ms: number | null | undefined): string {
   return `${dia}/${mes}/${d.getUTCFullYear()}`;
 }
 
+/** Fecha de expedición: la congelada al emitir o, en las facturas anteriores, la UTC. */
+function fmtExpedicion(data: InvoicePdfData): string {
+  if (data.issuedDate && /^\d{4}-\d{2}-\d{2}$/.test(data.issuedDate)) return data.issuedDate.split('-').reverse().join('/');
+  return fmtFecha(data.issuedAt);
+}
+
 /** Fecha en el formato de metadatos PDF: D:AAAAMMDDHHmmSSZ. */
 function fmtFechaPdf(ms: number): string {
   const d = new Date(ms);
@@ -293,6 +301,7 @@ const ALTO_FILA = 15;
 const MM = 72 / 25.4;
 const LADO_QR = 35 * MM;
 const SILENCIO_QR = 6 * MM;
+const CUERPO_LEYENDA_QR = 12;
 // La cabecera (emisor y destinatario) es el único bloque que no pagina, así que
 // una dirección con decenas de saltos de línea imprimiría texto fuera del papel:
 // se recorta a las líneas que caben de sobra en cualquier dirección postal real.
@@ -348,7 +357,7 @@ export async function renderInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
   /** Cabecera reducida de las páginas de continuación. */
   const cabeceraContinuacion = (): void => {
     dibujaTexto(MARGEN, y - 10, truncar(`${titulo} ${data.number}`, 260, 10, true), 10, true);
-    dibujaTextoDer(X_DERECHA, y - 10, truncar(`${data.issuer.companyName} · ${fmtFecha(data.issuedAt)}`, 220, 8, false), 8, false, GRIS_TEXTO);
+    dibujaTextoDer(X_DERECHA, y - 10, truncar(`${data.issuer.companyName} · ${fmtExpedicion(data)}`, 220, 8, false), 8, false, GRIS_TEXTO);
     dibujaLinea(MARGEN, y - 18, X_DERECHA, y - 18);
     y -= 34;
   };
@@ -388,10 +397,11 @@ export async function renderInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
     // Zona de silencio: la AEAT pide al menos 2 mm y recomienda 6 (y la norma,
     // 4 módulos). 6 mm cubre las tres cosas en cualquier versión del QR.
     const silencio = Math.max(SILENCIO_QR, 4 * modulo);
-    // Las leyendas, centradas sobre el QR y con un cuerpo no menor que el de
-    // los datos de la factura (especificación del QR de la AEAT, §3).
+    // Las leyendas, centradas sobre el QR y con un cuerpo «igual o superior al
+    // del resto de datos de la factura» (especificación del QR de la AEAT, §3):
+    // 12 pt, el mayor de los datos (el TOTAL). El título no es un dato.
     const centro = (texto: string, tam: number): number => MARGEN + (LADO_QR - anchoTexto(texto, tam, true)) / 2;
-    dibujaTexto(centro('QR tributario:', 9), y, 'QR tributario:', 9, true);
+    dibujaTexto(centro('QR tributario:', CUERPO_LEYENDA_QR), y, 'QR tributario:', CUERPO_LEYENDA_QR, true);
     const arriba = y - 3 - silencio;
     const r = (v: number): number => Math.round(v * 100) / 100;
     const rects: string[] = [];
@@ -416,8 +426,8 @@ export async function renderInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
     // Un solo trazado relleno: los visores no dibujan juntas entre módulos.
     pagina.ops.push(`q 0 g ${rects.join(' ')} f Q`);
     const abajo = arriba - LADO_QR;
-    let yLeyenda = abajo - silencio - 7;
-    dibujaTexto(centro('VERI*FACTU', 9), yLeyenda, 'VERI*FACTU', 9, true);
+    let yLeyenda = abajo - silencio - 9;
+    dibujaTexto(centro('VERI*FACTU', CUERPO_LEYENDA_QR), yLeyenda, 'VERI*FACTU', CUERPO_LEYENDA_QR, true);
     if (data.verifactu.entorno === 'pruebas') {
       yLeyenda -= 11;
       dibujaTexto(MARGEN, yLeyenda, 'Registro remitido al entorno de pruebas de la AEAT', 7, false, GRIS_TEXTO);
@@ -443,7 +453,7 @@ export async function renderInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
   dibujaTextoDer(X_DERECHA, yDer, truncar(`Nº ${data.number}`, 240, 11, true), 11, true);
   yDer -= 15;
   const fechas: string[] = [];
-  const expedicion = fmtFecha(data.issuedAt);
+  const expedicion = fmtExpedicion(data);
   if (expedicion) fechas.push(`Fecha de expedición: ${expedicion}`);
   const operacion = fmtFecha(data.operationDate);
   if (operacion) fechas.push(`Fecha de operación: ${operacion}`);

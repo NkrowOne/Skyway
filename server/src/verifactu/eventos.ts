@@ -25,7 +25,8 @@ export type TipoEventoSif =
   | 'envio_con_errores'
   | 'envio_rechazado'
   | 'error_conexion'
-  | 'subsanacion';
+  | 'subsanacion'
+  | 'anomalia_cadena';
 
 /** Huella de un evento: su contenido más la del anterior, como en los registros. */
 export function huellaEvento(e: Pick<EventoSifRow, 'seq' | 'tipo_evento' | 'ts' | 'detalle' | 'huella_evento_anterior'>): string {

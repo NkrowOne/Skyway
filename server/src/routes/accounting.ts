@@ -18,6 +18,7 @@ import { BillingProfile, InvoiceRow } from '../types';
 import { anotarEvento } from '../verifactu/eventos';
 import { motivoCambioNoPermitido } from '../verifactu/modo';
 import { resumenRegistros } from '../verifactu/registro';
+import { fechaExpedicionIso } from '../verifactu/formato';
 
 /**
  * La página de vuelta la abre el navegador del cliente al salir de Stripe. Solo
@@ -354,7 +355,8 @@ export async function accountingRoutes(app: FastifyInstance): Promise<void> {
           (i as any).workspace_name ?? '',
           i.client_tax_id ?? '',
           i.status,
-          iso(i.issued_at),
+          // La fecha de expedición que imprime la factura (congelada al emitir).
+          fechaExpedicionIso(i) ?? '',
           iso(i.period_start),
           iso(i.period_end),
           money(i.subtotal_cents),

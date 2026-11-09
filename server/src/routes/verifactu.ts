@@ -12,7 +12,7 @@ import { getBillingProfile, setBillingProfile } from '../company';
 import { contarRegistrosPendientes, getInvoice, listarEventosSif, listarRegistrosFacturacion, recuentoRegistrosFacturacion, registrosDeFactura, transaction } from '../db';
 import { getAjustesVerifactu, ID_SISTEMA, NOMBRE_SISTEMA, numeroInstalacion, productorEfectivo, setAjustesVerifactu } from '../verifactu/ajustes';
 import { ErrorCertificado, guardarCertificado, infoCertificado, MAX_BYTES_PFX, quitarCertificado } from '../verifactu/certificado';
-import { declaracionResponsable } from '../verifactu/declaracion';
+import { declaracionEnTexto, declaracionResponsable } from '../verifactu/declaracion';
 import { anotarEvento, cadenaEventosIntegra } from '../verifactu/eventos';
 import { nifValido, normalizarNif } from '../verifactu/formato';
 import { motivoCambioNoPermitido } from '../verifactu/modo';
@@ -125,8 +125,18 @@ export async function verifactuRoutes(app: FastifyInstance): Promise<void> {
     const perfil = getBillingProfile();
     const actual = getAjustesVerifactu();
     const siguientePerfil = { ...perfil, sifMode: body.modo ?? perfil.sifMode };
-    const motivo = motivoCambioNoPermitido(perfil, siguientePerfil);
+    const motivo = motivoCambioNoPermitido(
+      { ...perfil, entorno: actual.entorno },
+      { ...siguientePerfil, entorno: body.entorno ?? actual.entorno },
+    );
     if (motivo) return reply.code(409).send({ error: motivo });
+    // El productor se identifica con su nombre Y su NIF (art. 15.1.h e i de la
+    // Orden): uno sin el otro mezclaría el nombre de uno con el NIF del emisor.
+    const nombreProductor = body.productorNombre ?? actual.productorNombre;
+    const nifProductor = body.productorNif !== undefined ? normalizarNif(body.productorNif) : actual.productorNif;
+    if (!!nombreProductor.trim() !== !!nifProductor.trim()) {
+      return reply.code(400).send({ error: 'Indica la razón social y el NIF del productor juntos, o deja los dos vacíos para que sea la empresa emisora.' });
+    }
     const siguiente = {
       entorno: body.entorno ?? actual.entorno,
       productorNombre: body.productorNombre ?? actual.productorNombre,
@@ -178,6 +188,15 @@ export async function verifactuRoutes(app: FastifyInstance): Promise<void> {
     if (antes) anotarEvento('certificado_retirado', `${antes.titular} · ${antes.huellaSha256}`);
     audit(req, 'verifactu_certificate_removed', { type: 'system', id: 'verifactu', detail: antes?.nif ?? '' });
     return { ok: true };
+  });
+
+  // La declaración responsable en texto plano, para publicarla fuera del
+  // panel (la AEAT pide que esté también accesible de forma independiente del
+  // sistema, en un formato de uso extendido y gratuito).
+  app.get('/api/verifactu/declaracion.txt', async (_req, reply) => {
+    reply.header('Content-Disposition', 'attachment; filename="declaracion-responsable-skyway.txt"');
+    reply.type('text/plain; charset=utf-8');
+    return declaracionEnTexto(declaracionResponsable());
   });
 
   // Prueba la conexión TLS con el certificado contra el entorno elegido. No envía registros.

@@ -63,6 +63,33 @@ function registros(invoiceId: string): RegistroAeat[] {
   return registrosDeFactura(invoiceId).map((r) => JSON.parse(r.registro_json) as RegistroAeat);
 }
 
+/** Alta del primer registro de una factura (falla si es una anulación). */
+function alta(invoiceId: string): Extract<RegistroAeat, { tipo: 'alta' }>['alta'] {
+  const [reg] = registros(invoiceId);
+  if (reg?.tipo !== 'alta') throw new Error('se esperaba un registro de alta');
+  return reg.alta;
+}
+
+/** Cuenta de cliente con su NIF y, si se indica, su país. */
+async function cuenta(nombre: string, taxId: string, pais?: string): Promise<string> {
+  const r = await call('POST', '/api/workspaces', { name: nombre });
+  expect(r.status, JSON.stringify(r.json)).toBe(201);
+  const id: string = r.json.workspace.id;
+  const p = await call('PATCH', `/api/workspaces/${id}`, { billingTaxId: taxId, ...(pais ? { billingCountry: pais } : {}) });
+  expect(p.status, JSON.stringify(p.json)).toBe(200);
+  return id;
+}
+
+/** Siguiente número de la serie FV: un rechazo antes de emitir no lo gasta. */
+const siguienteNumero = (): number => listInvoiceSeries().find((s) => s.code === 'FV')!.next_seq;
+
+/** Alertas abiertas de un tipo. */
+async function alertasAbiertas(tipo: string): Promise<Json[]> {
+  const a = (await call('GET', '/api/alerts')).json;
+  const lista: Json[] = Array.isArray(a) ? a : a.alerts ?? [];
+  return lista.filter((x) => x.type === tipo && !x.resolved_at);
+}
+
 // ---------------------------------------------------------------------------
 // Certificados de prueba: se generan al vuelo con OpenSSL (nada de claves en el
 // repositorio). Sin OpenSSL, se saltan las pruebas que los necesitan.
@@ -129,6 +156,13 @@ function respuestaAeat(r: Recibido, veredicto: (num: string, op: string) => Vere
     '</tikR:RespuestaRegFactuSistemaFacturacion></env:Body></env:Envelope>'
   );
 }
+
+/** Rechazo del envío entero, como lo devuelve la AEAT (SOAP Fault). */
+function soapFault(codigo: string, texto: string): string {
+  return `<?xml version="1.0"?><env:Envelope xmlns:env="http://schemas.xmlsoap.org/soap/envelope/"><env:Body><env:Fault><faultcode>env:Client</faultcode><faultstring>Codigo[${codigo}].${texto}</faultstring></env:Fault></env:Body></env:Envelope>`;
+}
+
+const todoCorrecto = (r: Recibido): string => respuestaAeat(r, () => ({ estado: 'Correcto' }));
 
 /** Transporte simulado: anota lo enviado y contesta con `responder`. */
 function transporte(responder: (r: Recibido) => string | Error): Transporte {
@@ -204,6 +238,42 @@ describe('activación de VERI*FACTU', () => {
     expect(r.json.avisos.map((a: { tipo: string }) => a.tipo)).toEqual(expect.arrayContaining(['sin_certificado', 'entorno_pruebas', 'declaracion_incompleta']));
   });
 
+  it('el nombre y el NIF del productor van juntos', async () => {
+    let r = await call('PUT', '/api/verifactu', { productorNombre: 'Productora de Software SL' });
+    expect(r.status).toBe(400);
+    expect(r.json.error).toMatch(/razón social y el NIF del productor juntos/);
+    r = await call('PUT', '/api/verifactu', { productorNombre: 'Productora de Software SL', productorNif: NIF_CLIENTE });
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    const apartado = (letra: string): string => r.json.declaracion.apartados.find((a: Json) => a.letra === letra).texto;
+    expect(apartado('1.h')).toBe('Productora de Software SL');
+    expect(apartado('1.i')).toBe(NIF_CLIENTE);
+    // Vaciar solo uno dejaría el nombre de un productor con el NIF de otro.
+    r = await call('PUT', '/api/verifactu', { productorNif: '' });
+    expect(r.status).toBe(400);
+    // Los dos vacíos: el productor es la empresa emisora.
+    r = await call('PUT', '/api/verifactu', { productorNombre: '', productorNif: '' });
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    expect(apartado('1.h')).toBe('Emisor Pruebas SL');
+    expect(apartado('1.i')).toBe(NIF_EMISOR);
+  });
+
+  it('la declaración responsable se descarga en texto, con los rótulos del modelo de la AEAT en su orden', async () => {
+    const r = await app.inject({ method: 'GET', url: '/api/verifactu/declaracion.txt', headers });
+    expect(r.statusCode).toBe(200);
+    expect(r.headers['content-type']).toMatch(/^text\/plain/);
+    expect(r.headers['content-disposition']).toBe('attachment; filename="declaracion-responsable-skyway.txt"');
+    const texto = r.body;
+    expect(texto.startsWith('DECLARACIÓN RESPONSABLE DEL SISTEMA INFORMÁTICO DE FACTURACIÓN\n')).toBe(true);
+    expect(texto).toContain('1.a) Nombre del sistema informático a que se refiere esta declaración responsable:\nSkyway\n');
+    expect(texto).toContain(`1.c) Identificador completo de la versión concreta del sistema informático a que se refiere esta declaración responsable:\n${config.version}\n`);
+    expect(texto).toMatch(/^1\.e\) [^\n]*:\nS - Sí$/m);
+    expect(texto).toMatch(/^1\.f\) [^\n]*:\nN - No$/m);
+    // El orden lo fija el art. 15.1 de la Orden: de la a) a la l), y el anexo.
+    expect([...texto.matchAll(/^(\d\.[a-l])\) /gm)].map((m) => m[1])).toEqual(['1.a', '1.b', '1.c', '1.d', '1.e', '1.f', '1.g', '1.h', '1.i', '1.j', '1.k', '1.l', '2.c']);
+    // Sin lugar ni fecha de suscripción, la descarga lo dice.
+    expect(texto).toMatch(/\n\nDatos pendientes: [^\n]*Lugar de suscripción/);
+  });
+
   it('prepara las cuentas de cliente', async () => {
     let r = await call('POST', '/api/workspaces', { name: 'Cliente "Comillas" <SL>' });
     expect(r.status, JSON.stringify(r.json)).toBe(201);
@@ -266,7 +336,7 @@ describe('registros de alta y anulación encadenados', () => {
     expect(r.statusCode).toBe(200);
     const inv = r.json().invoices.find((i: Json) => i.id === primera);
     expect(Object.keys(inv.verifactu).sort()).toEqual(['entorno', 'estado', 'qrUrl', 'tipo']);
-    for (const url of ['/api/verifactu', `/api/invoices/${primera}/verifactu`]) {
+    for (const url of ['/api/verifactu', '/api/verifactu/declaracion.txt', `/api/invoices/${primera}/verifactu`]) {
       r = await app.inject({ method: 'GET', url, headers: h });
       expect(r.statusCode, url).toBe(403);
     }
@@ -403,6 +473,113 @@ describe('registros de alta y anulación encadenados', () => {
   });
 });
 
+/**
+ * Lo que la AEAT rechazaría se para antes de emitir, sin gastar número: una
+ * factura emitida con su registro rechazado obliga a subsanar o rectificar.
+ */
+describe('validaciones antes de emitir', () => {
+  let wsUk = '';
+
+  it('el país del cliente va con el código de la AEAT (UK pasa a GB) y uno que la AEAT no admite bloquea la emisión', async () => {
+    wsUk = await cuenta('UK Client Ltd', '123456789', 'UK');
+    const id = await borrador(wsUk);
+    let r = await emitir(id);
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    expect(alta(id).Destinatarios).toEqual([{ NombreRazon: 'UK Client Ltd', IDOtro: { CodigoPais: 'GB', IDType: '04', ID: '123456789' } }]);
+    // Kosovo (XK) no está en la lista de países de la AEAT.
+    const xk = await cuenta('Klient Prishtina', '810000000', 'XK');
+    const otra = await borrador(xk);
+    const antes = siguienteNumero();
+    r = await emitir(otra);
+    expect(r.status).toBe(409);
+    expect(r.json.error).toMatch(/no es un código que admita la AEAT/);
+    expect(siguienteNumero()).toBe(antes);
+    expect(registrosDeFactura(otra)).toHaveLength(0);
+  });
+
+  it('un NIF-IVA con la estructura de su país va como NIF-IVA (02); sin ella, como documento del país (04), salvo que el régimen exija NIF-IVA', async () => {
+    const gr = await cuenta('Pelatis AE', '123456789', 'GR');
+    let id = await borrador(gr);
+    let r = await emitir(id);
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    // Grecia usa el prefijo EL, y con IDType 02 el país no va aparte.
+    expect(alta(id).Destinatarios).toEqual([{ NombreRazon: 'Pelatis AE', IDOtro: { IDType: '02', ID: 'EL123456789' } }]);
+    const fr = await cuenta('Client Particulier', '12345', 'FR');
+    id = await borrador(fr);
+    r = await emitir(id);
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    expect(alta(id).Destinatarios).toEqual([{ NombreRazon: 'Client Particulier', IDOtro: { CodigoPais: 'FR', IDType: '04', ID: '12345' } }]);
+    // Un servicio no sujeto a un cliente de la UE sí exige su NIF-IVA.
+    id = await borrador(fr, [{ label: 'Alojamiento', unitCents: 5000 }]);
+    r = await call('PATCH', `/api/invoices/${id}`, { vatRegime: 'inversion_sujeto_pasivo' });
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    const antes = siguienteNumero();
+    r = await emitir(id);
+    expect(r.status).toBe(409);
+    expect(r.json.error).toMatch(/NIF-IVA del cliente/);
+    expect(siguienteNumero()).toBe(antes);
+  });
+
+  it('el tipo de IVA tiene que ser uno de los que admite la AEAT en la fecha de la operación', async () => {
+    const id = await borrador(wsId, [{ label: 'Alojamiento', unitCents: 10000, taxRate: 7 }]);
+    const r = await emitir(id);
+    expect(r.status).toBe(409);
+    expect(r.json.error).toMatch(/no admite un IVA del 7,00 %/);
+    expect(registrosDeFactura(id)).toHaveLength(0);
+  });
+
+  it('una línea al 0 % en régimen general va como operación sujeta al 0 % (S1)', async () => {
+    const id = await borrador(wsId, [{ label: 'Formación', unitCents: 10000, taxRate: 0 }]);
+    const r = await emitir(id);
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    const a = alta(id);
+    expect(a.Desglose).toEqual([{ Impuesto: '01', ClaveRegimen: '01', CalificacionOperacion: 'S1', TipoImpositivo: '0.00', BaseImponibleOimporteNoSujeto: '100.00', CuotaRepercutida: '0.00' }]);
+    expect(a.CuotaTotal).toBe('0.00');
+    expect(a.ImporteTotal).toBe('100.00');
+  });
+
+  it('solo se registran facturas en euros', async () => {
+    const ahora = Date.now();
+    let r = await call('POST', `/api/workspaces/${wsId}/invoices`, {
+      lines: [{ label: 'Alojamiento', unitCents: 10000, taxRate: 21 }],
+      currency: 'USD',
+      periodStart: ahora - 86_400_000,
+      periodEnd: ahora,
+    });
+    expect(r.status, JSON.stringify(r.json)).toBe(201);
+    const id = r.json.invoice.id;
+    r = await emitir(id);
+    expect(r.status).toBe(409);
+    expect(r.json.error).toMatch(/exige los importes en euros/);
+    expect(registrosDeFactura(id)).toHaveLength(0);
+  });
+
+  it('una rectificativa por créditos incobrables (R3) exige un cliente con NIF español; una por concurso (R2) admite además un NIF-IVA de la UE', async () => {
+    /** Emite una factura de la cuenta y le prepara una rectificativa con esa causa. */
+    const rectificativa = async (ws: string, causa: 'R2' | 'R3'): Promise<string> => {
+      const original = await borrador(ws);
+      expect((await emitir(original)).status).toBe(200);
+      const r = await call('POST', `/api/invoices/${original}/rectify`, { reason: 'Impago del cliente', cause: causa });
+      expect(r.status, JSON.stringify(r.json)).toBe(201);
+      return r.json.invoice.id;
+    };
+    let r = await emitir(await rectificativa(wsUk, 'R3'));
+    expect(r.status).toBe(409);
+    expect(r.json.error).toMatch(/\(R3\) solo admite clientes con NIF español/);
+    r = await emitir(await rectificativa(wsUk, 'R2'));
+    expect(r.status).toBe(409);
+    expect(r.json.error).toMatch(/\(R2\) solo admite clientes con NIF español o NIF-IVA/);
+    let id = await rectificativa(wsExtranjero, 'R2');
+    r = await emitir(id);
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    expect(alta(id)).toMatchObject({ TipoFactura: 'R2', Destinatarios: [{ IDOtro: { IDType: '02', ID: 'DE123456789' } }] });
+    id = await rectificativa(wsId, 'R3');
+    r = await emitir(id);
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    expect(alta(id)).toMatchObject({ TipoFactura: 'R3', Destinatarios: [{ NIF: NIF_CLIENTE }] });
+  });
+});
+
 describe.skipIf(!hayOpenssl)('certificado y remisión a una AEAT simulada', () => {
   it('rechaza un certificado con la contraseña equivocada y acepta el bueno sin devolverlo', async () => {
     let r = await call('POST', '/api/verifactu/certificado', { pfx: leer('cliente.p12').toString('base64'), password: 'mala' });
@@ -466,26 +643,67 @@ describe.skipIf(!hayOpenssl)('certificado y remisión a una AEAT simulada', () =
     expect(registrosDeFactura(id)[0].estado_remision).toBe('correcto');
   });
 
-  it('un rechazo del envío entero (SOAP Fault) no pierde los registros', async () => {
+  it('un rechazo del envío entero (SOAP Fault) no pierde los registros, y «Enviar ahora» respeta la espera de la AEAT', async () => {
     const id = await borrador(wsId);
     expect((await emitir(id)).status).toBe(200);
     const t0 = Date.now() + 900_000;
-    const fault =
-      '<?xml version="1.0"?><env:Envelope xmlns:env="http://schemas.xmlsoap.org/soap/envelope/"><env:Body><env:Fault><faultcode>env:Client</faultcode><faultstring>Codigo[4102].El XML no cumple el esquema. Falta informar campo obligatorio.</faultstring></env:Fault></env:Body></env:Envelope>';
-    const res = await remisionTick({ ahora: t0, transporte: transporte(() => fault) });
+    let res = await remisionTick({ ahora: t0, transporte: transporte(() => soapFault('4111', 'Error técnico al crear el trámite.')) });
     expect(res).toMatchObject({ resultado: 'rechazado' });
-    expect(res.error).toContain('[4102]');
-    expect(registrosDeFactura(id)[0].estado_remision).toBe('pendiente');
-    const ok = await remisionTick({ ahora: t0 + 1000, forzar: true, transporte: transporte((r) => respuestaAeat(r, () => ({ estado: 'Correcto' }))) });
-    expect(ok.resultado).toBe('correcto');
+    expect(res.error).toContain('[4111]');
+    expect(registrosDeFactura(id)[0]).toMatchObject({ estado_remision: 'pendiente', incidencia: 1 });
+    // La AEAT sí recibió el envío: su espera entre envíos también cuenta aquí.
+    res = await remisionTick({ ahora: t0 + 1000, forzar: true, transporte: transporte(() => new Error('no debería llamarse')) });
+    expect(res).toEqual({ enviado: false, motivo: 'esperando' });
+    res = await remisionTick({ ahora: t0 + 61_000, forzar: true, transporte: transporte(todoCorrecto) });
+    expect(res.resultado).toBe('correcto');
+    expect(registrosDeFactura(id)[0].estado_remision).toBe('correcto');
   });
 
-  it('un duplicado (3000) toma el estado que ya tenía la AEAT', async () => {
+  it('si un registro hace rechazar el envío entero, se reenvía de uno en uno: el culpable queda rechazado y el resto sigue', async () => {
+    const buena = await borrador(wsId);
+    const mala = await borrador(wsId);
+    expect((await emitir(buena)).status).toBe(200);
+    expect((await emitir(mala)).status).toBe(200);
+    const numMala = registrosDeFactura(mala)[0].num_serie_factura;
+    // La AEAT simulada rechaza entero cualquier envío que lleve el registro de `mala`.
+    const aeat = transporte((r) => (r.registros.some((x) => x.num === numMala) ? soapFault('4102', 'El XML no cumple el esquema. Falta informar campo obligatorio.') : todoCorrecto(r)));
+    const t0 = Date.now() + 1_200_000;
+    let res = await remisionTick({ ahora: t0, transporte: aeat });
+    expect(res).toMatchObject({ resultado: 'rechazado', registros: 2 });
+    expect(registrosDeFactura(buena)[0].estado_remision).toBe('pendiente');
+    expect(registrosDeFactura(mala)[0].estado_remision).toBe('pendiente');
+    res = await remisionTick({ ahora: t0 + 61_000, transporte: aeat });
+    expect(res).toMatchObject({ resultado: 'correcto', registros: 1 });
+    expect(registrosDeFactura(buena)[0].estado_remision).toBe('correcto');
+    res = await remisionTick({ ahora: t0 + 122_000, transporte: aeat });
+    expect(res).toMatchObject({ resultado: 'rechazado', registros: 1 });
+    expect(registrosDeFactura(mala)[0]).toMatchObject({ estado_remision: 'incorrecto', codigo_error: '4102' });
+    const inv = (await call('GET', `/api/workspaces/${wsId}/invoices`)).json.invoices.find((i: Json) => i.id === mala);
+    expect(inv.verifactu).toMatchObject({ estado: 'incorrecto', codigoError: '4102', accion: 'subsanar' });
+    expect((await alertasAbiertas('verifactu_registro')).some((a) => a.title.includes(inv.number))).toBe(true);
+    // Encontrado el culpable, la cola vuelve a los lotes.
+    for (const otra of [await borrador(wsId), await borrador(wsId)]) expect((await emitir(otra)).status).toBe(200);
+    res = await remisionTick({ ahora: t0 + 183_000, transporte: aeat });
+    expect(res).toMatchObject({ resultado: 'correcto', registros: 2 });
+  });
+
+  it('tras un envío sin respuesta, un duplicado (3000) toma el estado que ya tenía la AEAT', async () => {
     const id = await borrador(wsId);
     expect((await emitir(id)).status).toBe(200);
-    const res = await remisionTick({ ahora: Date.now() + 2_000_000, forzar: true, transporte: transporte((r) => respuestaAeat(r, () => ({ estado: 'Duplicado', previo: 'Correcta' }))) });
+    const t0 = Date.now() + 2_000_000;
+    // El envío llega a la AEAT, pero la respuesta se pierde por el camino.
+    await remisionTick({ ahora: t0, transporte: transporte(() => new Error('socket hang up')) });
+    expect(registrosDeFactura(id)[0]).toMatchObject({ estado_remision: 'pendiente', intentos: 1 });
+    const res = await remisionTick({ ahora: t0 + 1000, forzar: true, transporte: transporte((r) => respuestaAeat(r, () => ({ estado: 'Duplicado', previo: 'Correcta' }))) });
     expect(res.enviado).toBe(true);
     expect(registrosDeFactura(id)[0]).toMatchObject({ estado_remision: 'correcto', id_peticion: '2025PET0001' });
+  });
+
+  it('en el primer envío, un duplicado (3000) es un rechazo: la AEAT ya tiene otra factura con ese número y fecha', async () => {
+    const id = await borrador(wsId);
+    expect((await emitir(id)).status).toBe(200);
+    await remisionTick({ ahora: Date.now() + 2_100_000, forzar: true, transporte: transporte((r) => respuestaAeat(r, () => ({ estado: 'Duplicado', previo: 'Correcta' }))) });
+    expect(registrosDeFactura(id)[0]).toMatchObject({ estado_remision: 'incorrecto', codigo_error: '3000', id_peticion: null });
   });
 
   it('un registro rechazado se ve en la factura y se subsana con un registro nuevo encadenado', async () => {
@@ -514,6 +732,72 @@ describe.skipIf(!hayOpenssl)('certificado y remisión a una AEAT simulada', () =
     expect(inv.verifactu).toMatchObject({ estado: 'correcto', accion: null });
     // Nada más que subsanar.
     expect((await call('POST', `/api/invoices/${id}/verifactu/subsanar`)).status).toBe(409);
+  });
+
+  it('un NIF de persona física que no está en el censo (2001) se subsana declarándolo «no censado» (07)', async () => {
+    const pf = await cuenta('Lucía Pérez Gómez', '00000000T');
+    const id = await borrador(pf);
+    expect((await emitir(id)).status).toBe(200);
+    const t0 = Date.now() + 3_500_000;
+    await remisionTick({
+      ahora: t0,
+      forzar: true,
+      transporte: transporte((r) =>
+        respuestaAeat(r, () => ({ estado: 'AceptadoConErrores', codigo: '2001', descripcion: 'El NIF del bloque Destinatarios no está identificado en el censo de la AEAT.' })),
+      ),
+    });
+    expect(registrosDeFactura(id)[0]).toMatchObject({ estado_remision: 'aceptado_con_errores', codigo_error: '2001' });
+    const r = await call('POST', `/api/invoices/${id}/verifactu/subsanar`);
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    const sub = JSON.parse(registrosDeFactura(id)[1].registro_json) as RegistroAeat;
+    if (sub.tipo !== 'alta') throw new Error('se esperaba un alta');
+    expect(sub.alta.Subsanacion).toBe('S');
+    // La AEAT tiene el alta (aceptada con errores): sin «RechazoPrevio».
+    expect(sub.alta.RechazoPrevio).toBeUndefined();
+    expect(sub.alta.Destinatarios).toEqual([{ NombreRazon: 'Lucía Pérez Gómez', IDOtro: { CodigoPais: 'ES', IDType: '07', ID: '00000000T' } }]);
+    await remisionTick({ ahora: t0 + 61_000, transporte: transporte(todoCorrecto) });
+    expect(registrosDeFactura(id)[1].estado_remision).toBe('correcto');
+  });
+
+  it('cada cadena tiene su cola: un corte en una no frena a la otra, y lo generado durante el corte consta con incidencia', async () => {
+    const OTRO_NIF = '12345678Z';
+    const x = await borrador(wsId);
+    expect((await emitir(x)).status).toBe(200);
+    let r = await call('PUT', '/api/billing/profile', { taxId: OTRO_NIF });
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    const y = await borrador(wsId);
+    expect((await emitir(y)).status).toBe(200);
+    expect(registrosDeFactura(y)[0]).toMatchObject({ emisor_nif: OTRO_NIF, incidencia: 0 });
+    // Otro obligado, otra cadena: empieza de cero.
+    expect(alta(y).Encadenamiento).toEqual({ PrimerRegistro: 'S' });
+    // La AEAT simulada no contesta a los envíos del primer NIF.
+    const aeat = transporte((env) => (env.xml.includes(`<sum1:NIF>${NIF_EMISOR}</sum1:NIF></sum1:ObligadoEmision>`) ? new Error('connect ETIMEDOUT') : todoCorrecto(env)));
+    const t0 = Date.now() + 4_000_000;
+    let res = await remisionTick({ ahora: t0, transporte: aeat });
+    expect(res).toMatchObject({ resultado: 'fallo', registros: 1 });
+    expect(registrosDeFactura(x)[0]).toMatchObject({ estado_remision: 'pendiente', incidencia: 1 });
+    // Lo que se genera en esa cadena mientras dura el corte nace con incidencia.
+    r = await call('PUT', '/api/billing/profile', { taxId: NIF_EMISOR });
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    const z = await borrador(wsId);
+    expect((await emitir(z)).status).toBe(200);
+    expect(registrosDeFactura(z)[0].incidencia).toBe(1);
+    // La otra cadena envía sin esperar a la primera.
+    res = await remisionTick({ ahora: t0 + 1000, transporte: aeat });
+    expect(res).toMatchObject({ resultado: 'correcto', registros: 1 });
+    expect(recibidos.at(-1)!.xml).toContain(`<sum1:NIF>${OTRO_NIF}</sum1:NIF></sum1:ObligadoEmision>`);
+    expect(recibidos.at(-1)!.xml).not.toContain('<sum1:Incidencia>S</sum1:Incidencia>');
+    expect(registrosDeFactura(y)[0].estado_remision).toBe('correcto');
+    expect(registrosDeFactura(x)[0].estado_remision).toBe('pendiente');
+    // El aviso de incidencia sigue mientras la primera cadena tenga pendientes.
+    expect(await alertasAbiertas('verifactu_remision')).toHaveLength(1);
+    // Pasada su espera, la primera cadena envía lo suyo con la marca de incidencia.
+    res = await remisionTick({ ahora: t0 + 61_000, transporte: transporte(todoCorrecto) });
+    expect(res).toMatchObject({ resultado: 'correcto', registros: 2 });
+    expect(recibidos.at(-1)!.xml).toContain('<sum1:Incidencia>S</sum1:Incidencia>');
+    expect(registrosDeFactura(x)[0].estado_remision).toBe('correcto');
+    expect(registrosDeFactura(z)[0].estado_remision).toBe('correcto');
+    expect(await alertasAbiertas('verifactu_remision')).toHaveLength(0);
   });
 
   it('el TLS lleva el certificado de cliente hasta el servicio', async () => {
@@ -553,8 +837,13 @@ describe.skipIf(!hayOpenssl)('certificado y remisión a una AEAT simulada', () =
     }
   });
 
-  it('no se puede desactivar el año en que ya se ha remitido a producción', async () => {
+  it('con registros de producción no se puede desactivar VERI*FACTU ni volver a pruebas (art. 17 de la Orden)', async () => {
     let r = await call('PUT', '/api/verifactu', { entorno: 'produccion' });
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    // Sin ningún registro de producción todavía, volver a pruebas sí se puede.
+    r = await call('PUT', '/api/verifactu', { entorno: 'pruebas' });
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    r = await call('PUT', '/api/verifactu', { entorno: 'produccion' });
     expect(r.status, JSON.stringify(r.json)).toBe(200);
     const id = await borrador(wsId);
     expect((await emitir(id)).status).toBe(200);
@@ -566,6 +855,12 @@ describe.skipIf(!hayOpenssl)('certificado y remisión a una AEAT simulada', () =
     r = await call('PUT', '/api/verifactu', { modo: 'desactivado' });
     expect(r.status).toBe(409);
     expect(r.json.error).toMatch(/hasta el final del año natural/);
+    r = await call('PUT', '/api/verifactu', { entorno: 'pruebas' });
+    expect(r.status).toBe(409);
+    expect(r.json.error).toMatch(/seguir activo y en producción/);
+    r = await call('PUT', '/api/billing/profile', { sifMode: 'desactivado' });
+    expect(r.status).toBe(409);
+    expect((await call('GET', '/api/verifactu')).json).toMatchObject({ modo: 'verifactu', ajustes: { entorno: 'produccion' } });
   });
 });
 
@@ -614,7 +909,7 @@ describe('comprobaciones antes de encadenar (art. 7.i de la Orden HAC/1177/2024)
     expect(registrosDeFactura(id)).toHaveLength(0);
   });
 
-  it('no se genera nada si el último registro no cuadra con su huella', async () => {
+  it('si el último registro no cuadra con su huella, se anota la anomalía y se avisa, pero la facturación sigue (FAQ 15.2)', async () => {
     const db = new Database(path.join(config.dataDir, 'skyway.db'));
     try {
       const ultimo = db.prepare("SELECT * FROM invoice_ledger WHERE entorno = 'produccion' ORDER BY seq DESC LIMIT 1").get() as Record<string, unknown>;
@@ -627,7 +922,16 @@ describe('comprobaciones antes de encadenar (art. 7.i de la Orden HAC/1177/2024)
     }
     const id = await borrador(wsId);
     const r = await emitir(id);
-    expect(r.status).toBe(409);
-    expect(r.json.error).toMatch(/cadena de registros de facturación está dañada/);
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    // El registro nuevo se encadena con el último, como siempre.
+    expect(alta(id).Encadenamiento.RegistroAnterior?.Huella).toBe('A'.repeat(64));
+    const vista = (await call('GET', '/api/verifactu')).json;
+    const evento = vista.eventos.find((e: Json) => e.tipo_evento === 'anomalia_cadena');
+    expect(evento?.detalle).toMatch(/no cuadra con sus datos/);
+    expect(evento?.detalle).toMatch(/no apunta al registro anterior/);
+    expect(vista.eventosIntegros).toBe(true);
+    const alertas = await alertasAbiertas('verifactu_cadena');
+    expect(alertas).toHaveLength(1);
+    expect(alertas[0].severity).toBe('critical');
   });
 });

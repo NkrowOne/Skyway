@@ -63,6 +63,29 @@ export function fechaHoraHuso(ms: number, zona: string = ZONA_HORARIA): string {
   return `${anio}-${dos(mes)}-${dos(dia)}T${dos(hora)}:${dos(minuto)}:${dos(seg)}${signo}${dos(Math.floor(abs / 60))}:${dos(abs % 60)}`;
 }
 
+/** Fecha `aaaa-mm-dd` del instante en la hora de la zona dada (por defecto, la peninsular). */
+export function fechaLocal(ms: number, zona: string = ZONA_HORARIA): string {
+  const p = Object.fromEntries(formateador(zona).formatToParts(new Date(ms)).map((x) => [x.type, x.value]));
+  return `${p.year}-${p.month}-${p.day}`;
+}
+
+/** `aaaa-mm-dd` → `dd-mm-aaaa`, el formato de fecha de la AEAT. */
+export function isoAAeat(iso: string): string {
+  const [a, m, d] = iso.split('-');
+  return `${d}-${m}-${a}`;
+}
+
+/**
+ * Fecha de expedición de una factura (`aaaa-mm-dd`): la que se congeló al
+ * emitirla, en hora peninsular (`issued_date`). Las emitidas antes de existir
+ * la columna conservan la que siempre han impreso: la UTC de `issued_at`.
+ */
+export function fechaExpedicionIso(inv: { issued_date?: string | null; issued_at: number | null }): string | null {
+  if (inv.issued_date && /^\d{4}-\d{2}-\d{2}$/.test(inv.issued_date)) return inv.issued_date;
+  if (inv.issued_at == null || !Number.isFinite(inv.issued_at)) return null;
+  return new Date(inv.issued_at).toISOString().slice(0, 10);
+}
+
 /**
  * Importe en euros con punto decimal y siempre dos decimales (`12.30`, `-5.00`),
  * dentro del patrón `ImporteSgn12.2Type`. Siempre el mismo texto para el mismo

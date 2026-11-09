@@ -24,19 +24,19 @@ import { auditSystem } from '../audit';
 import { getBillingProfile } from '../company';
 import {
   actualizarRemisionRegistro,
+  cadenasConPendientes,
   contarRegistrosPendientes,
   getInvoice,
-  getSetting,
   marcarIncidenciaPendientes,
-  registrosPendientesRemision,
+  pendientesDeCadena,
   resolveAlertsByDedupe,
-  setSetting,
   transaction,
 } from '../db';
 import type { EntornoVerifactu, EstadoRemision, IssuerSnapshot, RegistroFacturacionRow } from '../types';
 import { safeParse } from '../util';
 import { URL_ENVIO, URL_ENVIO_SELLO } from './ajustes';
 import { credencialesCertificado, infoCertificado } from './certificado';
+import { claveCadena, estadoCadena, EstadoCola, getEstadoCola, guardarEstadoCola } from './estadocola';
 import { anotarEvento } from './eventos';
 import { normalizarNif, textoAeat } from './formato';
 import { registroAeat } from './registro';
@@ -143,55 +143,32 @@ function avisarIncidencia(motivo: string, explicacion: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// Estado de la cola (persistido: sobrevive a un reinicio)
-// ---------------------------------------------------------------------------
-
-export interface EstadoCola {
-  /** Hasta cuándo pide esperar la AEAT antes del siguiente envío, por entorno (ms). */
-  esperaHasta: Partial<Record<EntornoVerifactu, number>>;
-  /** Hasta cuándo se espera tras un fallo, por entorno (ms). */
-  reintentoHasta: Partial<Record<EntornoVerifactu, number>>;
-  fallosSeguidos: number;
-  ultimoEnvioAt: number | null;
-  ultimoResultado: 'correcto' | 'parcial' | 'incorrecto' | 'rechazado' | 'fallo' | null;
-  ultimoCsv: string | null;
-  ultimoError: string | null;
-}
-
-const ESTADO_INICIAL: EstadoCola = {
-  esperaHasta: {},
-  reintentoHasta: {},
-  fallosSeguidos: 0,
-  ultimoEnvioAt: null,
-  ultimoResultado: null,
-  ultimoCsv: null,
-  ultimoError: null,
-};
-
-export function getEstadoCola(): EstadoCola {
-  return { ...ESTADO_INICIAL, ...safeParse<Partial<EstadoCola>>(getSetting('verifactuRemision'), {}) };
-}
-
-function setEstadoCola(e: EstadoCola): void {
-  setSetting('verifactuRemision', JSON.stringify(e));
-}
-
-// ---------------------------------------------------------------------------
 // Envío de un lote
 // ---------------------------------------------------------------------------
 
+export { getEstadoCola } from './estadocola';
+export type { EstadoCola } from './estadocola';
+
 /**
- * Lote siguiente: los primeros registros en cola que comparten emisor, entorno
- * e incidencia, sin repetir factura. Se corta en el primero que no encaja (no
- * se salta): el orden de envío es el de la cadena.
+ * Rechazos del envío entero que los causa un registro (XML fuera de esquema,
+ * fecha mal formada, caracteres no UTF-8…): reintentar el mismo lote fallaría
+ * siempre. Se reenvía de uno en uno para dar con el culpable, que queda
+ * rechazado, y el resto sigue.
  */
-export function siguienteLote(pendientes: RegistroFacturacionRow[]): RegistroFacturacionRow[] {
+const FALLOS_DE_REGISTRO = new Set(['4102', '4103', '4106', '4119', '4136', '4137', '4138']);
+
+/**
+ * Lote siguiente de una cadena: los primeros registros en cola con la misma
+ * incidencia, sin repetir factura y hasta `max`. Se corta en el primero que no
+ * encaja (no se salta): el orden de envío es el de la cadena.
+ */
+export function siguienteLote(pendientes: RegistroFacturacionRow[], max: number = MAX_REGISTROS_ENVIO): RegistroFacturacionRow[] {
   const lote: RegistroFacturacionRow[] = [];
   const facturas = new Set<string>();
   for (const r of pendientes) {
     const p = lote[0];
     if (p && (r.entorno !== p.entorno || r.emisor_nif !== p.emisor_nif || r.incidencia !== p.incidencia)) break;
-    if (facturas.has(r.invoice_id) || lote.length >= MAX_REGISTROS_ENVIO) break;
+    if (facturas.has(r.invoice_id) || lote.length >= max) break;
     facturas.add(r.invoice_id);
     lote.push(r);
   }
@@ -226,13 +203,22 @@ function lineaDe(r: RegistroFacturacionRow, registro: RegistroAeat, lineas: Line
   return lineas[i];
 }
 
-/** Estado del registro según la línea de respuesta, con el caso del duplicado. */
-function estadoDeLinea(l: LineaRespuesta): { estado: EstadoRemision; codigo: string | null; descripcion: string | null; idPeticion: string | null } {
+/**
+ * Estado del registro según la línea de respuesta, con el caso del duplicado.
+ * `reenvio`: el registro ya se había enviado antes (la respuesta se perdió o el
+ * envío falló a medias).
+ */
+function estadoDeLinea(
+  l: LineaRespuesta,
+  reenvio: boolean,
+): { estado: EstadoRemision; codigo: string | null; descripcion: string | null; idPeticion: string | null } {
   if (l.estado === 'Correcto') return { estado: 'correcto', codigo: null, descripcion: null, idPeticion: null };
   if (l.estado === 'AceptadoConErrores') return { estado: 'aceptado_con_errores', codigo: l.codigoError || null, descripcion: l.descripcionError || null, idPeticion: null };
-  // Duplicado: la AEAT ya tenía el registro (un reenvío tras perder la
-  // respuesta). Manda el estado con que lo guardó entonces.
-  if (l.codigoError === '3000' && l.duplicado) {
+  // Duplicado: tras un reenvío, la AEAT ya tenía ESTE registro (se perdió la
+  // respuesta) y manda el estado con que lo guardó entonces. En el primer
+  // envío, en cambio, quiere decir que la AEAT ya tiene otra factura con ese
+  // número y fecha (de otro sistema, o un número reutilizado): es un rechazo.
+  if (l.codigoError === '3000' && l.duplicado && reenvio) {
     const d = l.duplicado;
     if (d.estado === 'Correcta' || d.estado === 'Anulada') return { estado: 'correcto', codigo: null, descripcion: null, idPeticion: d.idPeticion || null };
     if (d.estado === 'AceptadaConErrores') {
@@ -240,6 +226,21 @@ function estadoDeLinea(l: LineaRespuesta): { estado: EstadoRemision; codigo: str
     }
   }
   return { estado: 'incorrecto', codigo: l.codigoError || null, descripcion: l.descripcionError || 'Registro rechazado por la AEAT', idPeticion: null };
+}
+
+/** Alerta por un registro que la AEAT ha rechazado o aceptado con errores. */
+function alertaRegistro(r: RegistroFacturacionRow, estado: EstadoRemision, codigo: string | null, descripcion: string | null): void {
+  const inv = getInvoice(r.invoice_id);
+  const numero = inv?.number ?? r.num_serie_factura;
+  fireAlert({
+    severity: estado === 'incorrecto' ? 'critical' : 'warning',
+    type: 'verifactu_registro',
+    title: estado === 'incorrecto' ? `La AEAT ha rechazado el registro de la factura ${numero}` : `La AEAT ha aceptado con errores el registro de la factura ${numero}`,
+    message: `${codigo ? `[${codigo}] ` : ''}${descripcion ?? ''}`.slice(0, 300),
+    explanation:
+      'La factura sigue emitida. Corrige el dato que indica la AEAT y pulsa «Subsanar» en Contabilidad → VERI*FACTU para generar el registro de subsanación. Si el error está en los datos impresos de la factura, corrígela con una factura rectificativa.',
+    dedupeKey: `verifactu:${r.invoice_id}:${r.id}`,
+  });
 }
 
 export interface ResultadoRemision {
@@ -268,8 +269,8 @@ export async function remisionTick(opts: { ahora?: number; transporte?: Transpor
 
 async function paso(opts: { ahora?: number; transporte?: Transporte; forzar?: boolean; ca?: Buffer }): Promise<ResultadoRemision> {
   const ahora = opts.ahora ?? Date.now();
-  const pendientes = registrosPendientesRemision(MAX_REGISTROS_ENVIO + 1);
-  if (pendientes.length === 0) return { enviado: false, motivo: 'sin_pendientes' };
+  const cadenas = cadenasConPendientes();
+  if (cadenas.length === 0) return { enviado: false, motivo: 'sin_pendientes' };
   const cert = credencialesCertificado();
   if (!cert) {
     // Sin certificado no se puede remitir: los registros esperan y constan
@@ -281,13 +282,24 @@ async function paso(opts: { ahora?: number; transporte?: Transporte; forzar?: bo
     );
     return { enviado: false, motivo: 'sin_certificado' };
   }
-  const lote = siguienteLote(pendientes);
-  const entorno = lote[0].entorno;
+
+  // La primera cadena (la de registro pendiente más antiguo) que pueda enviar
+  // ya. La espera tras un fallo no se salta nunca solo por tener el lote lleno:
+  // con la AEAT caída, eso sería reintentar cada 10 s. La que pide la AEAT sí
+  // (art. 16 de la Orden: se espera el tiempo indicado o a tener 1000).
   const estado = getEstadoCola();
-  const lleno = lote.length >= MAX_REGISTROS_ENVIO;
-  const esperaAeat = estado.esperaHasta[entorno] ?? 0;
-  const esperaFallo = opts.forzar ? 0 : (estado.reintentoHasta[entorno] ?? 0);
-  if (!lleno && (ahora < esperaAeat || ahora < esperaFallo)) return { enviado: false, motivo: 'esperando' };
+  let lote: RegistroFacturacionRow[] = [];
+  for (const c of cadenas) {
+    const ec = estadoCadena(estado, c.emisor_nif, c.entorno);
+    if (!opts.forzar && ahora < ec.reintentoHasta) continue;
+    const candidato = siguienteLote(pendientesDeCadena(c.emisor_nif, c.entorno, MAX_REGISTROS_ENVIO + 1), ec.aislarRestantes > 0 ? 1 : MAX_REGISTROS_ENVIO);
+    if (candidato.length < MAX_REGISTROS_ENVIO && ahora < ec.esperaHasta) continue;
+    lote = candidato;
+    break;
+  }
+  if (lote.length === 0) return { enviado: false, motivo: 'esperando' };
+  const nif = lote[0].emisor_nif;
+  const entorno = lote[0].entorno;
 
   const registros = lote.map(registroAeat);
   const xml = soapRegFactu(obligado(lote, registros), registros, { incidencia: lote[0].incidencia === 1 });
@@ -305,11 +317,13 @@ async function paso(opts: { ahora?: number; transporte?: Transporte; forzar?: bo
       throw new Error(`La AEAT ha respondido con un error HTTP ${http.status} sin una respuesta del servicio`);
     }
   } catch (err) {
-    return fallo(lote, entorno, ahora, String((err as Error)?.message ?? err), null);
+    return fallo(lote, ahora, String((err as Error)?.message ?? err), null);
   }
 
   if (respuesta.tipo === 'fault') {
-    return fallo(lote, entorno, ahora, `${respuesta.codigo ? `[${respuesta.codigo}] ` : ''}${respuesta.mensaje}`, respuesta.codigo);
+    const mensaje = `${respuesta.codigo ? `[${respuesta.codigo}] ` : ''}${respuesta.mensaje}`;
+    if (FALLOS_DE_REGISTRO.has(respuesta.codigo)) return rechazoPorRegistro(lote, ahora, mensaje, respuesta.codigo);
+    return fallo(lote, ahora, mensaje, respuesta.codigo);
   }
 
   const usadas = new Set<number>();
@@ -322,7 +336,8 @@ async function paso(opts: { ahora?: number; transporte?: Transporte; forzar?: bo
         sinLinea++;
         return;
       }
-      const e = estadoDeLinea(linea);
+      // `r.intentos` es el valor de antes de este envío.
+      const e = estadoDeLinea(linea, r.intentos > 0);
       actualizarRemisionRegistro(r.id, {
         estado_remision: e.estado,
         csv_aeat: e.estado === 'incorrecto' ? null : respuesta.csv || null,
@@ -336,7 +351,7 @@ async function paso(opts: { ahora?: number; transporte?: Transporte; forzar?: bo
     const rechazados = conErrores.filter((c) => c.estado === 'incorrecto').length;
     anotarEvento(
       conErrores.length ? 'envio_con_errores' : 'envio_correcto',
-      `${entorno}: ${lote.length} registros, ${lote.length - conErrores.length - sinLinea} correctos, ${conErrores.length - rechazados} aceptados con errores, ${rechazados} rechazados${respuesta.csv ? `, CSV ${respuesta.csv}` : ''}`,
+      `${entorno} ${nif}: ${lote.length} registros, ${lote.length - conErrores.length - sinLinea} correctos, ${conErrores.length - rechazados} aceptados con errores, ${rechazados} rechazados${respuesta.csv ? `, CSV ${respuesta.csv}` : ''}`,
       ahora,
     );
   });
@@ -344,53 +359,91 @@ async function paso(opts: { ahora?: number; transporte?: Transporte; forzar?: bo
   const espera = (respuesta.tiempoEsperaEnvio ?? ESPERA_POR_DEFECTO_S) * 1000;
   const resultado: EstadoCola['ultimoResultado'] =
     respuesta.estadoEnvio === 'Correcto' && conErrores.length === 0 ? 'correcto' : respuesta.estadoEnvio === 'Incorrecto' ? 'incorrecto' : 'parcial';
-  setEstadoCola({
-    ...estado,
-    esperaHasta: { ...estado.esperaHasta, [entorno]: ahora + espera },
-    reintentoHasta: { ...estado.reintentoHasta, [entorno]: 0 },
+  const actual = getEstadoCola();
+  const ec = estadoCadena(actual, nif, entorno);
+  actual.cadenas[claveCadena(nif, entorno)] = {
+    esperaHasta: ahora + espera,
+    reintentoHasta: 0,
     fallosSeguidos: 0,
+    aislarRestantes: Math.max(0, ec.aislarRestantes - lote.length),
+  };
+  guardarEstadoCola({
+    ...actual,
     ultimoEnvioAt: ahora,
     ultimoResultado: resultado,
-    ultimoCsv: respuesta.csv || estado.ultimoCsv,
+    ultimoCsv: respuesta.csv || actual.ultimoCsv,
     ultimoError: sinLinea ? `La respuesta no traía ${sinLinea} de los ${lote.length} registros enviados: se reenviarán.` : null,
   });
-  resolveAlertsByDedupe(ALERTA_CONEXION);
-  for (const c of conErrores) {
-    const inv = getInvoice(c.r.invoice_id);
-    const numero = inv?.number ?? c.r.num_serie_factura;
-    fireAlert({
-      severity: c.estado === 'incorrecto' ? 'critical' : 'warning',
-      type: 'verifactu_registro',
-      title: c.estado === 'incorrecto' ? `La AEAT ha rechazado el registro de la factura ${numero}` : `La AEAT ha aceptado con errores el registro de la factura ${numero}`,
-      message: `${c.codigo ? `[${c.codigo}] ` : ''}${c.descripcion ?? ''}`.slice(0, 300),
-      explanation:
-        'La factura sigue emitida. Corrige el dato que indica la AEAT y pulsa «Subsanar» en Contabilidad → VERI*FACTU para generar el registro de subsanación. Si el error está en los datos impresos de la factura, corrígela con una factura rectificativa.',
-      dedupeKey: `verifactu:${c.r.invoice_id}:${c.r.id}`,
-    });
-  }
+  // El aviso de incidencia se cierra cuando ninguna cadena sigue fallando.
+  if (Object.values(getEstadoCola().cadenas).every((c) => c.fallosSeguidos === 0)) resolveAlertsByDedupe(ALERTA_CONEXION);
+  for (const c of conErrores) alertaRegistro(c.r, c.estado, c.codigo, c.descripcion);
   return { enviado: true, registros: lote.length, resultado };
 }
 
-/** El envío no ha llegado o la AEAT lo ha rechazado entero: los registros siguen en cola. */
-function fallo(lote: RegistroFacturacionRow[], entorno: EntornoVerifactu, ahora: number, mensaje: string, codigo: string | null): ResultadoRemision {
+/**
+ * La AEAT ha rechazado el envío entero por un defecto de un registro. Con
+ * varios registros en el lote, los siguientes envíos de esa cadena van de uno
+ * en uno; con uno solo, ese es el culpable: queda rechazado (con su alerta,
+ * para subsanarlo o rectificar) y la cola sigue con el resto.
+ */
+function rechazoPorRegistro(lote: RegistroFacturacionRow[], ahora: number, mensaje: string, codigo: string): ResultadoRemision {
+  const nif = lote[0].emisor_nif;
+  const entorno = lote[0].entorno;
   const estado = getEstadoCola();
-  const fallos = estado.fallosSeguidos + 1;
+  const ec = estadoCadena(estado, nif, entorno);
+  const culpable = lote.length === 1 ? lote[0] : null;
+  transaction(() => {
+    if (culpable) {
+      actualizarRemisionRegistro(culpable.id, { estado_remision: 'incorrecto', respuesta_at: ahora, codigo_error: codigo, descripcion_error: mensaje.slice(0, 500) });
+    } else {
+      for (const r of lote) actualizarRemisionRegistro(r.id, { incidencia: 1 });
+    }
+    anotarEvento(
+      'envio_rechazado',
+      culpable
+        ? `${entorno} ${nif}: el registro de ${culpable.num_serie_factura} hace rechazar el envío. ${mensaje}`
+        : `${entorno} ${nif}: ${lote.length} registros; se reenvían de uno en uno para encontrar el que lo provoca. ${mensaje}`,
+      ahora,
+    );
+  });
+  estado.cadenas[claveCadena(nif, entorno)] = {
+    ...ec,
+    // La AEAT ha recibido el envío: también aquí se respeta su espera.
+    esperaHasta: ahora + ESPERA_POR_DEFECTO_S * 1000,
+    reintentoHasta: 0,
+    aislarRestantes: culpable ? Math.max(0, ec.aislarRestantes - 1) : lote.length,
+  };
+  guardarEstadoCola({ ...estado, ultimoEnvioAt: ahora, ultimoResultado: 'rechazado', ultimoError: mensaje.slice(0, 500) });
+  auditSystem('verifactu_remision_fallida', `${entorno} ${nif}: ${lote.length} registros: ${mensaje}`.slice(0, 300));
+  if (culpable) alertaRegistro(culpable, 'incorrecto', codigo, mensaje);
+  return { enviado: true, registros: lote.length, resultado: 'rechazado', error: mensaje };
+}
+
+/** El envío no ha llegado o la AEAT lo ha rechazado entero: los registros siguen en cola. */
+function fallo(lote: RegistroFacturacionRow[], ahora: number, mensaje: string, codigo: string | null): ResultadoRemision {
+  const nif = lote[0].emisor_nif;
+  const entorno = lote[0].entorno;
+  const estado = getEstadoCola();
+  const ec = estadoCadena(estado, nif, entorno);
+  const fallos = ec.fallosSeguidos + 1;
   const configuracion = !!codigo && FALLOS_DE_CONFIGURACION.has(codigo);
   const espera = configuracion ? 3600 : ESPERAS_TRAS_FALLO_S[Math.min(fallos - 1, ESPERAS_TRAS_FALLO_S.length - 1)];
   transaction(() => {
-    // No llegaron a su hora: constan como afectados por una incidencia.
-    for (const r of lote) actualizarRemisionRegistro(r.id, { incidencia: 1 });
-    anotarEvento(codigo ? 'envio_rechazado' : 'error_conexion', `${entorno}: ${lote.length} registros. ${mensaje}`, ahora);
+    // Ni este lote ni lo que espera detrás en la cadena llegan a su hora:
+    // todos constan como afectados por la incidencia (art. 16.4 de la Orden).
+    marcarIncidenciaPendientes({ emisorNif: nif, entorno });
+    anotarEvento(codigo ? 'envio_rechazado' : 'error_conexion', `${entorno} ${nif}: ${lote.length} registros. ${mensaje}`, ahora);
   });
-  setEstadoCola({
-    ...estado,
-    reintentoHasta: { ...estado.reintentoHasta, [entorno]: ahora + espera * 1000 },
+  estado.cadenas[claveCadena(nif, entorno)] = {
+    ...ec,
+    reintentoHasta: ahora + espera * 1000,
     fallosSeguidos: fallos,
-    ultimoEnvioAt: ahora,
-    ultimoResultado: codigo ? 'rechazado' : 'fallo',
-    ultimoError: mensaje.slice(0, 500),
-  });
-  auditSystem('verifactu_remision_fallida', `${entorno}: ${lote.length} registros: ${mensaje}`.slice(0, 300));
+    // Con un SOAP Fault la AEAT sí ha recibido el envío: su espera entre
+    // envíos también cuenta, y «Enviar ahora» no se la salta.
+    esperaHasta: codigo ? Math.max(ec.esperaHasta, ahora + ESPERA_POR_DEFECTO_S * 1000) : ec.esperaHasta,
+  };
+  guardarEstadoCola({ ...estado, ultimoEnvioAt: ahora, ultimoResultado: codigo ? 'rechazado' : 'fallo', ultimoError: mensaje.slice(0, 500) });
+  auditSystem('verifactu_remision_fallida', `${entorno} ${nif}: ${lote.length} registros: ${mensaje}`.slice(0, 300));
   avisarIncidencia(
     mensaje,
     configuracion

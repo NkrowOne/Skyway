@@ -728,6 +728,12 @@ export interface InvoiceRow {
   stripe_session_id: string | null;
   stripe_url: string | null;
   issued_at: number | null;
+  /**
+   * Fecha de expedición (aaaa-mm-dd) en hora peninsular, congelada al emitir:
+   * la que imprime la factura, la del registro de VERI*FACTU y la del año de la
+   * serie. null en las emitidas antes de la columna (imprimen la UTC).
+   */
+  issued_date: string | null;
   paid_at: number | null;
   /** 1 una vez emitida: la factura es inmutable (solo se corrige con rectificativa). */
   locked: number;

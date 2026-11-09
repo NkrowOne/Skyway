@@ -105,13 +105,22 @@ export function numeroInstalacion(): string {
   return n;
 }
 
-/** Productor efectivo: el configurado o, si falta, el emisor. */
-export function productorEfectivo(): { nombre: string; nif: string; direccion: string } {
+/**
+ * Productor efectivo: el configurado (nombre y NIF juntos) o, si no hay, el
+ * emisor. Nunca mezcla el nombre de uno con el NIF del otro. La dirección de
+ * un productor configurado es la suya; la del emisor solo se toma cuando el
+ * productor es el propio emisor.
+ */
+export function productorEfectivo(): { nombre: string; nif: string; direccion: string; esEmisor: boolean } {
   const a = getAjustesVerifactu();
   const perfil = getBillingProfile();
-  const nombre = textoAeat(a.productorNombre || perfil.companyName, 120);
-  const nif = normalizarNif(a.productorNif || perfil.taxId);
-  return { nombre, nif, direccion: (a.productorDireccion || perfil.address).trim() };
+  const propio = !!a.productorNombre.trim() && !!a.productorNif.trim();
+  return {
+    nombre: textoAeat(propio ? a.productorNombre : perfil.companyName, 120),
+    nif: normalizarNif(propio ? a.productorNif : perfil.taxId),
+    direccion: (a.productorDireccion || (propio ? '' : perfil.address)).trim(),
+    esEmisor: !propio,
+  };
 }
 
 /** Bloque `SistemaInformatico` de cada registro. */
