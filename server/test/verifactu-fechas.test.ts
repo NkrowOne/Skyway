@@ -199,7 +199,8 @@ describe('fecha de expedición en hora peninsular', () => {
   it('emitir a las 23:30 UTC del 31 de diciembre, las 00:30 del 1 de enero en la Península, fija la fecha de expedición en el 1 de enero de 2027', async () => {
     let r = await call('PUT', '/api/billing/profile', PERFIL);
     expect(r.status, JSON.stringify(r.json)).toBe(200);
-    r = await call('PUT', '/api/verifactu', { modo: 'verifactu' });
+    // En producción: en pruebas, el PDF no lleva el QR ni las leyendas.
+    r = await call('PUT', '/api/verifactu', { modo: 'verifactu', entorno: 'produccion' });
     expect(r.status, JSON.stringify(r.json)).toBe(200);
     expect(r.json.modo).toBe('verifactu');
     r = await call('POST', '/api/workspaces', { name: 'Cliente Nochevieja SL' });
@@ -211,7 +212,7 @@ describe('fecha de expedición en hora peninsular', () => {
     r = await call('PATCH', `/api/invoices/${facturaVerifactu}`, { status: 'issued' });
     expect(r.status, JSON.stringify(r.json)).toBe(200);
     emitida = r.json.invoice;
-    expect(emitida.verifactu).toMatchObject({ tipo: 'alta', entorno: 'pruebas' });
+    expect(emitida.verifactu).toMatchObject({ tipo: 'alta', entorno: 'produccion' });
     // El instante sigue siendo el del 31 de diciembre en UTC; la fecha, la peninsular.
     expect(emitida.issued_at).toBe(INSTANTE);
     expect(emitida.issued_date).toBe('2027-01-01');

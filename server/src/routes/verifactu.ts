@@ -150,6 +150,13 @@ export async function verifactuRoutes(app: FastifyInstance): Promise<void> {
       productorDireccion: body.productorDireccion ?? actual.productorDireccion,
       declaracionLugar: body.declaracionLugar ?? actual.declaracionLugar,
       declaracionFecha: body.declaracionFecha ?? actual.declaracionFecha,
+      // Poner (o cambiar) la fecha es suscribir la declaración de esta versión.
+      declaracionVersion:
+        body.declaracionFecha !== undefined && body.declaracionFecha !== actual.declaracionFecha
+          ? body.declaracionFecha
+            ? config.version
+            : ''
+          : actual.declaracionVersion,
     };
     transaction(() => {
       if (siguientePerfil.sifMode !== perfil.sifMode) {

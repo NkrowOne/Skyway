@@ -149,7 +149,7 @@ interface OpcionesDestinatario {
  * Destinatario de la factura: NIF si es español; NIF-IVA si es de la UE y lo
  * tiene; si no, el documento de su país de residencia (IDType 04).
  */
-function destinatario(inv: InvoiceRow, nifEmisor: string, opts: OpcionesDestinatario): PersonaAeat {
+function destinatario(inv: InvoiceRow, opts: OpcionesDestinatario): PersonaAeat {
   const nombre = textoAeat(inv.client_name, 120);
   if (!nombre) throw new ErrorVerifactu('Falta el nombre del cliente, obligatorio en el registro de una factura completa.');
   const paisBruto = (inv.client_country || 'ES').trim().toUpperCase();
@@ -164,7 +164,8 @@ function destinatario(inv: InvoiceRow, nifEmisor: string, opts: OpcionesDestinat
     if (opts.estricto && !nifValido(nif)) {
       throw new ErrorVerifactu(`El NIF del cliente («${bruto || 'vacío'}») no es un NIF español válido. Corrígelo en la ficha de la cuenta o, si es de otro país, indica su país.`);
     }
-    if (opts.estricto && nif === nifEmisor) throw new ErrorVerifactu('El NIF del cliente es el mismo que el del emisor.');
+    // Un cliente con el mismo NIF que el emisor (autoconsumo) es válido: la AEAT
+    // quitó esa comprobación en la versión 1.0.3 de sus validaciones.
     if (opts.noCensado && nifPersonaFisica(nif)) return { NombreRazon: nombre, IDOtro: { CodigoPais: 'ES', IDType: '07', ID: nif } };
     return { NombreRazon: nombre, NIF: nif };
   }
@@ -361,7 +362,7 @@ export function camposAlta(inv: InvoiceRow, opts: Pick<OpcionesAlta, 'estricto' 
   }
   const exigeNifIva =
     inv.vat_regime === 'exento_intracom_art25' || ((inv.vat_regime === 'inversion_sujeto_pasivo' || inv.vat_regime === 'no_sujeto') && paisCliente !== 'ES');
-  const dest = simplificada ? undefined : destinatario(inv, nif, { estricto: opts.estricto, exigeNifIva, noCensado: opts.subsanacion?.noCensado });
+  const dest = simplificada ? undefined : destinatario(inv, { estricto: opts.estricto, exigeNifIva, noCensado: opts.subsanacion?.noCensado });
   // Restricciones de la AEAT al destinatario de algunas rectificativas (1191, 1192).
   if (opts.estricto && dest?.IDOtro) {
     if (tipo === 'R3' && dest.IDOtro.IDType !== '07') {

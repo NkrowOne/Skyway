@@ -65,6 +65,15 @@ function registros(invoiceId: string): RegistroAeat[] {
   return registrosDeFactura(invoiceId).map((r) => JSON.parse(r.registro_json) as RegistroAeat);
 }
 
+/** Contenido (los flujos ya descomprimidos) del PDF de una factura. */
+async function contenidoPdf(invoiceId: string): Promise<string> {
+  const r = await app.inject({ method: 'GET', url: `/api/invoices/${invoiceId}/pdf`, headers });
+  expect(r.statusCode).toBe(200);
+  return [...r.rawPayload.toString('latin1').matchAll(/stream\n([\s\S]*?)\nendstream/g)]
+    .map((m) => inflateSync(Buffer.from(m[1], 'latin1')).toString('latin1'))
+    .join('\n');
+}
+
 /** Alta del primer registro de una factura (falla si es una anulación). */
 function alta(invoiceId: string): Extract<RegistroAeat, { tipo: 'alta' }>['alta'] {
   const [reg] = registros(invoiceId);
@@ -291,6 +300,28 @@ describe('activación de VERI*FACTU', () => {
     expect(texto).toMatch(/\n\nDatos pendientes: [^\n]*Lugar de suscripción/);
   });
 
+  it('la fecha de suscripción de la declaración vale para su versión: tras actualizar Skyway, vuelve a quedar pendiente', async () => {
+    const apartado = (j: Json, letra: string): string => j.declaracion.apartados.find((a: Json) => a.letra === letra).texto;
+    const fechaPendiente = (j: Json): boolean => j.declaracion.pendientes.some((p: string) => p.startsWith('Fecha de suscripción'));
+    let r = await call('PUT', '/api/verifactu', { declaracionLugar: 'Madrid, España', declaracionFecha: '2026-11-09' });
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    expect(fechaPendiente(r.json)).toBe(false);
+    expect(apartado(r.json, '1.l')).toBe('9 de noviembre de 2026. Madrid, España.');
+    // Como tras actualizar: la fecha guardada es la de otra versión.
+    setSetting('verifactu', JSON.stringify({ ...JSON.parse(getSetting('verifactu') ?? '{}'), declaracionVersion: '0.40.0' }));
+    r = await call('GET', '/api/verifactu');
+    expect(r.json.declaracion.pendientes).toContain(`Fecha de suscripción de la versión ${config.version} (la guardada es de la versión 0.40.0)`);
+    expect(apartado(r.json, '1.l')).toBe('(pendiente). Madrid, España.');
+    // Guardar otros datos no la suscribe; poner la fecha, sí.
+    r = await call('PUT', '/api/verifactu', { declaracionLugar: 'Madrid, España', declaracionFecha: '2026-11-09' });
+    expect(fechaPendiente(r.json)).toBe(true);
+    r = await call('PUT', '/api/verifactu', { declaracionFecha: '2026-11-10' });
+    expect(fechaPendiente(r.json)).toBe(false);
+    // Lo deja como estaba para el resto de pruebas.
+    r = await call('PUT', '/api/verifactu', { declaracionLugar: '', declaracionFecha: '' });
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+  });
+
   it('prepara las cuentas de cliente', async () => {
     let r = await call('POST', '/api/workspaces', { name: 'Cliente "Comillas" <SL>' });
     expect(r.status, JSON.stringify(r.json)).toBe(201);
@@ -462,18 +493,16 @@ describe('registros de alta y anulación encadenados', () => {
     expect(registrosDeFactura(id)).toHaveLength(0);
   });
 
-  it('el PDF lleva el QR tributario y la leyenda VERI*FACTU al principio', async () => {
-    const r = await app.inject({ method: 'GET', url: `/api/invoices/${primera}/pdf`, headers });
-    expect(r.statusCode).toBe(200);
-    const pdf = r.rawPayload;
-    const contenido = [...pdf.toString('latin1').matchAll(/stream\n([\s\S]*?)\nendstream/g)]
-      .map((m) => inflateSync(Buffer.from(m[1], 'latin1')).toString('latin1'))
-      .join('\n');
-    expect(contenido).toContain('(QR tributario:) Tj');
-    expect(contenido).toContain('(VERI*FACTU) Tj');
-    expect(contenido).toContain('(Registro remitido al entorno de pruebas de la AEAT) Tj');
-    // Los módulos del QR: un único trazado relleno con muchos rectángulos.
-    expect((contenido.match(/ re/g) ?? []).length).toBeGreaterThan(100);
+  it('en el entorno de pruebas, el PDF no lleva el QR ni la leyenda VERI*FACTU: dice que el registro es de prueba', async () => {
+    // La frase «VERI*FACTU» solo se admite si los registros llegan a la AEAT con
+    // efectos fiscales (art. 6.5.b del RD 1619/2012 y art. 20.1.b de la Orden).
+    const contenido = await contenidoPdf(primera);
+    expect(contenido).not.toContain('(QR tributario:) Tj');
+    expect(contenido).not.toContain('(VERI*FACTU) Tj');
+    // El PDF escribe en octal lo que no es ASCII: «ó» es \363.
+    expect(contenido).toMatch(/\(Registro de facturaci\\363n de prueba: [^)]*\) Tj/);
+    // Sin los módulos del QR (un trazado con más de cien rectángulos).
+    expect((contenido.match(/ re/g) ?? []).length).toBeLessThan(50);
   });
 
   it('los registros no se pueden modificar ni borrar en la base de datos', () => {
@@ -553,6 +582,14 @@ describe('validaciones antes de emitir', () => {
     expect(a.Desglose).toEqual([{ Impuesto: '01', ClaveRegimen: '01', CalificacionOperacion: 'S1', TipoImpositivo: '0.00', BaseImponibleOimporteNoSujeto: '100.00', CuotaRepercutida: '0.00' }]);
     expect(a.CuotaTotal).toBe('0.00');
     expect(a.ImporteTotal).toBe('100.00');
+  });
+
+  it('un cliente con el mismo NIF que el emisor (autoconsumo) es válido', async () => {
+    const propia = await cuenta('Emisor Pruebas SL (consumo propio)', NIF_EMISOR);
+    const id = await borrador(propia);
+    const r = await emitir(id);
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    expect(alta(id).Destinatarios).toEqual([{ NombreRazon: 'Emisor Pruebas SL (consumo propio)', NIF: NIF_EMISOR }]);
   });
 
   it('solo se registran facturas en euros', async () => {
@@ -785,6 +822,33 @@ describe.skipIf(!hayOpenssl)('certificado y remisión a una AEAT simulada', () =
     expect((await remisionTick({ ahora: t0 + 62_000, transporte: transporte(todoCorrecto) })).resultado).toBe('correcto');
   });
 
+  it('al reenviar un alta, un duplicado de una factura «Anulada» no es el alta propia: es otra factura', async () => {
+    const id = await borrador(wsId);
+    expect((await emitir(id)).status).toBe(200);
+    const t0 = Date.now() + 2_650_000;
+    await remisionTick({ ahora: t0, transporte: transporte(respuestaPerdida) });
+    expect(registrosDeFactura(id)[0].envio_incierto).toBe(1);
+    // La anulación de una factura nunca sale antes de resolverse su alta.
+    await remisionTick({ ahora: t0 + 61_000, transporte: transporte((r) => respuestaAeat(r, () => ({ estado: 'Duplicado', previo: 'Anulada' }))) });
+    expect(registrosDeFactura(id)[0]).toMatchObject({ estado_remision: 'incorrecto', codigo_error: '3000' });
+  });
+
+  it('una anulación reenviada tras un envío incierto que la AEAT da por ya dada de baja (3001) queda remitida', async () => {
+    const id = await borrador(wsId);
+    expect((await emitir(id)).status).toBe(200);
+    const t0 = Date.now() + 2_772_000;
+    expect((await remisionTick({ ahora: t0, transporte: transporte(todoCorrecto) })).resultado).toBe('correcto');
+    expect((await call('PATCH', `/api/invoices/${id}`, { status: 'void' })).status).toBe(200);
+    await remisionTick({ ahora: t0 + 61_000, transporte: transporte(respuestaPerdida) });
+    await remisionTick({
+      ahora: t0 + 122_000,
+      transporte: transporte((r) => respuestaAeat(r, () => ({ estado: 'Incorrecto', codigo: '3001', descripcion: 'El registro de facturación ya ha sido dado de baja.' }))),
+    });
+    const [altaFila, anulacion] = registrosDeFactura(id);
+    expect(altaFila.estado_remision).toBe('correcto');
+    expect(anulacion).toMatchObject({ record_type: 'anulacion', estado_remision: 'correcto' });
+  });
+
   it('un registro rechazado se ve en la factura y se subsana con un registro nuevo encadenado', async () => {
     const id = await borrador(wsId);
     expect((await emitir(id)).status).toBe(200);
@@ -984,6 +1048,22 @@ describe.skipIf(!hayOpenssl)('certificado y remisión a una AEAT simulada', () =
     r = await call('PUT', '/api/billing/profile', { sifMode: 'desactivado' });
     expect(r.status).toBe(409);
     expect((await call('GET', '/api/verifactu')).json).toMatchObject({ modo: 'verifactu', ajustes: { entorno: 'produccion' } });
+    // Un solo obligado tributario: con registros de producción, el NIF del emisor no cambia.
+    r = await call('PUT', '/api/billing/profile', { taxId: '12345678Z' });
+    expect(r.status).toBe(409);
+    expect(r.json.error).toMatch(/el NIF del emisor no se puede cambiar/);
+  });
+
+  it('en producción, el PDF lleva el QR tributario y la leyenda VERI*FACTU al principio', async () => {
+    const id = await borrador(wsId);
+    expect((await emitir(id)).status).toBe(200);
+    expect(registrosDeFactura(id)[0].entorno).toBe('produccion');
+    const contenido = await contenidoPdf(id);
+    expect(contenido).toContain('(QR tributario:) Tj');
+    expect(contenido).toContain('(VERI*FACTU) Tj');
+    expect(contenido).not.toContain('Registro de facturaci\\363n de prueba');
+    // Los módulos del QR: un único trazado relleno con muchos rectángulos.
+    expect((contenido.match(/ re/g) ?? []).length).toBeGreaterThan(100);
   });
 });
 

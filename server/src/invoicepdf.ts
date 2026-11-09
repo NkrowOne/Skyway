@@ -406,8 +406,22 @@ export async function renderInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
   // QR tributario al principio de la factura, antes de su contenido, con
   // «QR tributario:» encima y la leyenda VERI*FACTU debajo. Ocupa la columna
   // izquierda; el emisor baja y el título sigue arriba a la derecha.
+  //
+  // Solo en producción. Con el registro en el entorno de pruebas, la factura no
+  // llega a la AEAT con efectos fiscales: la frase «VERI*FACTU» solo se admite
+  // cuando el sistema remite todos los registros a la AEAT (art. 6.5.b del RD
+  // 1619/2012 y art. 20.1.b de la Orden HAC/1177/2024), y un QR al portal de
+  // pruebas confundiría al cliente que lo escanee. Se dice que es de prueba.
   let yEmisor = y;
-  if (data.verifactu?.qrUrl) {
+  if (data.verifactu?.entorno === 'pruebas') {
+    // En la columna izquierda, sin invadir el título (a la derecha, en la misma altura).
+    let yNota = y;
+    for (const l of envolver('Registro de facturación de prueba: remitido al entorno de pruebas de la AEAT, sin efectos fiscales.', 245, 7, false)) {
+      dibujaTexto(MARGEN, yNota, l, 7, false, GRIS_TEXTO);
+      yNota -= 9;
+    }
+    yEmisor = yNota - 18;
+  } else if (data.verifactu?.qrUrl) {
     const qr = generarQr(data.verifactu.qrUrl, 'M');
     const modulo = LADO_QR / qr.tamano;
     // Zona de silencio: la AEAT pide al menos 2 mm y recomienda 6 (y la norma,
@@ -445,12 +459,8 @@ export async function renderInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
     const abajo = arriba - LADO_QR;
     // La línea base, a la altura de las mayúsculas (~0,72 del cuerpo) bajo la
     // zona de silencio, para que la leyenda no la invada.
-    let yLeyenda = abajo - silencio - Math.ceil(CUERPO_LEYENDA_QR * 0.75);
+    const yLeyenda = abajo - silencio - Math.ceil(CUERPO_LEYENDA_QR * 0.75);
     dibujaTexto(centro('VERI*FACTU', CUERPO_LEYENDA_QR), yLeyenda, 'VERI*FACTU', CUERPO_LEYENDA_QR, true);
-    if (data.verifactu.entorno === 'pruebas') {
-      yLeyenda -= 12;
-      dibujaTexto(MARGEN, yLeyenda, 'Registro remitido al entorno de pruebas de la AEAT', 7, false, GRIS_TEXTO);
-    }
     yEmisor = yLeyenda - 24;
   }
 

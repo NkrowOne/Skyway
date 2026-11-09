@@ -248,6 +248,7 @@ function lineaDe(r: RegistroFacturacionRow, registro: RegistroAeat, lineas: Line
 function estadoDeLinea(
   l: LineaRespuesta,
   reenvio: boolean,
+  tipo: RegistroFacturacionRow['record_type'],
 ): { estado: EstadoRemision; codigo: string | null; descripcion: string | null; idPeticion: string | null } {
   if (l.estado === 'Correcto') return { estado: 'correcto', codigo: null, descripcion: null, idPeticion: null };
   if (l.estado === 'AceptadoConErrores') return { estado: 'aceptado_con_errores', codigo: l.codigoError || null, descripcion: l.descripcionError || null, idPeticion: null };
@@ -257,10 +258,21 @@ function estadoDeLinea(
   // número y fecha (de otro sistema, o un número reutilizado): es un rechazo.
   if (l.codigoError === '3000' && l.duplicado && reenvio) {
     const d = l.duplicado;
-    if (d.estado === 'Correcta' || d.estado === 'Anulada') return { estado: 'correcto', codigo: null, descripcion: null, idPeticion: d.idPeticion || null };
-    if (d.estado === 'AceptadaConErrores') {
+    // «Anulada» solo puede ser el propio registro si lo reenviado es la
+    // anulación: la de una factura nunca sale antes de resolverse su alta, así
+    // que, al reenviar un alta, una factura anulada en la AEAT es otra.
+    if (tipo === 'alta' && d.estado === 'Correcta') return { estado: 'correcto', codigo: null, descripcion: null, idPeticion: d.idPeticion || null };
+    if (tipo === 'anulacion' && d.estado === 'Anulada') return { estado: 'correcto', codigo: null, descripcion: null, idPeticion: d.idPeticion || null };
+    if (tipo === 'alta' && d.estado === 'AceptadaConErrores') {
       return { estado: 'aceptado_con_errores', codigo: d.codigoError || l.codigoError, descripcion: d.descripcionError || l.descripcionError || null, idPeticion: d.idPeticion || null };
     }
+  }
+  // Una anulación reenviada tras un envío incierto que la AEAT rechaza porque la
+  // factura ya está dada de baja (3001) o ya tiene registro (3000, como una
+  // anulación «sin registro previo» que sí llegó, validaciones, anexo 6.2): la
+  // anulación es la que llegó. Darla por rechazada llevaría a repetirla sin fin.
+  if (tipo === 'anulacion' && reenvio && (l.codigoError === '3001' || (l.codigoError === '3000' && !l.duplicado))) {
+    return { estado: 'correcto', codigo: null, descripcion: null, idPeticion: null };
   }
   return { estado: 'incorrecto', codigo: l.codigoError || null, descripcion: l.descripcionError || 'Registro rechazado por la AEAT', idPeticion: null };
 }
@@ -413,7 +425,7 @@ async function paso(opts: { ahora?: number; transporte?: Transporte; forzar?: bo
         return;
       }
       // `r` es la fila de antes de este envío: lo incierto es de envíos anteriores.
-      const e = estadoDeLinea(linea, r.envio_incierto === 1);
+      const e = estadoDeLinea(linea, r.envio_incierto === 1, r.record_type);
       actualizarRemisionRegistro(r.id, {
         estado_remision: e.estado,
         csv_aeat: e.estado === 'incorrecto' ? null : respuesta.csv || null,

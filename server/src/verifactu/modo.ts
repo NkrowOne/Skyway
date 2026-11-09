@@ -13,8 +13,8 @@ export const NO_SALIR_DE_PRODUCCION =
   '(art. 17 de la Orden HAC/1177/2024); Skyway no comunica la renuncia.';
 
 /**
- * ¿Se puede pasar del modo y entorno actuales a los siguientes? Devuelve el
- * motivo si no.
+ * ¿Se puede pasar del modo, entorno y datos del emisor actuales a los
+ * siguientes? Devuelve el motivo si no.
  * - Para activar hacen falta la razón social y un NIF español válido del
  *   emisor: sin ellos no hay registro que la AEAT acepte.
  * - Con VERI*FACTU activo, el NIF del emisor no puede dejar de ser válido.
@@ -37,5 +37,13 @@ export function motivoCambioNoPermitido(
   }
   const sale = (actual.sifMode === 'verifactu' && siguiente.sifMode !== 'verifactu') || (actual.entorno === 'produccion' && siguiente.entorno === 'pruebas');
   if (sale && hayRegistrosProduccion()) return NO_SALIR_DE_PRODUCCION;
+  // Un solo obligado tributario por instalación (declaración responsable,
+  // apartado 1.f; IndicadorMultiplesOT = N): con registros de producción, otro
+  // NIF de emisor convertiría a Skyway en un sistema de varios obligados. En
+  // pruebas sí se puede, para corregir un NIF puesto por error.
+  const nifActual = normalizarNif(actual.taxId);
+  if (nifActual && normalizarNif(siguiente.taxId) !== nifActual && hayRegistrosProduccion()) {
+    return `Skyway ya tiene registros de facturación del entorno de producción con el NIF ${nifActual}: el NIF del emisor no se puede cambiar. Skyway factura para un único obligado tributario (declaración responsable, apartado 1.f); para facturar con otro NIF, usa otra instalación.`;
+  }
   return null;
 }

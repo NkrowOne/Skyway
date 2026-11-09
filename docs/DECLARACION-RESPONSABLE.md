@@ -66,7 +66,7 @@ empresa con NIF español), numerados de 1.a a 1.l, más el anexo 2.c:
 | 1.i) | Número de identificación fiscal (NIF) español de la persona o entidad productora del sistema informático a que se refiere esta declaración responsable | el del productor configurado, o el del emisor |
 | 1.j) | Dirección postal completa de contacto de la persona o entidad productora del sistema informático a que se refiere esta declaración responsable | la configurada; si no hay y el productor es el emisor, la del emisor |
 | 1.k) | Declaración de cumplimiento | texto de abajo |
-| 1.l) | Fecha y lugar en que la persona o entidad productora de este sistema informático suscribe esta declaración responsable del mismo | los configurados, con la fecha en letra: «17 de mayo de 2025. Madrid, España.» |
+| 1.l) | Fecha y lugar en que la persona o entidad productora de este sistema informático suscribe esta declaración responsable del mismo | los configurados, con la fecha en letra: «17 de mayo de 2025. Madrid, España.». La fecha vale para la versión con que se puso: tras actualizar Skyway, queda pendiente hasta poner la de la versión nueva |
 | 2.c) | Anexo. Cómo cumple el sistema informático las especificaciones técnicas y funcionales de la Orden HAC/1177/2024 y de la sede electrónica de la Agencia Estatal de Administración Tributaria | texto de abajo |
 
 Texto del apartado 1.g), el del modelo de la AEAT para un producto que solo
@@ -116,6 +116,10 @@ no se añaden.
 1. Revisar que los apartados siguen siendo ciertos (sobre todo 1.d, 1.e y el
    anexo 2.c).
 2. Actualizar la fecha de suscripción en el panel: la declaración es por versión.
+   Skyway guarda con la fecha la versión para la que se puso
+   (`declaracionVersion`): al actualizar, la declaración la da por pendiente
+   («Fecha de suscripción de la versión …») y el panel avisa hasta que se ponga
+   la nueva. Guardar otros datos no la suscribe; poner o cambiar la fecha, sí.
 
 ## Fuentes
 

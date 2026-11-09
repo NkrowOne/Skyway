@@ -45,9 +45,18 @@ export function declaracionResponsable(): DeclaracionResponsable {
   if (!nifValido(productor.nif)) pendientes.push('NIF del productor');
   if (!productor.direccion) pendientes.push('Dirección postal de contacto del productor');
   if (!ajustes.declaracionLugar.trim()) pendientes.push('Lugar de suscripción (localidad y país)');
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(ajustes.declaracionFecha)) pendientes.push('Fecha de suscripción');
+  // La fecha vale para la versión con que se suscribió: tras actualizar
+  // Skyway, la declaración de la versión nueva está por suscribir.
+  const fechaValida = /^\d{4}-\d{2}-\d{2}$/.test(ajustes.declaracionFecha) && ajustes.declaracionVersion === config.version;
+  if (!fechaValida) {
+    pendientes.push(
+      /^\d{4}-\d{2}-\d{2}$/.test(ajustes.declaracionFecha)
+        ? `Fecha de suscripción de la versión ${config.version} (la guardada es de ${ajustes.declaracionVersion ? `la versión ${ajustes.declaracionVersion}` : 'otra versión'})`
+        : 'Fecha de suscripción',
+    );
+  }
   const falta = '(pendiente)';
-  const fecha = /^\d{4}-\d{2}-\d{2}$/.test(ajustes.declaracionFecha) ? fechaLarga(ajustes.declaracionFecha) : falta;
+  const fecha = fechaValida ? fechaLarga(ajustes.declaracionFecha) : falta;
   const apartados = [
     { letra: '1.a', titulo: 'Nombre del sistema informático a que se refiere esta declaración responsable', texto: NOMBRE_SISTEMA },
     { letra: '1.b', titulo: 'Código identificador del sistema informático a que se refiere el apartado a) de esta declaración responsable', texto: ID_SISTEMA },

@@ -61,6 +61,12 @@ export interface AjustesVerifactu {
   /** Lugar y fecha (aaaa-mm-dd) en que el productor suscribe la declaración responsable. */
   declaracionLugar: string;
   declaracionFecha: string;
+  /**
+   * Versión de Skyway para la que se suscribió la declaración (la de cuando se
+   * puso la fecha). La declaración es de una versión concreta (art. 13 del RD
+   * 1007/2023): al actualizar, la fecha vuelve a quedar pendiente.
+   */
+  declaracionVersion: string;
 }
 
 const POR_DEFECTO: AjustesVerifactu = {
@@ -70,6 +76,7 @@ const POR_DEFECTO: AjustesVerifactu = {
   productorDireccion: '',
   declaracionLugar: '',
   declaracionFecha: '',
+  declaracionVersion: '',
 };
 
 const texto = (v: unknown, defecto: string): string => (typeof v === 'string' ? v : defecto);
@@ -83,6 +90,7 @@ export function getAjustesVerifactu(): AjustesVerifactu {
     productorDireccion: texto(guardado.productorDireccion, POR_DEFECTO.productorDireccion),
     declaracionLugar: texto(guardado.declaracionLugar, POR_DEFECTO.declaracionLugar),
     declaracionFecha: texto(guardado.declaracionFecha, POR_DEFECTO.declaracionFecha),
+    declaracionVersion: texto(guardado.declaracionVersion, POR_DEFECTO.declaracionVersion),
   };
 }
 

@@ -59,14 +59,18 @@ obligados quienes llevan los libros por el SII.
       no impiden activar ni cambiar de entorno, y mientras tanto el productor es
       el emisor.
    4. Activar **VERI*FACTU** en el entorno de **pruebas**. Emitir alguna factura
-      y comprobar que los registros salen «Correctos».
+      y comprobar que los registros salen «Correctos». En pruebas, el PDF no lleva
+      el QR ni la frase «VERI*FACTU» (§8): no son facturas verificables.
    5. Antes del plazo, pasar a **producción**. En cuanto existe un registro del
       entorno de producción, VERI*FACTU no se puede desactivar (tampoco desde los
       datos de la empresa) ni volver a pruebas (409): la modalidad se mantiene al
       menos hasta el final del año natural, y dejarla exige comunicar la renuncia
       a la AEAT en los envíos de ese año (art. 17 de la Orden), cosa que Skyway no
       hace (§12). Volver a pruebas también es salir: las facturas dejarían de
-      llegar a la AEAT con efectos fiscales.
+      llegar a la AEAT con efectos fiscales. Por lo mismo, el NIF del emisor ya no
+      se puede cambiar: Skyway factura para un único obligado tributario
+      (declaración responsable, apartado 1.f). En pruebas sí, para corregir un NIF
+      puesto por error.
 3. El reloj del servidor tiene que estar en hora (NTP): la Orden admite un minuto
    de error como máximo y Skyway no genera un registro (409 al emitir o anular) si
    el último de la cadena tiene una hora de generación más de un minuto posterior
@@ -132,7 +136,7 @@ admite la AEAT (`CountryType2` de `SuministroInformacion.xsd`, en `paises.ts`):
 
 | Cliente | Identificación en el registro |
 |---|---|
-| Español | `NIF`, válido y distinto del emisor (si no, no se emite) |
+| Español | `NIF` válido (si no, no se emite). Puede ser el del emisor: la AEAT admite el autoconsumo desde la versión 1.0.3 de sus validaciones |
 | De otro Estado de la UE, con un identificador que tiene la estructura del NIF-IVA de su país (validaciones de la AEAT, nota 1) | `IDOtro` con `IDType 02` y el NIF-IVA con el prefijo del país («EL» en Grecia), sin `CodigoPais`: con 02 no es obligatorio, y en Grecia no coincidiría con «EL» (1122) |
 | De otro Estado de la UE sin esa estructura, o de fuera de la UE | `IDOtro` con `CodigoPais` e `IDType 04` (documento de su país de residencia) |
 | Subsanación de un 2001 (NIF no censado) con NIF de persona física | `IDOtro` con `CodigoPais ES` e `IDType 07` (no censado, §9) |
@@ -178,7 +182,8 @@ y la subsanación no hacen estas otras comprobaciones:
 - **País del cliente** (facturas completas): tiene que estar en la lista de la
   AEAT; uno que no está dejaría el XML fuera de esquema, y la AEAT rechazaría el
   envío entero.
-- **Cliente español**: NIF válido y distinto del emisor.
+- **Cliente español**: NIF válido. Puede coincidir con el del emisor (autoconsumo):
+  la AEAT quitó esa comprobación en la versión 1.0.3 de sus validaciones.
 - **NIF-IVA**: no se emite si el régimen lo exige —entrega intracomunitaria
   exenta, o inversión del sujeto pasivo o no sujeción con cliente extranjero— y el
   identificador del cliente de la UE no tiene la estructura de los de su país. La
@@ -292,8 +297,14 @@ Art. 20 y 21 de la Orden y especificación del QR de la AEAT:
   «VERI*FACTU» debajo, centradas sobre el QR y en negrita de **14 pt**: la
   especificación pide un cuerpo igual o superior al de los datos de la factura, y
   14 pt es el de la razón social del emisor, el dato más grande (el TOTAL va a 12;
-  el título del documento no es un dato). En pruebas, además, «Registro remitido
-  al entorno de pruebas de la AEAT».
+  el título del documento no es un dato).
+- **Solo en producción.** Con el registro en el entorno de pruebas, la factura no
+  llega a la AEAT con efectos fiscales, y la frase «VERI*FACTU» solo se admite
+  cuando el sistema remite todos los registros a la AEAT (art. 6.5.b del RD
+  1619/2012 y art. 20.1.b de la Orden); un QR al portal de pruebas, además,
+  confundiría al cliente que lo escanee. En pruebas, el PDF no lleva ni el QR ni
+  las leyendas, sino la nota «Registro de facturación de prueba: remitido al
+  entorno de pruebas de la AEAT, sin efectos fiscales».
 - La URL se guarda en el registro (`qr_url`); el PDF usa la del último alta.
 
 ## 9. La remisión
@@ -342,9 +353,14 @@ Art. 20 y 21 de la Orden y especificación del QR de la AEAT:
     del registro acabó sin saber si la AEAT lo guardó (la petición salió y se cortó
     la conexión o se perdió la respuesta, llegó una respuesta HTTP que no era del
     servicio, o la respuesta no traía su línea; columna `envio_incierto`), es el
-    propio registro y manda el estado que ya tenía la
-    AEAT (`Correcta` o `Anulada` → `correcto`; `AceptadaConErrores` →
-    `aceptado_con_errores`). Si no hubo ningún envío incierto (el primer envío, o
+    propio registro y manda el estado que ya tenía la AEAT: en un alta, `Correcta`
+    → `correcto` y `AceptadaConErrores` → `aceptado_con_errores`; en una
+    anulación, `Anulada` → `correcto`. Al reenviar un alta, una factura `Anulada`
+    en la AEAT es otra (la anulación de una factura nunca sale antes de resolverse
+    su alta): rechazo. Una anulación reenviada tras un envío incierto que la AEAT
+    rechaza con 3001 (ya dada de baja) o con 3000 sin `RegistroDuplicado` (como
+    una anulación «sin registro previo» que sí llegó, anexo 6.2 de las
+    validaciones) queda `correcto`: repetirla se rechazaría sin fin. Si no hubo ningún envío incierto (el primer envío, o
     tras un SOAP Fault, en el que la AEAT no guarda nada), quiere decir que la AEAT
     ya tiene otra factura con ese número y fecha (de otro sistema, o un número
     reutilizado): el registro queda `incorrecto`, con su alerta.
