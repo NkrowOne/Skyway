@@ -1,10 +1,13 @@
 import { getEnv, getProjectVars, getSetting, listServices } from './db';
 import { dominioPrincipal } from './dominioprincipal';
 import { tlsEnabled } from './tls';
+import { buscarRecibido, reescribirHost, ServicioRecibido, serviciosRecibidos } from './shares';
 import { getTemplate } from './templates';
 import { DatabaseConfig, GitConfig, ImageConfig, ServiceRow } from './types';
 
-const REF_RE = /\$\{\{\s*([A-Za-z0-9 _.-]+?)\.([A-Za-z0-9_]+)\s*\}\}/g;
+// La barra del ámbito es de las referencias a un servicio compartido por otro
+// proyecto: `${{proyecto/servicio.VAR}}`.
+const REF_RE = /\$\{\{\s*([A-Za-z0-9 _./-]+?)\.([A-Za-z0-9_]+)\s*\}\}/g;
 
 /**
  * Puerto interno por el que se llega a un servicio dentro del proyecto, según
@@ -67,6 +70,11 @@ export function systemVars(
  * - Si el servicio apuntado no tiene esa variable guardada, prueba con las de
  *   sistema (`INTERNAL_URL`, `PUBLIC_URL`…): lo guardado siempre gana, así que
  *   quien defina a mano una `PUBLIC_URL` distinta sigue mandando.
+ * - Expande `${{proyecto/servicio.VAR}}` si ese servicio de otro proyecto está
+ *   compartido con este: su valor ya resuelto, con el host interno cambiado
+ *   por el nombre con el que se le ve desde aquí (`servicio.proyecto`). Solo
+ *   sus variables propias y las de sistema, nunca las compartidas de su
+ *   proyecto. Sin compartir, la referencia se queda sin resolver.
  *
  * `opts.dominios` (id de servicio → dominios) calcula las variables de sistema
  * de esos servicios con otros dominios que los guardados: el cambio de dominio
@@ -75,7 +83,11 @@ export function systemVars(
  */
 export function resolveServiceEnv(
   service: ServiceRow,
-  opts: { dominios?: ReadonlyMap<string, readonly string[]> } = {},
+  opts: {
+    dominios?: ReadonlyMap<string, readonly string[]>;
+    /** Interno: servicios ya en resolución, para cortar un ciclo de referencias entre proyectos. */
+    visitando?: ReadonlySet<string>;
+  } = {},
 ): Record<string, string> {
   const siblings = listServices(service.project_id);
   const shared = getProjectVars(service.project_id);
@@ -94,6 +106,23 @@ export function resolveServiceEnv(
     return vars;
   };
 
+  // Perezoso también: casi ningún servicio referencia a otro proyecto.
+  let recibidos: ServicioRecibido[] | undefined;
+  const visitando = new Set([...(opts.visitando ?? []), service.id]);
+  const envDeRecibido = new Map<string, { propias: Record<string, string>; resueltas: Record<string, string> }>();
+  const deOtroProyecto = (scope: string, varName: string): string | undefined => {
+    recibidos ??= serviciosRecibidos(service.project_id);
+    const r = buscarRecibido(recibidos, scope);
+    if (!r || visitando.has(r.service.id)) return undefined;
+    let env = envDeRecibido.get(r.service.id);
+    if (!env) {
+      env = { propias: getEnv(r.service.id), resueltas: resolveServiceEnv(r.service, { visitando }) };
+      envDeRecibido.set(r.service.id, env);
+    }
+    const raw = Object.hasOwn(env.propias, varName) ? env.resueltas[varName] : systemVars(r.service)[varName];
+    return raw === undefined ? undefined : reescribirHost(varName, raw, r.service.slug, r.alias);
+  };
+
   const findSibling = (name: string): ServiceRow | undefined => {
     const n = name.trim().toLowerCase();
     return siblings.find((s) => s.name.toLowerCase() === n || s.slug === n);
@@ -107,6 +136,7 @@ export function resolveServiceEnv(
         const raw = shared[varName];
         return raw === undefined ? match : resolveValue(raw, depth + 1);
       }
+      if (scope.includes('/')) return deOtroProyecto(scope, varName) ?? match;
       const target = findSibling(scope);
       if (!target) return match;
       const raw = (envByService.get(target.id) || {})[varName] ?? systemOf(target)[varName];
@@ -164,6 +194,18 @@ export function projectReferences(projectId: string, excludeServiceId?: string):
       ? (getTemplate(template)?.conn.connect ?? []).filter((k) => vars[k] !== undefined)
       : ['INTERNAL_URL'].filter((k) => vars[k] !== undefined || system[k] !== undefined);
     groups.push({ service: s.name, template, vars: Object.keys(vars), auto, connect });
+  }
+  // Los servicios que otros proyectos comparten con este, como `proyecto/servicio`.
+  for (const r of serviciosRecibidos(projectId)) {
+    const template = r.service.type === 'database' ? (r.service.config as DatabaseConfig).template : null;
+    const vars = getEnv(r.service.id);
+    const system = systemVars(r.service);
+    // Las direcciones públicas no son cosa de la red privada: se piden a su proyecto.
+    const auto = Object.keys(system).filter((k) => vars[k] === undefined && k.startsWith('INTERNAL_'));
+    // Sin «Conectar a…» de un clic: copiaría `DATABASE_URL` con ese nombre y
+    // pisaría la de la base del propio proyecto. Se elige la referencia y se le
+    // pone nombre a mano.
+    groups.push({ service: `${r.origen.slug}/${r.service.slug}`, template, vars: Object.keys(vars), auto, connect: [] });
   }
   return groups;
 }

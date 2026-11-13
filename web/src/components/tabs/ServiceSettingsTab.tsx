@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, ChevronRight, Cpu, FileText, Globe, HardDrive, Network, Plus, Power, X } from 'lucide-react';
+import { AlertTriangle, ChevronRight, Cpu, FileText, Globe, HardDrive, Network, Plus, Power, Share2, X } from 'lucide-react';
 import { api } from '../../api';
 import {
   AutoDeployStatus,
@@ -14,6 +14,7 @@ import {
 } from '../../types';
 import { cx, timeAgo } from '../../utils';
 import { avisoDns } from '../DnsAutoResult';
+import CompartirServicio from '../CompartirServicio';
 import DomainsEditor from '../DomainsEditor';
 import {
   GithubSource,
@@ -723,6 +724,15 @@ export default function ServiceSettingsTab({
               <input className="input tnum" type="number" inputMode="numeric" placeholder={isGit ? '8080' : '5432'} value={form.hostPort} onChange={(e) => set('hostPort', e.target.value)} />
             </Field>
           </div>
+        </SectionCard>
+
+        <SectionCard
+          icon={<Share2 size={14} />}
+          iconClass="text-acc-soft"
+          title="Compartir con otros proyectos"
+          description="El servicio pasa a verse también desde la red privada de los proyectos marcados"
+        >
+          <CompartirServicio serviceId={service.id} />
         </SectionCard>
 
         <SectionCard

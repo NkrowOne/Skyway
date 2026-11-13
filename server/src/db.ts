@@ -180,6 +180,15 @@ export function initDb(): void {
       value TEXT NOT NULL,
       PRIMARY KEY (project_id, key)
     );
+    -- Servicios compartidos con otro proyecto: el servicio se conecta también a
+    -- la red privada de project_id, con un nombre que no choca con los de allí.
+    CREATE TABLE IF NOT EXISTS service_shares (
+      service_id TEXT NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (service_id, project_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_service_shares_project ON service_shares(project_id);
     CREATE TABLE IF NOT EXISTS audit_log (
       id TEXT PRIMARY KEY,
       ts INTEGER NOT NULL,
@@ -2276,6 +2285,33 @@ export function setProjectVars(projectId: string, vars: Record<string, string>):
     for (const [k, v] of Object.entries(vars)) ins.run(projectId, k, v);
   });
   tx();
+}
+
+// ---------- servicios compartidos entre proyectos ----------
+/** Proyectos con los que está compartido un servicio (sus ids). */
+export function listServiceShares(serviceId: string): string[] {
+  return (stmt('SELECT project_id FROM service_shares WHERE service_id = ? ORDER BY created_at, project_id').all(serviceId) as any[])
+    .map((r) => r.project_id as string);
+}
+
+/** Servicios de otros proyectos compartidos con este (sus ids). */
+export function listSharedIntoProject(projectId: string): string[] {
+  return (stmt('SELECT service_id FROM service_shares WHERE project_id = ? ORDER BY created_at, service_id').all(projectId) as any[])
+    .map((r) => r.service_id as string);
+}
+
+/** Deja el servicio compartido exactamente con `projectIds`. */
+export function setServiceShares(serviceId: string, projectIds: readonly string[]): void {
+  const del = stmt('DELETE FROM service_shares WHERE service_id = ?');
+  const ins = stmt('INSERT OR IGNORE INTO service_shares (service_id, project_id, created_at) VALUES (?, ?, ?)');
+  db.transaction(() => {
+    const antes = new Map(
+      (stmt('SELECT project_id, created_at FROM service_shares WHERE service_id = ?').all(serviceId) as any[])
+        .map((r) => [r.project_id as string, r.created_at as number]),
+    );
+    del.run(serviceId);
+    for (const pid of projectIds) ins.run(serviceId, pid, antes.get(pid) ?? Date.now());
+  })();
 }
 
 /** Como `patchEnv`, para las variables compartidas: solo lo que cambió quien edita. */

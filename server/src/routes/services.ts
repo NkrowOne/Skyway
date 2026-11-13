@@ -1,7 +1,16 @@
 import { domainToASCII } from 'url';
 import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { assertProjectAccess, currentUser, requireAdmin, requireAuth, requireSession } from '../auth';
+import {
+  assertProjectAccess,
+  assertProjectManage,
+  canAccessProjectRow,
+  canManageProject,
+  currentUser,
+  requireAdmin,
+  requireAuth,
+  requireSession,
+} from '../auth';
 import { audit } from '../audit';
 import { cloudflareConfigurado } from '../cloudflareconfig';
 import { cambiarProxyCloudflare, dnsAutomaticoAdmin, dnsSinBase, planReemplazo, reemplazarRegistros, verificarEnCloudflare } from '../cloudflaredns';
@@ -20,10 +29,13 @@ import {
   getService,
   getSetting,
   latestDeployment,
+  listProjects,
   listServices,
+  listServiceShares,
   patchEnv,
   servicesWithPendingChanges,
   setEnv,
+  setServiceShares,
   setServiceStopped,
   uniqueServiceSlug,
   updateService,
@@ -61,8 +73,10 @@ import { rateLimit } from '../ratelimit';
 import { dockerAvailable } from '../docker/client';
 import { checkDomain } from '../domains';
 import {
+  conectarARedCompartida,
   configuredReplicas,
   containerName,
+  desconectarDeRed,
   getRuntime,
   listServiceContainers,
   pararConGracia,
@@ -75,7 +89,9 @@ import { triggerDeploy } from '../deploy/deployer';
 import { getTemplate, templateList } from '../templates';
 import { applyPlan, applyPlanFromRepo, ApplyResult, PlanChangedError, planWithMail } from '../integrations';
 import { adviseEnv, repoPendingOf } from '../needs';
-import { availableReferences, resolveServiceEnv } from '../variables';
+import { projectNetworkName } from '../docker/networks';
+import { aliasCompartido } from '../shares';
+import { availableReferences, internalPortOf, resolveServiceEnv } from '../variables';
 import { DatabaseConfig, GitConfig, ImageConfig, ProjectRow, ServiceConfig, ServiceRow } from '../types';
 import { randomToken, VISIBLE_NAME_ERROR, VISIBLE_NAME_RE } from '../util';
 import { confirmsDeletion, purgeService, PurgeBlockedError, purgeSummary, warningsForAudit } from '../purge';
@@ -1074,6 +1090,83 @@ export async function serviceRoutes(app: FastifyInstance): Promise<void> {
    * opción para conservarlos, con `?confirm=` (nombre o slug del servicio) y
    * sin borrar nada si Docker no responde.
    */
+  /**
+   * Compartir un servicio con otros proyectos: se conecta también a sus redes
+   * privadas con el nombre `<servicio>.<proyecto>` y sus variables se pueden
+   * referenciar desde allí como `${{proyecto/servicio.VAR}}`. Solo entre
+   * proyectos de la misma empresa: nunca se cruza la red de dos clientes.
+   */
+  app.get('/api/services/:id/shares', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const found = loadService(id);
+    if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
+    if (!assertProjectAccess(req, reply, found.project.id)) return reply;
+    const user = currentUser(req)!;
+    const compartidos = new Set(listServiceShares(id));
+    const projects = listProjects()
+      .filter((p) => p.id !== found.project.id && p.workspace_id === found.project.workspace_id && canAccessProjectRow(user, p))
+      .map((p) => ({ id: p.id, name: p.name, slug: p.slug, shared: compartidos.has(p.id) }))
+      .sort((a, b) => a.name.localeCompare(b.name, 'es'));
+    return {
+      alias: aliasCompartido(found.service, found.project),
+      port: internalPortOf(found.service),
+      reference: `${found.project.slug}/${found.service.slug}`,
+      canManage: canManageProject(user, found.project),
+      projects,
+    };
+  });
+
+  app.put('/api/services/:id/shares', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const found = loadService(id);
+    if (!found) return reply.code(404).send({ error: 'Servicio no encontrado' });
+    // Abrir la red de un proyecto a otro es estructura, como renombrarlo o
+    // borrarlo: administrador o propietario, no un miembro.
+    if (!assertProjectManage(req, reply, found.project.id)) return reply;
+    const body = z.object({ projectIds: z.array(z.string().min(1).max(64)).max(50) }).parse(req.body);
+    const user = currentUser(req)!;
+    const pedidos = [...new Set(body.projectIds)];
+    const destinos: ProjectRow[] = [];
+    for (const pid of pedidos) {
+      const destino = getProject(pid);
+      if (!destino || destino.id === found.project.id || destino.workspace_id !== found.project.workspace_id) {
+        return reply.code(400).send({ error: 'Solo se puede compartir con otros proyectos de la misma empresa', code: 'invalid_project' });
+      }
+      if (!canManageProject(user, destino)) {
+        return reply.code(403).send({ error: 'Requiere ser administrador o propietario del workspace' });
+      }
+      destinos.push(destino);
+    }
+    const antes = new Set(listServiceShares(id));
+    const ahora = new Set(destinos.map((p) => p.id));
+    const nuevos = destinos.filter((p) => !antes.has(p.id));
+    const quitados = [...antes].filter((pid) => !ahora.has(pid)).map((pid) => getProject(pid)).filter((p): p is ProjectRow => !!p);
+    setServiceShares(id, [...ahora]);
+
+    // Se aplica a las copias en marcha sin volver a desplegar; las que arranquen
+    // después se conectan al crearse. Sin Docker queda guardado para entonces.
+    const warnings: string[] = [];
+    if ((nuevos.length > 0 || quitados.length > 0) && (await dockerAvailable())) {
+      const alias = aliasCompartido(found.service, found.project);
+      try {
+        for (const c of await listServiceContainers(id)) {
+          for (const p of nuevos) await conectarARedCompartida(c.id, { red: projectNetworkName(p), alias });
+          for (const p of quitados) await desconectarDeRed(c.id, projectNetworkName(p));
+        }
+      } catch (err: any) {
+        warnings.push(`No se ha podido aplicar a las copias en marcha: ${String(err?.message || err)}. Se aplicará en el próximo despliegue.`);
+      }
+    }
+    if (nuevos.length > 0 || quitados.length > 0) {
+      audit(req, 'service_shares_updated', {
+        type: 'service',
+        id,
+        detail: `${found.service.name}: compartido con ${destinos.map((p) => p.name).join(', ') || 'ningún proyecto'}`,
+      });
+    }
+    return { ok: true, shared: [...ahora], warnings };
+  });
+
   app.delete('/api/services/:id', async (req, reply) => {
     const { id } = req.params as { id: string };
     const { confirm } = (req.query ?? {}) as { confirm?: unknown };

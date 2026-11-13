@@ -5,7 +5,8 @@ import { StringDecoder } from 'string_decoder';
 import { docker, dockerQuery } from './client';
 import { baselineFrom, CpuBaseline, cpuPercentFromBaseline, cpuPercentFromDocker, DockerStatsSample } from './cpu';
 import { countStrictlyBefore } from './logcursor';
-import { EDGE_NETWORK, projectNetworkName } from './networks';
+import { EDGE_NETWORK, ensureNetwork, projectNetworkName } from './networks';
+import { RedCompartida, redesCompartidas } from '../shares';
 import { tlsEnabled } from '../tls';
 import { ContainerState, ProjectRow, ServiceRow, ServiceRuntime, ServiceStats } from '../types';
 import { lineSplitter } from '../util';
@@ -816,8 +817,60 @@ async function crearYArrancar(spec: RunSpec, init: boolean): Promise<string> {
     }
   }
 
+  // Compartido con otros proyectos: la copia entra también en sus redes con
+  // el nombre compartido. La de validación (alias propio) no se anuncia fuera:
+  // todavía no es la versión en servicio. Un fallo aquí no tumba el
+  // despliegue del servicio en su propio proyecto.
+  if (!spec.aliasOverride) {
+    for (const red of redesCompartidas(spec.service, spec.project)) {
+      try {
+        await conectarARedCompartida(container.id, red);
+      } catch (err: any) {
+        spec.log?.(`⚠ No se ha podido conectar el servicio a la red ${red.red} (${red.alias}): ${String(err?.message || err)}`);
+      }
+    }
+  }
+
   await container.start();
   return container.id;
+}
+
+/**
+ * Conecta un contenedor a la red privada de otro proyecto con el nombre
+ * compartido del servicio. No hace nada si ya estaba conectado.
+ */
+export async function conectarARedCompartida(containerId: string, red: RedCompartida): Promise<void> {
+  // El proyecto que lo recibe puede no haber desplegado nada todavía.
+  await ensureNetwork(red.red);
+  try {
+    await docker.getNetwork(red.red).connect({ Container: containerId, EndpointConfig: { Aliases: [red.alias] } });
+  } catch (err: any) {
+    if (!/already exists|already attached/i.test(String(err?.message || ''))) throw err;
+  }
+}
+
+/** Saca un contenedor de una red. No hace nada si no estaba (o la red ya no existe). */
+export async function desconectarDeRed(containerId: string, red: string): Promise<void> {
+  try {
+    await docker.getNetwork(red).disconnect({ Container: containerId, Force: true });
+  } catch (err: any) {
+    if (err?.statusCode !== 404 && !/is not connected|not found|No such/i.test(String(err?.message || ''))) throw err;
+  }
+}
+
+/**
+ * Saca de una red a todo contenedor que siga conectado. Al borrar un proyecto,
+ * en su red quedan las copias de los servicios que otros compartían con él, y
+ * Docker no borra una red con contenedores dentro.
+ */
+export async function vaciarRed(red: string): Promise<void> {
+  let info: any;
+  try {
+    info = await docker.getNetwork(red).inspect();
+  } catch {
+    return;
+  }
+  for (const id of Object.keys(info?.Containers ?? {})) await desconectarDeRed(id, red);
 }
 
 export async function renameContainer(from: string, to: string): Promise<void> {
