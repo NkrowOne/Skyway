@@ -32,7 +32,7 @@ import {
 } from './db';
 import { cancelServiceDeployments, markServicesDeleting, unmarkServicesDeleting } from './deploy/deployer';
 import { dockerVolumeSizes } from './disk';
-import { listServiceContainers, removeContainer, serviceVolumeNames, stopContainer, volumeName } from './docker/containers';
+import { listServiceContainers, removeContainer, serviceVolumeNames, stopContainer, vaciarRed, volumeName } from './docker/containers';
 import { EDGE_NETWORK, projectNetworkName } from './docker/networks';
 import {
   deleteImage,
@@ -565,6 +565,9 @@ async function purgeProjectMarked(project: ProjectRow, services: ServiceRow[]): 
   const net = projectNetworkName(project);
   if (net !== EDGE_NETWORK) {
     try {
+      // Los suyos ya no están: lo que quede son servicios que otros proyectos
+      // compartían con este, y siguen en marcha en el suyo.
+      await vaciarRed(net);
       await deleteNetwork(net);
     } catch (err) {
       report.warnings.push(`No se ha podido borrar la red ${net}: ${dockerErrorText(err)}`);

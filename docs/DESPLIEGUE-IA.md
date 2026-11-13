@@ -205,6 +205,12 @@ las `SKYWAY_*` de esta tabla las pone Skyway siempre y no se pueden sustituir. S
 - `${{<servicio>.VAR}}`: nombre del servicio (sin distinguir mayúsculas) o slug. Vale para variables
   guardadas y de sistema (`${{web.PUBLIC_URL}}`).
 - `${{shared.VAR}}` (alias `project`, `proyecto`): variable compartida.
+- `${{<proyecto>/<servicio>.VAR}}`: variable de un servicio de **otro proyecto** de la misma empresa
+  que esté compartido con este (`PUT /api/services/:id/shares {"projectIds":[…]}` sobre el servicio
+  de origen, o **Ajustes → Compartir con otros proyectos**). El host interno llega cambiado por su
+  nombre compartido, `<servicio>.<proyecto>`: `${{ebuttons/postgresql.DATABASE_URL}}` →
+  `postgresql://…@postgresql.ebuttons:5432/…`. El nombre corto (`postgresql`) de otro proyecto no
+  resuelve: en el tuyo es tu propia base, o nadie.
 - Las compartidas (`PATCH /api/projects/:id/vars {"set":{…},"unset":[…]}`) llegan a **todos** los
   servicios, bases de datos incluidas. La del servicio gana a la compartida.
 - Se resuelven al desplegar, hasta 5 niveles. Una referencia que no resuelve queda como texto

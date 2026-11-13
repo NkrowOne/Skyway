@@ -8,7 +8,7 @@
 > repos de GitHub y bases de datos sobre Docker, en un único servidor, con panel
 > web, métricas en vivo, dominios con TLS, backups y alertas.
 >
-> Versión de este documento: 0.40.0. Si el código y este documento discrepan,
+> Versión de este documento: 0.41.0. Si el código y este documento discrepan,
 > gana el código (`server/src/`).
 
 ---
@@ -84,6 +84,8 @@ server/src/
   billingsettings.ts    ajustes de automatización (auto-generar/auto-emitir el ciclo, umbrales de morosidad)
   security.ts           escáner de seguridad (hallazgos + nota)
   variables.ts          resolución de ${{Servicio.VAR}} y ${{shared.VAR}}; variables de sistema (INTERNAL_URL, PUBLIC_URL…)
+  shares.ts             servicios compartidos entre proyectos: nombre compartido, redes a las que se conectan y
+                        ${{proyecto/servicio.VAR}} con el host cambiado
   needs.ts              detección de dependencias del repo (librerías, schema.prisma, .env.example), del correo
                         (librerías y variables) y del manifiesto `skyway.json`, y propuestas de variables
   templates.ts          plantillas de BBDD (postgres/redis/mysql/mongo/minio) y qué variables de conexión exporta cada una
@@ -196,6 +198,11 @@ web/src/
   - `skyway-<proyecto>`: red privada por proyecto; los servicios se resuelven
     entre sí por su *slug* (`postgres:5432`, `redis:6379`…). Cada servicio
     anuncia la suya en **Ajustes → Dirección interna**, con el puerto ya puesto.
+    Ese nombre solo vale dentro del proyecto: desde otro, `postgres` es SU base
+    de datos. Un servicio **compartido con otro proyecto** (§5.5) se conecta
+    además a la red de ese proyecto con el nombre `<servicio>.<proyecto de
+    origen>` (`postgresql.ebuttons:5432`), que no puede chocar con los de allí
+    porque los slugs no llevan punto. El resto del proyecto sigue aislado.
 - **Traefik** (en el `docker-compose`): enruta por dominio y emite TLS con
   Let's Encrypt. Se activa por *labels* que Skyway pone en cada contenedor. Con
   TLS configurado, el puerto 80 no sirve contenido: redirige a HTTPS con un 301.
@@ -717,6 +724,7 @@ del servicio, **lo que está saliendo va por encima del activo**.
 | `services` | `id`, `project_id`, `name`, `slug`, `type` (`git`/`database`/`image`), `config` (JSON), `config_rev` (revisión de la configuración: sube con cada cambio guardado que exige redesplegar) |
 | `env_vars` | `(service_id, key)` → `value` — variables por servicio |
 | `project_vars` | `(project_id, key)` → `value` — variables compartidas |
+| `service_shares` | `(service_id, project_id)`, `created_at` — servicios compartidos con otro proyecto (§5.5); cae en cascada con el servicio y con el proyecto que lo recibe |
 | `deployments` | `status`, `trigger`, `commit_sha/msg`, `image_tag`, `logs`, `error`, `diagnosis`, `build_key` (huella de las entradas de compilación, para reutilizar imagen), `repo_config` (config-as-code del repo en ese commit, JSON), `build_vars` (digest `{NOMBRE: hash}` de las variables que entraron en ese build; nunca el valor), `force_build`, `target_commit` (commit concreto pedido al reconstruir), `config_rev` (revisión de configuración que aplicó), `interrupted` (1 = cortado por un reinicio de Skyway, pendiente de tratar al arrancar; 2 = tratado) |
 | `autodeploy_state` | por servicio git con auto-deploy: `last_seen_sha` (última cabeza de la rama ya tratada, la línea base del sondeo), `checked_at`/`ok_at` (última comprobación y última correcta), `error` y `failing_since` (racha de fallos al leer la rama). Se borra al desactivar el auto-deploy y cae en cascada con el servicio |
 | `audit_log` | `ts`, `actor`, `action`, `target_*`, `detail`, `ip` |
@@ -1280,6 +1288,41 @@ desde fuera (`systemVars` en `variables.ts`):
 | `INTERNAL_URL` | `http://<slug>:<puerto>` | repo/imagen con puerto (una BBDD ya exporta su `DATABASE_URL`, `REDIS_URL`…) |
 | `PUBLIC_DOMAIN` | dominio principal del servicio (ver abajo) | si tiene dominio |
 | `PUBLIC_URL` | `https://<dominio principal>` (o `http://` sin Let's Encrypt) | si tiene dominio |
+
+**Servicios compartidos entre proyectos** (`shares.ts`). Cada proyecto tiene
+su red privada y el nombre interno de un servicio (su slug) solo existe en
+ella. Dos proyectos con una base `postgresql` cada uno: la cadena de conexión
+de la del primero, copiada a mano en el segundo, apunta a la base del segundo
+(«password authentication failed»). **Ajustes → Compartir con otros
+proyectos** elige con qué proyectos de la **misma empresa** (mismo
+`workspace_id`; nunca se cruza la red de dos clientes) se comparte un
+servicio:
+
+- Sus copias se conectan también a la red del otro proyecto con el alias
+  `<servicio>.<proyecto de origen>`. Se aplica al marcar, a las copias en
+  marcha y sin redesplegar (`conectarARedCompartida` / `desconectarDeRed`), y
+  en cada despliegue al crear el contenedor (`crearYArrancar`; la copia de
+  validación de «sin corte» no se anuncia fuera). Un fallo al conectar avisa
+  en el registro y no tumba el despliegue del servicio.
+- Desde el otro proyecto, sus variables se referencian como
+  `${{proyecto/servicio.VAR}}` (nombre o slug en ambos lados). El resolutor
+  devuelve el valor ya resuelto en su proyecto con el **host interno cambiado
+  por el alias** (`reescribirHost`): en una URL, solo el host de la autoridad
+  (nunca el usuario ni la ruta); `slug:puerto` a secas; y el valor entero solo
+  en variables de host (`PGHOST`, `INTERNAL_HOST`…). Solo las variables
+  propias del servicio y las de sistema: las compartidas de su proyecto no se
+  pueden leer. Sin compartir, la referencia se queda sin resolver (y el
+  despliegue avisa, como con cualquier otra). Un ciclo entre proyectos se
+  corta sin resolver.
+- La pestaña Variables del proyecto que lo recibe lo ofrece en las referencias
+  como `proyecto/servicio`. Sin «Conectar a…» de un clic: copiaría
+  `DATABASE_URL` con ese nombre y pisaría la de la base propia.
+- Al borrar el proyecto que lo recibe, las copias compartidas se sacan de su
+  red antes de borrarla (`vaciarRed`): siguen en marcha en su proyecto.
+
+Lo que no cubre: guardar o quitar una compartición no redespliega a quien la
+usa (sus variables se resuelven al desplegar), y el aviso de «cambios sin
+desplegar» no cruza proyectos.
 
 **Dominio principal.** Con varios dominios, el que se publica como dirección de
 la web (`PUBLIC_DOMAIN`, `PUBLIC_URL`, `RAILWAY_PUBLIC_DOMAIN`,
@@ -2545,6 +2588,8 @@ devuelve, y solo se usa para listar repos y clonar. Todo queda auditado
 | POST | `/services/:id/deploy` | +access | dispara despliegue manual (`{force: true}` recompila sin reutilizar imagen; `{commit: <SHA de 40>}` reconstruye ese commit, solo git) |
 | POST | `/services/:id/{start,stop,restart}` | +access | acciones sobre el contenedor. Si el servicio no tiene un despliegue en cola o en marcha, antes retiran (o devuelven a su nombre) los restos de intercambios `--next`/`--prev` con parada limpia (un error ahí se registra y no impide la acción). `stop` detiene todas las réplicas en paralelo con parada limpia (comando al parar, SIGTERM y la gracia, después SIGKILL; §2), archiva su registro después de pararlas y responde además `forced: string[]`, las copias que no terminaron con SIGTERM a tiempo y se detuvieron con SIGKILL (el panel lo avisa). `restart` detiene a la vez todas las copias con la misma parada limpia y vuelve a arrancar cada contenedor (el mismo: conserva su identidad, §2), y también responde `forced`. Las dos responden además `initOnRedeploy: boolean`: alguna copia forzada se creó sin el init que llevan las nuevas (§2), y el panel pide volver a desplegar una vez en lugar de cambiar la aplicación. Tras «Reiniciar», el panel avisa «Servicio reiniciado» (el estado que se ve no cambia). Las dos responden cuando termina la parada: con un comando al parar y una gracia largos puede tardar hasta el doble de la gracia. Si un proxy corta antes la conexión (el de Cloudflare espera 100 s), la parada sigue en el servidor hasta el final; el estado se ve al recargar |
 | GET | `/services/:id/env` | +access | variables (crudas, resueltas, referencias con `vars`/`auto`/`connect`) y propuestas de la detección de dependencias (`needs`, `suggestions`, `missing`, `mail`, `manifest`, §5.5), más `repoPending`: lo que el `.env` del repositorio dejó sin valor en el último despliegue y sigue sin cubrir (sin lo definido en el servicio o compartido, lo que Skyway pone a ese servicio y lo que proponen el manifiesto o, sin él, el correo). El asistente de ayuda (`env:pending`) usa la misma lista |
+| GET | `/services/:id/shares` | +access | compartir con otros proyectos (§5.5) → `{alias, port, reference, canManage, projects: [{id, name, slug, shared}]}`: los demás proyectos de la misma empresa a los que el usuario tiene acceso |
+| PUT | `/services/:id/shares` | **manage** | `{projectIds}` deja el servicio compartido exactamente con esos proyectos → `{ok, shared, warnings}`. **manage** también sobre cada destino; 400 `invalid_project` si no existe, es el propio o es de otra empresa. Conecta o desconecta las copias en marcha (sin Docker queda para el próximo despliegue). Audita `service_shares_updated` |
 | GET | `/services/:id/integrations` | +access | plan de integraciones del servicio sin efectos (§5.7) → `{plan, pending}`; `plan` null si no es de repositorio. `plan.fingerprint` es la huella que exige aprobar; cada recurso trae `canApprove` y `confirmation` |
 | POST | `/services/:id/integrations/apply` | +access | `{skip?, expect?, confirmMailboxAccess?, redeploy?}` → `{result: {applied, pending, kept, blocked, created, errors}, plan, needsRedeploy, deploymentId}`. Lo inofensivo lo aplica cualquiera con acceso; las bases también; el correo solo **manage** (si no, `pending`). Lo privilegiado exige `expect` = `plan.fingerprint` del plan revisado (sin él, `pending`; si no coincide, **409** `{error, plan}` sin aplicar nada); reutilizar en SMTP un buzón existente exige además `confirmMailboxAccess`. Nunca pisa variables puestas a mano. 409 si ya se está aplicando. 10/min. Audita `service_integrations_applied` (nombres, nunca valores) |
 | PUT | `/services/:id/env` | +access | reemplaza variables del servicio (la lista entera) |
