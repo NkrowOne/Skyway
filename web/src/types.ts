@@ -435,10 +435,21 @@ export interface Invoice {
   payment_method: PaymentMethod | null;
   stripe_url: string | null;
   issued_at: number | null;
+  /**
+   * Fecha de expedición (aaaa-mm-dd), la que imprime la factura: en hora
+   * peninsular y congelada al emitir. Es un día, no un instante, así que no se
+   * pasa a la zona del navegador. null en los borradores; si una emitida llega
+   * sin ella, se muestra la de `issued_at`.
+   */
+  issued_date: string | null;
   paid_at: number | null;
   locked: number;
   notes: string | null;
   created_at: number;
+  /** Causa de la rectificativa, con las claves de VERI*FACTU; null en las demás facturas. */
+  rectify_code: CausaRectificacion | null;
+  /** Estado del último registro de VERI*FACTU de la factura; null si no tiene ninguno. */
+  verifactu: VerifactuFactura | null;
 }
 
 /** Perfil fiscal de la empresa emisora (nosotros). */
@@ -453,11 +464,17 @@ export interface BillingProfile {
   invoicePrefix: string;
   paymentTermsDays: number;
   defaultIrpfRate: number;
-  sifMode: 'verifactu' | 'no_verifactu';
+  /**
+   * Sistema de facturación ante el reglamento VERI*FACTU. Se cambia desde
+   * Contabilidad → VERI*FACTU, que comprueba si el cambio está permitido.
+   */
+  sifMode: ModoVerifactu;
   iban: string;
   bic: string;
   bankName: string;
   footer: string;
+  /** Página pública (https) a la que vuelve el cliente al pagar o cancelar con Stripe; vacía = el panel. */
+  paymentReturnUrl: string;
 }
 
 export interface InvoicesResponse {
@@ -536,6 +553,8 @@ export interface AccountingInvoice {
   period_end: number;
   issued_at: number | null;
   paid_at: number | null;
+  /** Estado del último registro de VERI*FACTU de la factura; null si no tiene ninguno. */
+  verifactu: VerifactuFactura | null;
 }
 
 export interface BillingProfileResponse {
@@ -553,6 +572,155 @@ export interface BillingAutomation {
   dunningCancelDays: number;
   /** Enviar la factura en PDF al cliente al emitirla. Requiere SMTP configurado. */
   emailOnIssue: boolean;
+}
+
+// ---------- VERI*FACTU (RD 1007/2023) ----------
+
+/** `desactivado` no genera registros; `verifactu` genera el registro de cada factura y lo remite a la AEAT. */
+export type ModoVerifactu = 'desactivado' | 'verifactu';
+export type EntornoVerifactu = 'pruebas' | 'produccion';
+/**
+ * Estado de la remisión de un registro: en cola, aceptado, aceptado con
+ * errores (la AEAT lo guarda, pero hay que subsanarlo) o rechazado.
+ */
+export type EstadoRemision = 'pendiente' | 'correcto' | 'aceptado_con_errores' | 'incorrecto';
+/** Causa de una rectificativa (R5, la de las simplificadas, la decide el servidor). */
+export type CausaRectificacion = 'R1' | 'R2' | 'R3' | 'R4';
+export type ResultadoEnvioVerifactu = 'correcto' | 'parcial' | 'incorrecto' | 'rechazado' | 'fallo';
+
+/** Resumen del último registro de una factura, que es el que manda. */
+export interface VerifactuFactura {
+  estado: EstadoRemision;
+  tipo: 'alta' | 'anulacion';
+  entorno: EntornoVerifactu;
+  csv: string | null;
+  codigoError: string | null;
+  descripcionError: string | null;
+  /** Enlace de cotejo del QR (el del último registro de alta). */
+  qrUrl: string | null;
+  huella: string;
+  /** Qué admite el último registro: subsanar un alta con errores o repetir una anulación rechazada. */
+  accion: 'subsanar' | 'repetir_anulacion' | null;
+  /** Registros que tiene la factura. */
+  registros: number;
+}
+
+export interface VerifactuAjustes {
+  entorno: EntornoVerifactu;
+  /** Razón social y NIF van juntos; los dos vacíos = la empresa emisora. */
+  productorNombre: string;
+  productorNif: string;
+  productorDireccion: string;
+  declaracionLugar: string;
+  /** aaaa-mm-dd, o vacía. */
+  declaracionFecha: string;
+}
+
+/** Datos públicos del certificado: el fichero y su contraseña no salen nunca del servidor. */
+export interface VerifactuCertificado {
+  titular: string;
+  nif: string | null;
+  emisor: string;
+  validoDesde: number;
+  validoHasta: number;
+  huellaSha256: string;
+  cargadoAt: number;
+  /** Certificado de sello electrónico: la AEAT lo atiende en otro punto de acceso. */
+  sello?: boolean;
+}
+
+export interface VerifactuCola {
+  /** Hasta cuándo pide esperar la AEAT antes del siguiente envío, por entorno (ms). */
+  esperaHasta: Partial<Record<EntornoVerifactu, number>>;
+  /** Hasta cuándo se espera tras un envío fallido, por entorno (ms). «Enviar ahora» se la salta. */
+  reintentoHasta: Partial<Record<EntornoVerifactu, number>>;
+  fallosSeguidos: number;
+  ultimoEnvioAt: number | null;
+  ultimoResultado: ResultadoEnvioVerifactu | null;
+  ultimoCsv: string | null;
+  ultimoError: string | null;
+  recuento: { entorno: string; estado_remision: string; n: number }[];
+}
+
+export interface VerifactuRegistro {
+  id: string;
+  invoice_id: string;
+  invoice_number: string | null;
+  workspace_id: string | null;
+  tipo: 'alta' | 'anulacion';
+  /** F1, F2, R1…R5; null en las anulaciones. */
+  tipo_factura: string | null;
+  entorno: EntornoVerifactu;
+  /** Posición en su cadena (emisor + entorno). */
+  seq: number;
+  estado: EstadoRemision;
+  csv: string | null;
+  codigo_error: string | null;
+  descripcion_error: string | null;
+  importe_total_cents: number | null;
+  huella: string;
+  /** Fecha y hora de generación con huso horario, tal como se remite. */
+  fecha_hora_gen: string;
+  subsanacion: boolean;
+  /** No se pudo remitir a su hora (sin certificado o sin conexión). */
+  incidencia: boolean;
+  intentos: number;
+  created_at: number;
+}
+
+export interface VerifactuEvento {
+  id: string;
+  seq: number;
+  tipo_evento: string;
+  /** Fecha y hora con huso horario. */
+  ts: string;
+  detalle: string | null;
+  huella_evento: string;
+  huella_evento_anterior: string | null;
+  created_at: number;
+}
+
+/** GET /verifactu: todo lo que enseña la sección de Contabilidad. */
+export interface VerifactuVista {
+  modo: ModoVerifactu;
+  ajustes: VerifactuAjustes;
+  /**
+   * Productor efectivo: el de los ajustes (razón social y NIF juntos) o, si no
+   * hay, la empresa emisora (`esEmisor`). La dirección de un productor propio
+   * es la suya: no se toma de la empresa emisora.
+   */
+  productor: { nombre: string; nif: string; direccion: string; esEmisor: boolean };
+  sistema: { nombre: string; id: string; version: string; numeroInstalacion: string };
+  /** URL del servicio de la AEAT del entorno elegido. */
+  servicio: string;
+  certificado: VerifactuCertificado | null;
+  cola: VerifactuCola;
+  /** Los 50 últimos. */
+  registros: VerifactuRegistro[];
+  /** Los 20 últimos. */
+  eventos: VerifactuEvento[];
+  eventosIntegros: boolean;
+  /**
+   * Declaración responsable (art. 15.1 de la Orden HAC/1177/2024): empieza por
+   * `titulo` y sus apartados van en el orden de la Orden (1.a a 1.l, y el
+   * anexo), cada dato precedido de su rótulo. Se pinta tal cual, sin reordenar.
+   * La misma, en texto plano, en GET /verifactu/declaracion.txt.
+   */
+  declaracion: { titulo: string; completa: boolean; pendientes: string[]; apartados: { letra: string; titulo: string; texto: string }[] };
+  /** `incidencia` (registros pendientes de remitir) tiene que verse mientras dure (art. 16.4 de la Orden). */
+  avisos: { tipo: string; texto: string }[];
+}
+
+/** POST /verifactu/enviar */
+export interface VerifactuEnvio {
+  resultado: {
+    enviado: boolean;
+    motivo?: 'en_curso' | 'sin_pendientes' | 'sin_certificado' | 'esperando';
+    registros?: number;
+    resultado?: ResultadoEnvioVerifactu;
+    error?: string;
+  };
+  vista: VerifactuVista;
 }
 
 // ---------- catálogo multimodular ----------
@@ -1427,6 +1595,8 @@ export interface CloudflareProxyResult {
 /** Lo que el servidor cuenta del dominio raíz y el TLS a cualquier usuario (`GET /domains/config`). */
 export interface DomainsConfig {
   rootDomain: string | null;
+  /** Dominios raíz anteriores: sus subdominios siguen contando como generados (regla del dominio principal). */
+  rootDomainAnteriores: string[];
   tls: boolean;
   /** El ajuste está puesto, pero Traefik no tiene un correo válido para Let's Encrypt (ver server/src/tls.ts). */
   tlsBlocked?: boolean;

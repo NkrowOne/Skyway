@@ -5,7 +5,6 @@ import {
   createService,
   getEnv,
   getOrCreateWorkspaceByName,
-  getSetting,
   listServices,
   projectSlugExists,
   setEnv,
@@ -14,6 +13,7 @@ import {
 } from '../db';
 import { triggerDeploy } from '../deploy/deployer';
 import { completarParejasWww, dominioPrincipal } from '../dominioprincipal';
+import { raicesGeneradas } from '../dominioraiz';
 import { getTemplate } from '../templates';
 import { DatabaseConfig, GitConfig, ImageConfig, ProjectRow, VolumeMount } from '../types';
 import { slugify, randomToken } from '../util';
@@ -196,7 +196,7 @@ async function planService(
   // la vista previa ya la enseña (y el administrador puede marcarla para el
   // DNS automático). Al importar, una pareja que use otro servicio se omite
   // con su nota, igual que los dominios de Railway.
-  const conPareja = completarParejasWww(domains.valid, { rootDomain: getSetting('rootDomain') });
+  const conPareja = completarParejasWww(domains.valid, { raices: raicesGeneradas() });
   for (const d of conPareja.anadidos) notes.push(`Se añade también ${d} para que la web responda con y sin www.`);
   const base: PlannedService = {
     railwayName: raw.name,

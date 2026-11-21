@@ -29,6 +29,7 @@ import {
   getMailwayDnsReserva,
 } from '../src/db';
 import { domainClaimError } from '../src/domainguard';
+import { SETTING_RAICES_ANTERIORES } from '../src/dominioraiz';
 import { stripWebRecords } from '../src/mailway';
 import { mailwayPublishedHosts, resetMailwayTraefikState } from '../src/mailwaytraefik';
 import type { GitConfig, ProjectRow, ServiceRow, UserRow } from '../src/types';
@@ -204,6 +205,25 @@ describe('dominios sugeridos', () => {
     const r = await call('GET', `/api/projects/${sinCorreo.id}/mail`, owner);
     expect(r.json.moduleEnabled).toBe(false);
     expect(r.json.suggestedDomains).toEqual([]);
+  });
+
+  it('tampoco el registrable de un dominio raíz anterior mientras siga en la lista', async () => {
+    const ws = createWorkspaceRow('Traslado', { modules_override: JSON.stringify(['mail', 'domains']) });
+    const proj = createProject('Traslado', 'traslado-correo', null, ws.id);
+    const owner = bearerFor(createUser('owner-traslado@example.com', hashPassword('contraseña1'), 'owner', ws.id));
+    // Un servicio que aún no se ha movido al dominio raíz actual.
+    createService(proj.id, 'Web', 'web', 'git', gitCfg(['web.apps.nube-anterior.com', 'tienda2.es']));
+    setSetting(SETTING_RAICES_ANTERIORES, JSON.stringify(['apps.nube-anterior.com']));
+    try {
+      const r = await call('GET', `/api/projects/${proj.id}/mail`, owner);
+      expect(r.status, r.raw).toBe(200);
+      expect(r.json.suggestedDomains).toEqual(['tienda2.es']);
+    } finally {
+      setSetting(SETTING_RAICES_ANTERIORES, null);
+    }
+    // Quitado de la lista, es un dominio más.
+    const r = await call('GET', `/api/projects/${proj.id}/mail`, owner);
+    expect(r.json.suggestedDomains).toEqual(['nube-anterior.com', 'tienda2.es']);
   });
 
   it('con el correo activado no se sugieren los dominios que ya tiene el cliente', async () => {

@@ -52,6 +52,7 @@ export default function CambioDominioModal({ open, onClose, projectId }: { open:
         const anteriores = (prev?.anteriores ?? []).filter((x) => x.id !== m.id);
         return {
           dominios: prev?.dominios ?? [],
+          propuestas: prev?.propuestas ?? {},
           abierta: abierto(m) ? m : null,
           anteriores: abierto(m) ? anteriores : [m, ...anteriores],
         };
@@ -136,6 +137,7 @@ export default function CambioDominioModal({ open, onClose, projectId }: { open:
         <PasoQueCambia
           projectId={projectId}
           dominios={lista.data?.dominios ?? []}
+          propuestas={lista.data?.propuestas ?? {}}
           onPreparado={(m) => {
             setNuevo(false);
             actualizar(m);

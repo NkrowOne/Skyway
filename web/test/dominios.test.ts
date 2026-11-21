@@ -3,6 +3,7 @@ import * as servidor from '../../server/src/dominioprincipal';
 import {
   completarParejasWww,
   dominioPrincipal,
+  esSubdominioGenerado,
   intervaloComprobacion,
   limpiarSinPareja,
   ordenarDominios,
@@ -11,9 +12,12 @@ import {
   dominioUnicode,
   nombreEnZona,
   normalizarEntradaDominio,
+  raicesDeConfig,
 } from '../src/dominios';
 
 const ROOT = 'apps.plataforma.com';
+/** Un dominio raíz anterior: sus subdominios siguen contando como generados. */
+const ANTERIOR = 'apps.plataforma-antigua.com';
 
 describe('ordenarDominios (misma regla que el servidor)', () => {
   it('www primero, el resto en su orden y el subdominio generado al final', () => {
@@ -25,6 +29,15 @@ describe('ordenarDominios (misma regla que el servidor)', () => {
     expect(ordenarDominios(['b.com', 'a.com'], ROOT)).toEqual(['b.com', 'a.com']);
     expect(dominioPrincipal([`web.${ROOT}`], ROOT)).toBe(`web.${ROOT}`);
     expect(dominioPrincipal([], ROOT)).toBeNull();
+  });
+
+  it('con un dominio raíz anterior, su subdominio tampoco gana a un dominio propio', () => {
+    const raices = raicesDeConfig({ rootDomain: ROOT, rootDomainAnteriores: [ANTERIOR] });
+    expect(raices).toEqual([ROOT, ANTERIOR]);
+    expect(dominioPrincipal([`web.${ANTERIOR}`, 'tienda.es'], raices)).toBe('tienda.es');
+    expect(dominioPrincipal([`web.${ANTERIOR}`, 'tienda.es'], ROOT)).toBe(`web.${ANTERIOR}`);
+    expect(raicesDeConfig({ rootDomain: null, rootDomainAnteriores: [ANTERIOR] })).toEqual([ANTERIOR]);
+    expect(raicesDeConfig(undefined)).toEqual([]);
   });
 });
 
@@ -103,7 +116,7 @@ describe('intervaloComprobacion', () => {
 
 describe('completarParejasWww y limpiarSinPareja', () => {
   it('añade la pareja detrás de su dominio, respeta las renuncias y solo completa los nuevos', () => {
-    expect(completarParejasWww(['bufete.es'], { rootDomain: ROOT })).toEqual({ domains: ['www.bufete.es', 'bufete.es'], anadidos: ['www.bufete.es'] });
+    expect(completarParejasWww(['bufete.es'], { raices: ROOT })).toEqual({ domains: ['www.bufete.es', 'bufete.es'], anadidos: ['www.bufete.es'] });
     expect(completarParejasWww(['bufete.es'], { sinPareja: ['bufete.es'] }).domains).toEqual(['bufete.es']);
     expect(completarParejasWww(['antiguo.es', 'nuevo.es'], { nuevos: ['nuevo.es'] }).domains).toEqual(['www.nuevo.es', 'antiguo.es', 'nuevo.es']);
     expect(limpiarSinPareja(['a.es', 'b.es', 'c.es'], ['a.es', 'b.es', 'www.b.es'])).toEqual(['a.es']);
@@ -126,12 +139,31 @@ describe('la copia de la web y la del servidor coinciden', () => {
     { domains: ['com.es', 'localhost', 'empresa.com.mx'] },
   ];
   it.each(casos)('%j', (caso) => {
-    const opts = { rootDomain: ROOT, nuevos: caso.nuevos, sinPareja: caso.sinPareja };
+    const opts = { raices: ROOT, nuevos: caso.nuevos, sinPareja: caso.sinPareja };
     expect(completarParejasWww(caso.domains, opts)).toEqual(servidor.completarParejasWww(caso.domains, opts));
     expect(ordenarDominios(caso.domains, ROOT)).toEqual(servidor.ordenarDominios(caso.domains, ROOT));
     for (const d of caso.domains) expect(parejaWww(d, ROOT)).toEqual(servidor.parejaWww(d, ROOT));
     const sin = caso.sinPareja ?? caso.domains;
     expect(limpiarSinPareja(sin, caso.domains, ROOT)).toEqual(servidor.limpiarSinPareja(sin, caso.domains, ROOT));
+  });
+
+  // Con el dominio raíz actual y uno anterior, como los pasan el servidor y el panel.
+  const conAnterior: { domains: string[]; nuevos?: string[]; sinPareja?: string[] }[] = [
+    { domains: [`web.${ANTERIOR}`, 'tienda.es', `web.${ROOT}`] },
+    { domains: [`www.${ANTERIOR}`, ANTERIOR, `a.b.${ANTERIOR}`, 'plataforma-antigua.com'] },
+    { domains: ['antigua-apps.com', 'www.antigua-apps.com', 'otra.es'], sinPareja: ['otra.es'] },
+  ];
+  it.each(conAnterior)('con un dominio raíz anterior: %j', (caso) => {
+    const raices = [ROOT, ANTERIOR, 'antigua-apps.com'];
+    const opts = { raices, nuevos: caso.nuevos, sinPareja: caso.sinPareja };
+    expect(completarParejasWww(caso.domains, opts)).toEqual(servidor.completarParejasWww(caso.domains, opts));
+    expect(ordenarDominios(caso.domains, raices)).toEqual(servidor.ordenarDominios(caso.domains, raices));
+    for (const d of caso.domains) {
+      expect(parejaWww(d, raices)).toEqual(servidor.parejaWww(d, raices));
+      expect(esSubdominioGenerado(d, raices)).toBe(servidor.esSubdominioGenerado(d, raices));
+    }
+    const sin = caso.sinPareja ?? caso.domains;
+    expect(limpiarSinPareja(sin, caso.domains, raices)).toEqual(servidor.limpiarSinPareja(sin, caso.domains, raices));
   });
 });
 

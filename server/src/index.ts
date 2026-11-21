@@ -15,6 +15,7 @@ import { startMonitor, stopMonitor } from './monitor';
 import { closeAllSse } from './sse';
 import { startScheduler, stopScheduler } from './scheduler';
 import { startAutoDeploy, stopAutoDeploy } from './autodeploy';
+import { startRemisionVerifactu, stopRemisionVerifactu } from './verifactu/remision';
 import { migrarVinculosACuentas } from './mailwaycuentas';
 
 async function main(): Promise<void> {
@@ -63,6 +64,8 @@ async function main(): Promise<void> {
   startMonitor({ warn: (msg) => app.log.warn(msg) });
   startScheduler({ warn: (msg) => app.log.warn(msg) });
   startAutoDeploy({ warn: (msg) => app.log.warn(msg) });
+  // Remisión de los registros de VERI*FACTU a la AEAT (no depende de Docker).
+  startRemisionVerifactu({ warn: (msg) => app.log.warn(msg) });
   // El correo real de Traefik decide si hay TLS (tls.ts): se lee ya, antes de
   // que el panel o un despliegue lo pregunten.
   void refreshTraefikAcme();
@@ -174,6 +177,7 @@ async function shutdown(app: FastifyInstance, code: number): Promise<void> {
   stopMonitor();
   stopScheduler();
   stopAutoDeploy();
+  stopRemisionVerifactu();
   // Los streams SSE no terminan solos: se cierran antes de que `app.close()`
   // se ponga a esperarlos.
   closeAllSse();

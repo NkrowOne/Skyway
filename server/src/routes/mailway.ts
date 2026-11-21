@@ -37,6 +37,7 @@ import { imageExists } from '../docker/containers';
 import { panelDomains, webmailHostError } from '../domainguard';
 import { bloqueoPorCambioConCorreo } from '../domainmigration';
 import { consultarMx } from '../domains';
+import { raicesGeneradas } from '../dominioraiz';
 import {
   MAILWAY_SETTING,
   MailwayApiKeyInfo,
@@ -798,13 +799,16 @@ function dominiosQueSeVan(summary: MailwaySummary): string[] {
  * tiene su cliente de correo ni los de la plataforma: el del panel, el raíz
  * con el que se generan los subdominios de los servicios y los de la instancia
  * de Mailway. Que un servicio cuelgue de esos dominios no los hace del cliente.
+ * Los dominios raíz anteriores, también: un servicio que aún no se ha movido
+ * con «Cambiar de dominio» conserva su subdominio del anterior, y sin esto se
+ * le propondría dar de alta el correo del dominio del operador.
  * Tampoco el dominio que se va en un cambio de dominio (`dominiosQueSeVan`),
  * aunque dejara de figurar entre los del cliente: proponerlo invitaría a darlo
  * de alta otra vez justo cuando se retira.
  */
 function suggestedDomains(projectId: string, existing: string[], salientes: readonly string[] = []): string[] {
   const fuera = new Set([...existing, ...salientes].filter((d) => typeof d === 'string').map((d) => d.toLowerCase()));
-  for (const host of [...panelDomains(), getSetting('rootDomain') ?? '', ...mailwayReservedHosts()]) {
+  for (const host of [...panelDomains(), ...raicesGeneradas(), ...mailwayReservedHosts()]) {
     const reg = host ? registrableDomain(host) : null;
     if (reg) fuera.add(reg);
   }

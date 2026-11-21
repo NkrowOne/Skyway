@@ -91,6 +91,7 @@ import { estrategiaEfectiva } from './deploy/estrategia';
 import { imageExists } from './docker/containers';
 import { domainClaimError } from './domainguard';
 import { dominioPrincipal } from './dominioprincipal';
+import { dominioRaiz, raicesAnteriores, raicesGeneradas } from './dominioraiz';
 import { checkDomain, consultarMx, getServerIp } from './domains';
 import {
   anadirBloqueWordpress,
@@ -938,13 +939,16 @@ function cambiaronDeEntorno(projectId: string, antes: ReadonlyMap<string, string
  * de `dominioPrincipal` (www primero), no por el orden. Se avisa; no bloquea.
  */
 function avisosServirPrincipal(projectId: string, hosts: readonly HostPlan[]): string[] {
-  const raiz = getSetting('rootDomain');
+  // Las mismas raíces que el despliegue (`systemVars`): el aviso tiene que
+  // decir la PUBLIC_URL que va a quedar, también al mover a un dominio raíz
+  // nuevo los subdominios de uno anterior, que siguen contando como generados.
+  const raices = raicesGeneradas();
   const activos = hostsActivos(hosts);
   const out: string[] = [];
   for (const s of listServices(projectId)) {
     const suyos = activos.filter((h) => h.serviceId === s.id);
     if (!suyos.some((h) => h.modo === 'servir')) continue;
-    const principal = dominioPrincipal(dominiosTrasPasar(dominiosDe(s), suyos), raiz);
+    const principal = dominioPrincipal(dominiosTrasPasar(dominiosDe(s), suyos), raices);
     const h = suyos.find((x) => x.modo === 'servir' && x.from === principal);
     if (h) out.push(`Con «Servir también», ${h.from} seguirá siendo el dominio principal de «${s.name}»: su PUBLIC_URL no pasará a ${h.to}.`);
   }
@@ -1811,15 +1815,17 @@ export async function listarCambios(
   project: ProjectRow,
   isAdmin: boolean,
   opts: { ligera?: boolean } = {},
-): Promise<{ abierta: MigracionSkyway | null; anteriores: MigracionSkyway[]; dominios: string[] }> {
+): Promise<{ abierta: MigracionSkyway | null; anteriores: MigracionSkyway[]; dominios: string[]; propuestas: Record<string, string> }> {
   const abierta = getOpenDomainMigration(project.id);
   const anteriores = listDomainMigrations(project.id, 6)
     .filter((m) => m.id !== abierta?.id)
     .slice(0, 5);
+  const { dominios, propuestas } = dominiosDelProyecto(project.id);
   return {
     abierta: abierta ? await vistaMigracion(abierta, isAdmin, opts) : null,
     anteriores: await Promise.all(anteriores.map((m) => vistaMigracion(m, isAdmin, { ligera: true }))),
-    dominios: dominiosDelProyecto(project.id),
+    dominios,
+    propuestas,
   };
 }
 
@@ -1827,19 +1833,39 @@ export async function listarCambios(
  * Dominios que se proponen como «Dominio actual»: los registrables de los
  * dominios de los servicios (www.tienda.es → tienda.es), sin los subdominios
  * genéricos del panel.
+ *
+ * Un nombre que cuelga de un dominio raíz anterior propone ese raíz entero, no
+ * su registrable (que arrastraría al cambio otros nombres del operador), y
+ * los raíces anteriores van los primeros: tras cambiar el dominio raíz,
+ * moverlos es lo que queda pendiente. `propuestas` les asigna el raíz actual
+ * como dominio nuevo, de modo que un solo cambio por proyecto pasa todos sus
+ * `xxx.<anterior>` a `xxx.<actual>` con el mapa de siempre.
  */
-function dominiosDelProyecto(projectId: string): string[] {
-  const raiz = normalizarNombre(getSetting('rootDomain') ?? '');
-  const out = new Set<string>();
+function dominiosDelProyecto(projectId: string): { dominios: string[]; propuestas: Record<string, string> } {
+  const raiz = dominioRaiz();
+  const anteriores = raicesAnteriores();
+  // Manda el raíz más cercano: con uno dentro de otro (apps.midominio.com y
+  // midominio.com), un nombre es del más largo del que cuelga.
+  const raices = [...(raiz ? [raiz] : []), ...anteriores].sort((a, b) => b.length - a.length);
+  const usados = new Set<string>();
+  const propios = new Set<string>();
   for (const s of listServices(projectId)) {
     if (s.type === 'database') continue;
     for (const d of dominiosDe(s)) {
       const host = normalizarNombre(d);
-      if (raiz && cuelgaDe(host, raiz)) continue;
-      out.add(getDomain(host, { allowPrivateDomains: true }) ?? host);
+      const deRaiz = raices.find((r) => cuelgaDe(host, r));
+      if (deRaiz && deRaiz === raiz) continue;
+      if (deRaiz) usados.add(deRaiz);
+      else propios.add(getDomain(host, { allowPrivateDomains: true }) ?? host);
     }
   }
-  return [...out].sort();
+  const propuestas: Record<string, string> = {};
+  for (const anterior of usados) {
+    // Sin dominio raíz no hay nada que proponer, ni con uno que cuelga del
+    // anterior o al revés: el plan los rechaza por relacionados.
+    if (raiz && !cuelgaDe(raiz, anterior) && !cuelgaDe(anterior, raiz)) propuestas[anterior] = raiz;
+  }
+  return { dominios: [...anteriores.filter((r) => usados.has(r)), ...[...propios].sort()], propuestas };
 }
 
 // ---------- despliegues ----------
@@ -2573,10 +2599,12 @@ export async function cambiarModoHost(
     if (workspace && !isWorkspaceActive(workspace)) {
       throw new ErrorCambio(403, 'account_suspended', 'La cuenta de este proyecto está suspendida: no es posible servir también un nombre hasta reactivarla.');
     }
-    const raiz = getSetting('rootDomain');
+    // Con las raíces del despliegue: servir también un subdominio de un dominio
+    // raíz anterior no le quita la PUBLIC_URL al nombre nuevo.
+    const raices = raicesGeneradas();
     const actuales = dominiosDe(service);
-    const principal = dominioPrincipal(sinRepetidos([...actuales, ...froms]), raiz);
-    if (principal !== dominioPrincipal(actuales, raiz)) throw errorHostPrincipal(principal ?? froms[0], service);
+    const principal = dominioPrincipal(sinRepetidos([...actuales, ...froms]), raices);
+    if (principal !== dominioPrincipal(actuales, raices)) throw errorHostPrincipal(principal ?? froms[0], service);
     const conflicto = domainClaimError(froms, { projectId: project.id, serviceId: service.id, isAdmin, current: actuales });
     if (conflicto) throw new ErrorCambio(409, 'domain_in_use', conflicto);
     // Con un despliegue en curso (el de pasar, que compila la cabeza de la

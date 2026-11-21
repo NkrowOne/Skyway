@@ -52,7 +52,6 @@ import {
   getPrepublished,
   getProject,
   getService,
-  getSetting,
   listCloudflareDnsRecords,
   moveCloudflareDnsRecords,
   moveMailwayDnsReservas,
@@ -60,6 +59,7 @@ import {
   upsertCloudflareDnsRecord,
 } from './db';
 import { panelDomains } from './domainguard';
+import { dominioRaiz, raicesAnteriores } from './dominioraiz';
 import { getServerIp, getServerIpv6, mismaIpv6, VerificacionCloudflare } from './domains';
 import { httpError } from './mailconnect';
 import { mailwayReservedHosts } from './mailway';
@@ -727,8 +727,14 @@ export function leerReemplazo(json: string | null | undefined): ReemplazoGuardad
  */
 function motivoNoReemplazable(domain: string, projectId: string): string | null {
   if (panelDomains().has(domain)) return `${domain} es el dominio del panel de Skyway: no se reemplaza desde aquí.`;
-  const raiz = (getSetting('rootDomain') ?? '').trim().toLowerCase();
+  const raiz = dominioRaiz();
   if (raiz && domain === raiz) return `${domain} es el dominio raíz de los subdominios de los servicios: no se reemplaza desde aquí.`;
+  // Un dominio raíz anterior sigue siendo de la plataforma mientras esté en la
+  // lista: sus subdominios se sirven aquí y cuentan como generados. Cuando ya
+  // no los usa nadie, se quita de la lista y se puede reemplazar como otro.
+  if (raicesAnteriores().includes(domain)) {
+    return `${domain} es un dominio raíz anterior de los subdominios de los servicios: no se reemplaza desde aquí. Si ya no se usa, quítalo antes de la lista en Ajustes → Dominios y TLS.`;
+  }
   const correo = new Set([...mailwayReservedHosts(), ...mailwayPublishedHosts(), ...mailwayWhitelabelHosts()]);
   if (correo.has(domain)) return `${domain} lo utiliza el servicio de correo (Mailway): no se reemplaza desde aquí.`;
   const reservaCorreo = getMailwayDnsReserva(domain);

@@ -35,6 +35,7 @@ import {
 import { anotarParadaForzada } from './avisoestrategia';
 import { diagnose } from './diagnose';
 import { dominioPrincipal } from '../dominioprincipal';
+import { raicesGeneradas } from '../dominioraiz';
 import { emitDeploy, emitDeployFeed, toDeployFeedItem } from '../events';
 import { docker, dockerAvailable, dockerQuery } from '../docker/client';
 import {
@@ -1229,9 +1230,10 @@ export function applyRailwayCompatEnv(
   // otro dentro del proyecto: aquí, su alias en la red del proyecto.
   put('RAILWAY_PRIVATE_DOMAIN', service.slug);
   if (internalPort) put('RAILWAY_TCP_PROXY_PORT', String(internalPort));
-  // El mismo dominio principal que `PUBLIC_DOMAIN` (`systemVars`): dos
-  // variables que dicen la dirección de la web no pueden discrepar.
-  const principal = dominioPrincipal(domains, getSetting('rootDomain'));
+  // El mismo dominio principal que `PUBLIC_DOMAIN` (`systemVars`), con los
+  // mismos dominios raíz: dos variables que dicen la dirección de la web no
+  // pueden discrepar.
+  const principal = dominioPrincipal(domains, raicesGeneradas());
   if (principal) {
     put('RAILWAY_PUBLIC_DOMAIN', principal);
     // El esquema lo decide quien enruta: sin correo de Let's Encrypt, Traefik
@@ -1815,7 +1817,7 @@ async function deployContainer(
           'un worker sin HTTP, elimina el dominio: no es necesario.',
       );
     } else {
-      log(`Dominios activos: ${domains.join(', ')} (dirección principal: ${dominioPrincipal(domains, getSetting('rootDomain'))})`);
+      log(`Dominios activos: ${domains.join(', ')} (dirección principal: ${dominioPrincipal(domains, raicesGeneradas())})`);
       if (tlsBlocked()) {
         log(
           '⚠ El correo de Let\'s Encrypt está configurado en el panel, pero Traefik tiene uno de ejemplo (LETSENCRYPT_EMAIL ' +

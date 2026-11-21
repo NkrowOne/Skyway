@@ -23,14 +23,38 @@ export function normalizarDominio(domain: string): string {
   return domain.trim().toLowerCase().replace(/\.$/, '');
 }
 
+/**
+ * Dominios raíz de la plataforma que cuentan: uno solo o una lista. Las
+ * tarjetas y el editor pasan el actual y los anteriores (`raicesDeConfig`),
+ * como el servidor: un subdominio generado con un dominio raíz anterior sigue
+ * siendo generado hasta que se mueve con «Cambiar de dominio».
+ */
+export type DominiosRaiz = string | readonly string[] | null | undefined;
+
+/** Las raíces normalizadas y sin vacías. */
+function listaRaices(raices: DominiosRaiz): string[] {
+  if (!raices) return [];
+  return (typeof raices === 'string' ? [raices] : raices).map((r) => normalizarDominio(r ?? '')).filter(Boolean);
+}
+
+/** El dominio raíz actual y los anteriores de `GET /domains/config`. */
+export function raicesDeConfig(config: { rootDomain: string | null; rootDomainAnteriores: string[] } | null | undefined): string[] {
+  if (!config) return [];
+  return listaRaices([config.rootDomain ?? '', ...config.rootDomainAnteriores]);
+}
+
 /** ¿Es el subdominio que genera la plataforma (`<slug>.<dominio raíz>`)? `www.<raíz>` no cuenta. */
-export function esSubdominioGenerado(domain: string, rootDomain: string | null | undefined): boolean {
-  const raiz = rootDomain ? normalizarDominio(rootDomain) : '';
-  if (!raiz) return false;
-  const d = normalizarDominio(domain);
-  if (!d.endsWith(`.${raiz}`)) return false;
-  const etiqueta = d.slice(0, -raiz.length - 1);
-  return etiqueta.length > 0 && !etiqueta.includes('.') && etiqueta !== 'www';
+export function esSubdominioGenerado(domain: string, raices: DominiosRaiz): boolean {
+  return generadoEn(normalizarDominio(domain), listaRaices(raices));
+}
+
+/** `esSubdominioGenerado` de un dominio ya normalizado, con las raíces ya normalizadas. */
+function generadoEn(d: string, raices: readonly string[]): boolean {
+  return raices.some((raiz) => {
+    if (!d.endsWith(`.${raiz}`)) return false;
+    const etiqueta = d.slice(0, -raiz.length - 1);
+    return etiqueta.length > 0 && !etiqueta.includes('.') && etiqueta !== 'www';
+  });
 }
 
 /**
@@ -38,7 +62,8 @@ export function esSubdominioGenerado(domain: string, rootDomain: string | null |
  * resto de dominios propios en el orden guardado y al final el subdominio
  * generado, salvo que sea el único. Sin repetidos.
  */
-export function ordenarDominios(domains: readonly string[], rootDomain?: string | null): string[] {
+export function ordenarDominios(domains: readonly string[], raices?: DominiosRaiz): string[] {
+  const lista = listaRaices(raices);
   const vistos = new Set<string>();
   const www: string[] = [];
   const propios: string[] = [];
@@ -47,7 +72,7 @@ export function ordenarDominios(domains: readonly string[], rootDomain?: string 
     const d = normalizarDominio(raw ?? '');
     if (!d || vistos.has(d)) continue;
     vistos.add(d);
-    if (esSubdominioGenerado(d, rootDomain)) generados.push(d);
+    if (generadoEn(d, lista)) generados.push(d);
     else if (d.startsWith('www.')) www.push(d);
     else propios.push(d);
   }
@@ -55,8 +80,8 @@ export function ordenarDominios(domains: readonly string[], rootDomain?: string 
 }
 
 /** Dominio principal (la dirección pública de la web), o null sin dominios. */
-export function dominioPrincipal(domains: readonly string[] | null | undefined, rootDomain?: string | null): string | null {
-  return ordenarDominios(domains ?? [], rootDomain)[0] ?? null;
+export function dominioPrincipal(domains: readonly string[] | null | undefined, raices?: DominiosRaiz): string | null {
+  return ordenarDominios(domains ?? [], raices)[0] ?? null;
 }
 
 /**
@@ -103,13 +128,13 @@ export interface ParejaWww {
 /**
  * La pareja con o sin www de un dominio propio: `ejemplo.com` ↔
  * `www.ejemplo.com`. Solo para el dominio registrable y su www; un subdominio
- * más profundo (`app.ejemplo.com`) y el subdominio generado no tienen pareja.
+ * más profundo (`app.ejemplo.com`) y lo que cuelga de un dominio raíz de la
+ * plataforma (el subdominio generado incluido) no tienen pareja.
  */
-export function parejaWww(domain: string, rootDomain?: string | null): { falta: string; tipo: 'www' | 'raiz' } | null {
+export function parejaWww(domain: string, raices?: DominiosRaiz): { falta: string; tipo: 'www' | 'raiz' } | null {
   const d = normalizarDominio(domain);
-  const raiz = rootDomain ? normalizarDominio(rootDomain) : '';
-  // Lo que cuelga del dominio raíz de la plataforma lo gestiona el operador.
-  if (raiz && (d === raiz || d.endsWith(`.${raiz}`))) return null;
+  // Lo que cuelga de un dominio raíz de la plataforma (el actual o uno anterior) lo gestiona el operador.
+  if (listaRaices(raices).some((raiz) => d === raiz || d.endsWith(`.${raiz}`))) return null;
   const registrable = dominioRegistrable(d);
   if (!registrable) return null;
   if (d === registrable) return { falta: `www.${d}`, tipo: 'www' };
@@ -124,7 +149,7 @@ export function parejaWww(domain: string, rootDomain?: string | null): { falta: 
  */
 export function completarParejasWww(
   domains: readonly string[],
-  opts: { rootDomain?: string | null; nuevos?: Iterable<string>; sinPareja?: Iterable<string> } = {},
+  opts: { raices?: DominiosRaiz; nuevos?: Iterable<string>; sinPareja?: Iterable<string> } = {},
 ): { domains: string[]; anadidos: string[] } {
   const lista = [...new Set(domains.map((d) => normalizarDominio(d ?? '')).filter(Boolean))];
   const presentes = new Set(lista);
@@ -136,34 +161,34 @@ export function completarParejasWww(
     conParejas.push(d);
     if (nuevos && !nuevos.has(d)) continue;
     if (sinPareja.has(d)) continue;
-    const pareja = parejaWww(d, opts.rootDomain);
+    const pareja = parejaWww(d, opts.raices);
     if (!pareja || presentes.has(pareja.falta)) continue;
     presentes.add(pareja.falta);
     anadidos.push(pareja.falta);
     conParejas.push(pareja.falta);
   }
-  return { domains: ordenarDominios(conParejas, opts.rootDomain), anadidos };
+  return { domains: ordenarDominios(conParejas, opts.raices), anadidos };
 }
 
 /** Renuncias a la pareja que se guardan: solo dominios de la lista a los que les falta. Misma regla que el servidor. */
-export function limpiarSinPareja(sinPareja: Iterable<string>, domains: readonly string[], rootDomain?: string | null): string[] {
+export function limpiarSinPareja(sinPareja: Iterable<string>, domains: readonly string[], raices?: DominiosRaiz): string[] {
   const presentes = new Set(domains.map((d) => normalizarDominio(d ?? '')));
   const out: string[] = [];
   for (const raw of sinPareja) {
     const d = normalizarDominio(raw ?? '');
     if (!presentes.has(d) || out.includes(d)) continue;
-    const pareja = parejaWww(d, rootDomain);
+    const pareja = parejaWww(d, raices);
     if (pareja && !presentes.has(pareja.falta)) out.push(d);
   }
   return out;
 }
 
 /** Dominios de la lista a los que les falta su pareja con o sin www, en el orden de la lista. */
-export function parejasWwwPendientes(domains: readonly string[], rootDomain?: string | null): ParejaWww[] {
+export function parejasWwwPendientes(domains: readonly string[], raices?: DominiosRaiz): ParejaWww[] {
   const presentes = new Set(domains.map(normalizarDominio));
   const out: ParejaWww[] = [];
   for (const domain of domains) {
-    const pareja = parejaWww(domain, rootDomain);
+    const pareja = parejaWww(domain, raices);
     if (pareja && !presentes.has(pareja.falta) && !out.some((p) => p.falta === pareja.falta)) {
       out.push({ domain: normalizarDominio(domain), ...pareja });
     }

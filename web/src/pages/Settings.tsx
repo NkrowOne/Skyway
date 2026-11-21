@@ -10,6 +10,7 @@ import OrphanData from '../components/OrphanData';
 import { useGithubReturnNotice } from '../components/useGithubReturn';
 import { ModuleLogo } from '../components/ModuleIcon';
 import { Button, Chip, ConfirmModal, ErrorState, Field, Skeleton, useFlash, useToast } from '../components/ui';
+import { useLatched } from '../hooks';
 import { DockerUsage, GithubConnector, SystemInfo } from '../types';
 import { cx, fmtBytes, fmtDateTime, timeAgo } from '../utils';
 
@@ -39,6 +40,12 @@ interface Settings {
 interface TraefikAcme {
   status: 'ok' | 'missing' | 'invalid' | 'unknown';
   email: string | null;
+}
+
+/** Dominio raíz anterior y cuántos servicios tienen todavía algún nombre que cuelga de él. */
+interface RaizAnterior {
+  domain: string;
+  services: number;
 }
 
 function OkPill({ label, dot }: { label: string; dot?: boolean }) {
@@ -219,7 +226,27 @@ export default function SettingsPage() {
   const settings = useQuery({
     queryKey: ['settings'],
     queryFn: () =>
-      api.get<{ settings: Settings; traefikAcme?: TraefikAcme; defaults?: { keepImages: number } }>('/settings'),
+      api.get<{ settings: Settings; traefikAcme?: TraefikAcme; defaults?: { keepImages: number }; rootDomainAnteriores?: RaizAnterior[] }>(
+        '/settings',
+      ),
+  });
+  // Dominio raíz anterior pendiente de confirmar que se quita de la lista.
+  const [raizAQuitar, setRaizAQuitar] = useState<RaizAnterior | null>(null);
+  // El diálogo sigue montado mientras se cierra: con el dato ya a null se vaciaría el texto.
+  const raizAQuitarVista = useLatched(raizAQuitar);
+  const quitarRaiz = useMutation({
+    mutationFn: (domain: string) => api.del(`/settings/previous-root-domains/${encodeURIComponent(domain)}`),
+    onSuccess: (_res, domain) => {
+      setRaizAQuitar(null);
+      // Cambia qué subdominios cuentan como generados: también para el editor de dominios y las tarjetas.
+      queryClient.invalidateQueries({ queryKey: ['settings'] });
+      queryClient.invalidateQueries({ queryKey: ['domainsConfig'] });
+      toast(`${domain} ya no está entre los dominios raíz anteriores.`, 'ok');
+    },
+    onError: (err: Error) => {
+      setRaizAQuitar(null);
+      toast(err.message, 'err');
+    },
   });
   // Versiones por servicio cuya imagen se conserva: se guarda aparte, con su botón.
   const [keepImages, setKeepImages] = useState('');
@@ -333,6 +360,8 @@ export default function SettingsPage() {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['settings'] });
+      // El dominio raíz (y con él los anteriores) también lo leen el editor de dominios y las tarjetas.
+      queryClient.invalidateQueries({ queryKey: ['domainsConfig'] });
       setGithubToken('');
       setTelegramToken('');
       flashSaved();
@@ -485,12 +514,37 @@ export default function SettingsPage() {
               label="Dominio raíz"
               hint={
                 <>
-                  Requiere un registro A comodín <span className="font-mono">*.tudominio</span> apuntando a la IP del servidor.
+                  Requiere un registro A comodín <span className="font-mono">*.tudominio</span> apuntando a la IP del servidor. Cambiarlo no
+                  mueve los servicios: conservan su subdominio del dominio raíz anterior.
                 </>
               }
             >
               <input className="input" placeholder="apps.midominio.com" value={rootDomain} onChange={(e) => setRootDomain(e.target.value)} />
             </Field>
+            {(settings.data?.rootDomainAnteriores?.length ?? 0) > 0 && (
+              <div className="text-xs">
+                <p className="mb-1.5 text-subtle">
+                  Dominios raíz anteriores. Sus subdominios siguen funcionando y cuentan como generados (nunca pasan a ser el dominio
+                  principal de un servicio con un dominio propio) hasta que se muevan al dominio raíz actual con «Cambiar de dominio» en
+                  cada proyecto.
+                </p>
+                <ul className="flex flex-col divide-y divide-line rounded-lg border border-line">
+                  {settings.data!.rootDomainAnteriores!.map((r) => (
+                    <li key={r.domain} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2">
+                      <span className="min-w-0 flex-1 truncate font-mono text-txt" title={r.domain}>
+                        {r.domain}
+                      </span>
+                      <span className="text-subtle">
+                        {r.services === 0 ? 'Ningún servicio lo usa ya' : r.services === 1 ? '1 servicio lo usa' : `${r.services} servicios lo usan`}
+                      </span>
+                      <Button variant="ghost" size="sm" onClick={() => setRaizAQuitar(r)} title="Quitar de la lista de dominios raíz anteriores">
+                        Quitar
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <Field
                 label="Correo electrónico para Let's Encrypt"
@@ -995,6 +1049,23 @@ export default function SettingsPage() {
         title="Eliminar copia"
         message={`Se eliminará «${backupToDelete?.file ?? ''}». Si no la has descargado, no quedará ninguna copia.`}
         loading={deleteSysBackup.isPending}
+      />
+
+      <ConfirmModal
+        open={!!raizAQuitar}
+        onClose={() => setRaizAQuitar(null)}
+        onConfirm={() => raizAQuitar && quitarRaiz.mutate(raizAQuitar.domain)}
+        title="Quitar el dominio raíz anterior"
+        message={
+          !raizAQuitarVista
+            ? ''
+            : raizAQuitarVista.services > 0
+              ? `Los subdominios de ${raizAQuitarVista.domain} dejarán de contar como generados y todavía ${raizAQuitarVista.services === 1 ? 'lo usa 1 servicio' : `lo usan ${raizAQuitarVista.services} servicios`}: en los que tengan también un dominio propio, el subdominio puede pasar a ser el dominio principal (PUBLIC_URL) en el siguiente despliegue. Se recomienda moverlos antes con «Cambiar de dominio».`
+              : `Ningún servicio usa ya subdominios de ${raizAQuitarVista.domain}: dejará de tratarse como un dominio de la plataforma.`
+        }
+        confirmLabel="Quitar"
+        confirmVariant={raizAQuitarVista && raizAQuitarVista.services > 0 ? 'danger' : 'primary'}
+        loading={quitarRaiz.isPending}
       />
 
       {/* Barra de guardado: solo con ajustes cargados (sin ellos no hay nada que guardar).

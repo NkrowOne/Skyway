@@ -16,6 +16,7 @@
  */
 import { promisify } from 'node:util';
 import { deflate } from 'node:zlib';
+import { generarQr } from './verifactu/qr';
 
 const deflateAsync = promisify(deflate);
 // Nivel 6 (el de zlib por defecto): el 9 comprimía apenas unos bytes más a
@@ -28,6 +29,8 @@ export interface InvoicePdfData {
   /** Estado de la factura: una ANULADA se rotula como tal, o el duplicado engaña. */
   status?: 'draft' | 'issued' | 'paid' | 'void';
   issuedAt: number | null;      // ms epoch
+  /** Fecha de expedición congelada (aaaa-mm-dd); sin ella se imprime la UTC de `issuedAt`. */
+  issuedDate?: string | null;
   operationDate: number | null; // ms epoch
   periodStart: number;
   periodEnd: number;
@@ -50,6 +53,12 @@ export interface InvoicePdfData {
   paymentMethod: string | null;
   bank: { iban: string; bic: string; bankName: string };
   footer: string;
+  /**
+   * QR tributario de VERI*FACTU (art. 20 y 21 de la Orden HAC/1177/2024): la
+   * URL del servicio de cotejo de la AEAT con los datos del registro. null si
+   * la factura no tiene registro (borradores o emitidas sin VERI*FACTU).
+   */
+  verifactu?: { qrUrl: string; entorno: 'pruebas' | 'produccion' } | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -244,6 +253,28 @@ function fmtFecha(ms: number | null | undefined): string {
   return `${dia}/${mes}/${d.getUTCFullYear()}`;
 }
 
+/** Fecha de expedición: la congelada al emitir o, en las facturas anteriores, la UTC. */
+function fmtExpedicion(data: InvoicePdfData): string {
+  if (data.issuedDate && /^\d{4}-\d{2}-\d{2}$/.test(data.issuedDate)) return data.issuedDate.split('-').reverse().join('/');
+  return fmtFecha(data.issuedAt);
+}
+
+/**
+ * Vencimiento. Con la fecha de expedición congelada (en hora peninsular), esa
+ * fecha más los días del plazo, contados en el calendario: con el instante de
+ * vencimiento en UTC, una factura de madrugada vencería un día antes de lo que
+ * dice su plazo. Las anteriores conservan la UTC, como su fecha de expedición.
+ */
+function fmtVencimiento(data: InvoicePdfData): string {
+  if (data.dueAt == null || !Number.isFinite(data.dueAt)) return '';
+  if (data.issuedDate && /^\d{4}-\d{2}-\d{2}$/.test(data.issuedDate) && data.issuedAt != null && Number.isFinite(data.issuedAt)) {
+    const dias = Math.round((data.dueAt - data.issuedAt) / 86_400_000);
+    const [a, m, d] = data.issuedDate.split('-').map(Number);
+    return fmtFecha(Date.UTC(a, m - 1, d + dias));
+  }
+  return fmtFecha(data.dueAt);
+}
+
 /** Fecha en el formato de metadatos PDF: D:AAAAMMDDHHmmSSZ. */
 function fmtFechaPdf(ms: number): string {
   const d = new Date(ms);
@@ -281,6 +312,12 @@ const X_TOTALES = 300;
 const X_IMPORTE_TOTALES = COL_IMPORTE_FIN - 5;
 
 const ALTO_FILA = 15;
+// QR tributario: entre 30 y 40 mm de lado (art. 21 de la Orden HAC/1177/2024).
+// 35 mm, sin contar la zona de silencio, que es papel en blanco alrededor.
+const MM = 72 / 25.4;
+const LADO_QR = 35 * MM;
+const SILENCIO_QR = 6 * MM;
+const CUERPO_LEYENDA_QR = 14;
 // La cabecera (emisor y destinatario) es el único bloque que no pagina, así que
 // una dirección con decenas de saltos de línea imprimiría texto fuera del papel:
 // se recorta a las líneas que caben de sobra en cualquier dirección postal real.
@@ -336,7 +373,7 @@ export async function renderInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
   /** Cabecera reducida de las páginas de continuación. */
   const cabeceraContinuacion = (): void => {
     dibujaTexto(MARGEN, y - 10, truncar(`${titulo} ${data.number}`, 260, 10, true), 10, true);
-    dibujaTextoDer(X_DERECHA, y - 10, truncar(`${data.issuer.companyName} · ${fmtFecha(data.issuedAt)}`, 220, 8, false), 8, false, GRIS_TEXTO);
+    dibujaTextoDer(X_DERECHA, y - 10, truncar(`${data.issuer.companyName} · ${fmtExpedicion(data)}`, 220, 8, false), 8, false, GRIS_TEXTO);
     dibujaLinea(MARGEN, y - 18, X_DERECHA, y - 18);
     y -= 34;
   };
@@ -366,8 +403,69 @@ export async function renderInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
   // --- primera página: emisor, título y datos de la factura ---
   nuevaPagina();
 
-  dibujaTexto(MARGEN, y, truncar(data.issuer.companyName || '', 245, 14, true), 14, true);
-  let yIzq = y - 18;
+  // QR tributario al principio de la factura, antes de su contenido, con
+  // «QR tributario:» encima y la leyenda VERI*FACTU debajo. Ocupa la columna
+  // izquierda; el emisor baja y el título sigue arriba a la derecha.
+  //
+  // Solo en producción. Con el registro en el entorno de pruebas, la factura no
+  // llega a la AEAT con efectos fiscales: la frase «VERI*FACTU» solo se admite
+  // cuando el sistema remite todos los registros a la AEAT (art. 6.5.b del RD
+  // 1619/2012 y art. 20.1.b de la Orden HAC/1177/2024), y un QR al portal de
+  // pruebas confundiría al cliente que lo escanee. Se dice que es de prueba.
+  let yEmisor = y;
+  if (data.verifactu?.entorno === 'pruebas') {
+    // En la columna izquierda, sin invadir el título (a la derecha, en la misma altura).
+    let yNota = y;
+    for (const l of envolver('Registro de facturación de prueba: remitido al entorno de pruebas de la AEAT, sin efectos fiscales.', 245, 7, false)) {
+      dibujaTexto(MARGEN, yNota, l, 7, false, GRIS_TEXTO);
+      yNota -= 9;
+    }
+    yEmisor = yNota - 18;
+  } else if (data.verifactu?.qrUrl) {
+    const qr = generarQr(data.verifactu.qrUrl, 'M');
+    const modulo = LADO_QR / qr.tamano;
+    // Zona de silencio: la AEAT pide al menos 2 mm y recomienda 6 (y la norma,
+    // 4 módulos). 6 mm cubre las tres cosas en cualquier versión del QR.
+    const silencio = Math.max(SILENCIO_QR, 4 * modulo);
+    // Las leyendas, centradas sobre el QR y con un cuerpo «igual o superior al
+    // del resto de datos de la factura» (especificación del QR de la AEAT, §3):
+    // 14 pt, el de la razón social del emisor, que es el dato más grande (el
+    // TOTAL va a 12). El título no es un dato. A 14 pt caben en los 35 mm.
+    const centro = (texto: string, tam: number): number => MARGEN + (LADO_QR - anchoTexto(texto, tam, true)) / 2;
+    dibujaTexto(centro('QR tributario:', CUERPO_LEYENDA_QR), y, 'QR tributario:', CUERPO_LEYENDA_QR, true);
+    const arriba = y - 3 - silencio;
+    const r = (v: number): number => Math.round(v * 100) / 100;
+    const rects: string[] = [];
+    qr.modulos.forEach((fila, f) => {
+      let c = 0;
+      while (c < fila.length) {
+        if (!fila[c]) {
+          c++;
+          continue;
+        }
+        const inicio = c;
+        while (c < fila.length && fila[c]) c++;
+        // Cada borde se redondea una sola vez y el ancho sale de los bordes ya
+        // redondeados: dos tramos vecinos comparten borde exacto, sin rendijas.
+        const x0 = r(MARGEN + inicio * modulo);
+        const x1 = r(MARGEN + c * modulo);
+        const yArriba = r(arriba - f * modulo);
+        const yAbajo = r(arriba - (f + 1) * modulo);
+        rects.push(`${n(x0)} ${n(yAbajo)} ${n(r(x1 - x0))} ${n(r(yArriba - yAbajo))} re`);
+      }
+    });
+    // Un solo trazado relleno: los visores no dibujan juntas entre módulos.
+    pagina.ops.push(`q 0 g ${rects.join(' ')} f Q`);
+    const abajo = arriba - LADO_QR;
+    // La línea base, a la altura de las mayúsculas (~0,72 del cuerpo) bajo la
+    // zona de silencio, para que la leyenda no la invada.
+    const yLeyenda = abajo - silencio - Math.ceil(CUERPO_LEYENDA_QR * 0.75);
+    dibujaTexto(centro('VERI*FACTU', CUERPO_LEYENDA_QR), yLeyenda, 'VERI*FACTU', CUERPO_LEYENDA_QR, true);
+    yEmisor = yLeyenda - 24;
+  }
+
+  dibujaTexto(MARGEN, yEmisor, truncar(data.issuer.companyName || '', 245, 14, true), 14, true);
+  let yIzq = yEmisor - 18;
   const datosEmisor: string[] = [];
   if (data.issuer.taxId) datosEmisor.push(`NIF: ${data.issuer.taxId}`);
   const dirEmisor = data.issuer.address ? envolver(data.issuer.address, 250, 8.5, false) : [];
@@ -384,11 +482,11 @@ export async function renderInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
   dibujaTextoDer(X_DERECHA, yDer, truncar(`Nº ${data.number}`, 240, 11, true), 11, true);
   yDer -= 15;
   const fechas: string[] = [];
-  const expedicion = fmtFecha(data.issuedAt);
+  const expedicion = fmtExpedicion(data);
   if (expedicion) fechas.push(`Fecha de expedición: ${expedicion}`);
   const operacion = fmtFecha(data.operationDate);
   if (operacion) fechas.push(`Fecha de operación: ${operacion}`);
-  const vencimiento = fmtFecha(data.dueAt);
+  const vencimiento = fmtVencimiento(data);
   if (vencimiento) fechas.push(`Vencimiento: ${vencimiento}`);
   for (const l of fechas) {
     dibujaTextoDer(X_DERECHA, yDer, truncar(l, 240, 8.5, false), 8.5, false, GRIS_TEXTO);
@@ -489,10 +587,10 @@ export async function renderInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
   ].filter((b) => b.lineas.length > 0);
 
   // Tiene que coincidir EXACTAMENTE con lo que el bloque baja el cursor
-  // (10 + 14 por fila + 38 del recuadro TOTAL): si se queda corto, la reserva no
-  // alcanza y las menciones legales se van solas a una página siguiente dejando
-  // los totales huérfanos en la anterior.
-  const altoTotales = 10 + filasTotales.length * 14 + 38;
+  // (10 + 14 por fila + 8 de aire + 38 del recuadro TOTAL): si se queda corto, la
+  // reserva no alcanza y las menciones legales se van solas a una página
+  // siguiente dejando los totales huérfanos en la anterior.
+  const altoTotales = 10 + filasTotales.length * 14 + 8 + 38;
   const altoBloques = bloques.reduce((suma, b) => suma + 21 + b.lineas.length * 11, 0);
   // Los totales tienen que quedar en la última página, así que el cierre entero
   // (totales + menciones) salta de página junto si no cabe donde acabó el detalle.
@@ -511,6 +609,9 @@ export async function renderInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
     dibujaTextoDer(X_IMPORTE_TOTALES, y, importe, 9);
     y -= 14;
   }
+  // Aire antes del recuadro: sin él, su borde superior quedaba por encima de la
+  // línea base de la última fila y tapaba la mitad inferior del desglose de IVA.
+  y -= 8;
   dibujaCaja(X_TOTALES - 8, y - 8, X_DERECHA - X_TOTALES + 8, 24, GRIS_SOMBRA);
   dibujaTexto(X_TOTALES, y, 'TOTAL', 12, true);
   dibujaTextoDer(X_IMPORTE_TOTALES, y, truncar(fmtImporte(data.totalCents, moneda), 190, 12, true), 12, true);
