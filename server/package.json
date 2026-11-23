@@ -14,7 +14,7 @@
   },
   "dependencies": {
     "@fastify/cookie": "^11.1.5",
-    "@fastify/static": "^10.1.8",
+    "@fastify/static": "^10.1.12",
     "@simplewebauthn/server": "^14.1.0",
     "better-sqlite3": "^13.1.1",
     "dockerode": "^5.0.1",
@@ -31,6 +31,6 @@
     "tsx": "^4.23.15",
     "typescript": "^5.5.4",
     "vite": "^7.3.8",
-    "vitest": "^5.1.0"
+    "vitest": "^5.1.1"
   }
 }
